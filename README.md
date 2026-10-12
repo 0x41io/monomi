@@ -24,6 +24,8 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Automatic fallback:** if one source is down, the scan continues with the other
 - **Merged, de-duplicated results**
 - **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS
+- **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs so their ports aren't blamed on the target. Only IPs that matter get a row
+- **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
@@ -66,6 +68,12 @@ python monomi.py example.com
 
 # Add IPs, hosting provider/ASN, and country for each host
 python monomi.py example.com --enrich
+
+# Add open ports and known CVEs from Shodan InternetDB (turns on --enrich)
+python monomi.py example.com --ports
+
+# Save the CVEs and triage them with kaidoku
+python monomi.py example.com --ports --cves cves.txt
 
 # With AI analysis + saved Markdown report
 python monomi.py example.com --ai
@@ -123,6 +131,7 @@ monomi/
 ├── monomi.py             # CLI entry point
 ├── analysis.py           # Claude analysis layer
 ├── enrich.py             # DNS + ASN/provider enrichment
+├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
 ├── history.py            # scan history + change detection
 ├── ui.py                 # colored banner + terminal output
 ├── collectors/
@@ -142,12 +151,27 @@ monomi/
 
 ## Roadmap
 
+## Roadmap
+
+**Done**
+- [x] Passive subdomain discovery (crt.sh + Cert Spotter)
+- [x] Change detection between scans
 - [x] DNS + hosting provider enrichment
+- [x] Open ports and known CVEs via Shodan InternetDB, with hand-off to [kaidøku](https://github.com/0x41io/kaidoku)
+
+**Next**
+- [ ] SpiderFoot import (`--import`): run monomi's AI analysis on SpiderFoot exports
+- [ ] Subdomain takeover / dangling DNS detection
+- [ ] Rule-based checks before the AI step
+
+**Later**
 - [ ] Liveness checks for discovered hosts
 - [ ] Scheduled monitoring with alerts on new hostnames
+- [ ] Plugin system for data sources
+- [ ] Per-target scan history (SQLite)
+- [ ] HTML graph export
 - [ ] Installable package (`pip install monomi`)
 - [ ] Web interface
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
