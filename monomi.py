@@ -5,6 +5,7 @@
 Usage:
     python monomi.py example.com
     python monomi.py example.com --json results.json
+    python monomi.py example.com --ports --cves cves.txt
 """
 
 import argparse
@@ -17,6 +18,7 @@ from datetime import datetime
 from collectors import certspotter, crtsh
 import enrich
 import history
+import internetdb
 import ui
 from ui import fail, good, info, warn
 
@@ -39,11 +41,18 @@ def main() -> int:
     parser.add_argument("--json", metavar="FILE", help="save raw results to a JSON file")
     parser.add_argument("--ai", action="store_true", help="have Claude write a summary report (needs ANTHROPIC_API_KEY)")
     parser.add_argument("--enrich", action="store_true", help="resolve hosts to IPs and look up hosting provider/ASN (sends DNS queries)")
+    parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
+    parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
     args = parser.parse_args()
     if args.no_color:
         ui.disable()
     print(ui.banner())
+
+    if args.ports and not args.enrich:
+        args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
+    if args.cves and not args.ports:
+        warn("--cves only works together with --ports; ignoring it.")
 
     try:
         domain = clean_domain(args.domain)
@@ -96,6 +105,41 @@ def main() -> int:
             )
             for h in data["private_ip_hosts"]:
                 print(f"    {ui.paint(h, ui.YELLOW)}  {data['hosts'][h]['ips'][0]}")
+
+        if args.ports:
+            print()
+            info("Checking Shodan InternetDB for open ports and known CVEs (passive)...")
+            exposure = internetdb.lookup(data)
+            results["exposure"] = exposure
+            if exposure["errors"]:
+                warn(f"{exposure['errors']} Shodan lookup(s) failed (results may be incomplete).")
+            if exposure["skipped"]:
+                warn(f"Only the first {internetdb.MAX_IPS} IPs were checked ({exposure['skipped']} skipped).")
+            print()
+            if not exposure["ips"]:
+                good(f"Shodan has no open ports on record for the {exposure['checked']} IPs checked.")
+            else:
+                ui.exposure_table(exposure)
+                print()
+                own = [d for d in exposure["ips"].values() if not d["shared_edge"]]
+                n_cves = len(exposure["unique_cves"])
+                good(
+                    f"{len(own)} IP(s) with open ports, "
+                    f"{len(exposure['risky'])} with risky services, "
+                    f"{ui.paint(str(n_cves), ui.BOLD, ui.RED if n_cves else ui.GREEN)} unique CVE(s)"
+                    + (" (matched from software versions; verify before acting)." if n_cves else ".")
+                )
+                if exposure["risky"]:
+                    warn("Services that usually shouldn't face the internet:")
+                    for ip, risky in exposure["risky"]:
+                        print(f"    {ui.paint(ip, ui.YELLOW)}  {', '.join(risky)}")
+            if args.cves:
+                if exposure["unique_cves"]:
+                    with open(args.cves, "w") as f:
+                        f.write("\n".join(exposure["unique_cves"]) + "\n")
+                    good(f"Saved {len(exposure['unique_cves'])} CVEs to {args.cves}. Triage them with: python kaidoku.py --file {args.cves}")
+                else:
+                    info(f"No CVEs found, so {args.cves} wasn't written.")
     else:
         for sub in all_subs:
             print(f"    {sub}")
@@ -136,7 +180,8 @@ def main() -> int:
                 f"*Generated {datetime.now():%Y-%m-%d %H:%M} · "
                 f"sources: {', '.join(results['sources'])} · "
                 f"{len(all_subs)} hostnames"
-                f"{' · enriched' if 'enrichment' in results else ''} · model: {model}*\n\n"
+                f"{' · enriched' if 'enrichment' in results else ''}"
+                f"{' · Shodan InternetDB' if 'exposure' in results else ''} · model: {model}*\n\n"
             )
             with open(path, "w") as f:
                 f.write(header + summary + "\n")

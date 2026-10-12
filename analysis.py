@@ -36,6 +36,17 @@ reviewing (internal addresses published in public DNS reveal network layout), \
 and note that CT-listed hosts with no DNS record are likely retired or stale.
 - In Limitations, note that DNS reflects one point in time from one resolver.
 
+If the data includes "exposure" (Shodan InternetDB: open ports and CVEs per IP):
+- In section 3, treat internet-facing risky services (remote access, file \
+sharing, databases, Docker API) as worth reviewing, naming the host and port. \
+Mention the CVE count per IP and the most notable CVE IDs, but say they are \
+matched from software version banners and must be verified.
+- Ignore open ports on IPs marked shared_edge (CDN edge servers such as \
+Cloudflare); they belong to the CDN, not the target. Say so once.
+- In section 4, suggest triaging the CVE list with kaidoku and closing or \
+firewalling services that don't need to be public.
+- In Limitations, note that Shodan's data can be days or weeks old.
+
 Formatting rules (the report is rendered in a terminal):
 - Start directly with "## 1. Overview". No title line above it.
 - Use "## " for the five section headings.
@@ -94,6 +105,25 @@ def summarize(results: dict) -> tuple[str, str]:
             "unique_ips": enr["unique_ips"],
             "providers": enr["providers"],
             "private_ip_hosts": enr["private_ip_hosts"],
+        }
+    exp = results.get("exposure")
+    if exp:
+        payload["exposure"] = {
+            "ips_checked": exp["checked"],
+            "ips": {
+                ip: {
+                    "hosts": d["hosts"][:10],
+                    "provider": d["provider"],
+                    "shared_edge": d["shared_edge"],
+                    "ports": d["ports"],
+                    "risky_services": d["risky"],
+                    "cve_count": len(d["vulns"]),
+                    "cves": d["vulns"][:15],
+                    "tags": d["tags"],
+                }
+                for ip, d in exp["ips"].items()
+            },
+            "unique_cves_excluding_cdn": len(exp["unique_cves"]),
         }
 
     msg = client.messages.create(

@@ -161,6 +161,51 @@ def provider_bars(providers: dict, total: int, width: int = 24, top: int = 8, in
         print(f"{indent}{_cell(name, name_w)}  {paint(bar.ljust(width), color)}  {n:>3}  {paint(pct, GREY)}")
 
 
+def exposure_table(exposure: dict, indent: str = "    ") -> None:
+    """Print the Shodan InternetDB findings that matter: IP  HOST  PORTS  CVES  NOTE.
+
+    Only IPs with CVEs, risky services or ports beyond 80/443 get a row.
+    Plain web servers and shared CDN edge IPs are summarized in one line each
+    (their details stay in --json), so the important rows aren't buried.
+    """
+    import shutil
+
+    web = {80, 443}
+    items = exposure["ips"].items()
+    edge = [ip for ip, d in items if d["shared_edge"]]
+    web_only = {ip for ip, d in items if not d["shared_edge"] and not d["vulns"] and set(d["ports"]) <= web}
+    rows = sorted(
+        ((ip, d) for ip, d in items if not d["shared_edge"] and ip not in web_only),
+        key=lambda kv: (-len(kv[1]["vulns"]), -len(kv[1]["risky"])),
+    )
+
+    if rows:
+        cols = shutil.get_terminal_size((110, 24)).columns
+        ip_w, ports_w, cve_w = 16, 24, 5
+        host_w = max(18, min(max(len(d["hosts"][0]) + 4 for _, d in rows), cols - len(indent) - ip_w - ports_w - cve_w - 30))
+
+        head = f"{_cell('IP', ip_w)}  {_cell('HOST', host_w)}  {_cell('PORTS', ports_w)}  {'CVES':>{cve_w}}  NOTE"
+        print(indent + paint(head, GREY))
+        print(indent + paint("─" * (ip_w + host_w + ports_w + cve_w + 14), GREY))
+        for ip, d in rows:
+            host = d["hosts"][0] + (f" +{len(d['hosts']) - 1}" if len(d["hosts"]) > 1 else "")
+            ports = ", ".join(str(p) for p in d["ports"]) or "-"
+            n = len(d["vulns"])
+            note = paint("exposed: " + ", ".join(d["risky"]), YELLOW, BOLD) if d["risky"] else ""
+            cve_txt = paint(f"{n:>{cve_w}}", RED, BOLD) if n else paint(f"{n:>{cve_w}}", GREY)
+            print(indent + f"{paint(_cell(ip, ip_w), GREY)}  {_cell(host, host_w)}  {_cell(ports, ports_w)}  {cve_txt}  {note}".rstrip())
+        print()
+    else:
+        print(indent + paint("Nothing beyond normal web ports (80/443) on the target's own IPs, and no known CVEs.", GREEN))
+
+    if web_only:
+        print(indent + paint(f"{len(web_only)} IP(s) only serve web traffic (80/443) with no known CVEs.", GREY))
+    if edge:
+        print(indent + paint(f"{len(edge)} shared CDN edge IP(s) not shown: their open ports belong to the CDN.", GREY))
+    if web_only or edge:
+        print(indent + paint("Full details with --json", GREY))
+
+
 # ---------------------------------------------------------------------------
 # AI report rendering
 # ---------------------------------------------------------------------------
