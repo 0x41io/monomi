@@ -47,6 +47,19 @@ Cloudflare); they belong to the CDN, not the target. Say so once.
 firewalling services that don't need to be public.
 - In Limitations, note that Shodan's data can be days or weeks old.
 
+If the data includes "spiderfoot" (imported from a SpiderFoot scan export):
+- The hostnames came from that SpiderFoot scan, not certificate logs; adjust \
+section 1 and Limitations to say so (and that an aborted or passive scan may \
+be incomplete).
+- Use the per-host details (web server banners, ASNs, countries, hosting) in \
+section 2, and list third_party services (mail, DNS, marketing, e-commerce \
+providers) briefly as the external services the target relies on.
+- Weigh each finding by the module that produced it. Reputation-list hits that \
+only describe an IP as a hosting provider, VPN or shared platform are weak \
+signals (shared IPs get flagged for other tenants); say so rather than \
+calling them malicious. Cloud storage buckets are worth reviewing for public \
+access, without assuming they are open.
+
 Formatting rules (the report is rendered in a terminal):
 - Start directly with "## 1. Overview". No title line above it.
 - Use "## " for the five section headings.
@@ -126,6 +139,15 @@ def summarize(results: dict) -> tuple[str, str]:
             "unique_cves_excluding_cdn": len(exp["unique_cves"]),
         }
 
+    sf = results.get("spiderfoot")
+    if sf:
+        payload["spiderfoot"] = {
+            "host_details": {h: sf["hosts"][h] for h in list(sf["hosts"])[:MAX_HOSTS]},
+            "findings": [{**f, "data": f["data"][:500]} for f in sf["findings"][:50]],
+            "third_party": sf["third_party"][:100],
+            "context": sf["context"],
+            "rows_skipped_by_type": sf["skipped"],
+        }
     msg = client.messages.create(
         model=model,
         max_tokens=8000,
