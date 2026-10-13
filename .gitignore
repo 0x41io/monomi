@@ -9,19 +9,17 @@ dist/
 venv/
 .venv/
 env/
-
 # Secrets - never commit API keys
 .env
 .env.*
 *.key
-
 # Scan output (may contain data about other organizations)
 reports/
 *.json
-
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 scans/
+samples/
