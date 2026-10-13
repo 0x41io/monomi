@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 
 from collectors import certspotter, crtsh
+from importers import spiderfoot
 import enrich
 import history
 import internetdb
@@ -37,7 +38,8 @@ def clean_domain(raw: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="0x41 / monomi - passive domain recon")
-    parser.add_argument("domain", help="target domain, e.g. example.com")
+    parser.add_argument("domain", nargs="?", help="target domain, e.g. example.com")
+    parser.add_argument("--import", dest="import_file", metavar="FILE", help="analyze a SpiderFoot CSV export")
     parser.add_argument("--json", metavar="FILE", help="save raw results to a JSON file")
     parser.add_argument("--ai", action="store_true", help="have Claude write a summary report (needs ANTHROPIC_API_KEY)")
     parser.add_argument("--enrich", action="store_true", help="resolve hosts to IPs and look up hosting provider/ASN (sends DNS queries)")
