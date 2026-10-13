@@ -105,7 +105,10 @@ def main() -> int:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
 
-    if not results["sources"]:
+    if not results["sources"]    or not any(r["subdomains"] for r in results["sources"].values()):
+        if sf:
+            fail(f"No hostnames for {domain} found in the SpiderFoot export.")   
+            return 1 
         fail("All certificate sources failed. They're free services - try again in a few minutes.")
         return 1
 
