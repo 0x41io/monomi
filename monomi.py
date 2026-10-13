@@ -175,10 +175,19 @@ def main() -> int:
         for sub in all_subs:
             print(f"    {sub}")
 
+    if sf and sf["findings"]:
+        print()
+        warn("SpiderFoot flagged these (unverified; the AI report weighs them):")
+        for fnd in sf["findings"]:
+            first_line = fnd["data"].splitlines()[0]
+            print(f"    {ui.paint(fnd['type'], ui.YELLOW)}  {first_line}  ({fnd['module']})")
+
     # Change detection: compare with the last scan of this domain, then save this one
-    previous = history.load_last(domain)
-    saved_path = history.save(domain, all_subs)
-    if previous is None:
+    previous = None if sf else history.load_last(domain)
+    saved_path = None if sf else history.save(domain, all_subs)
+    if sf:
+        pass
+    elif previous is None:
         print()
         info(f"First scan of {domain} - saved as baseline ({saved_path})")
     else:
