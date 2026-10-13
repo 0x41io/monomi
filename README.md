@@ -26,6 +26,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS
 - **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs so their ports aren't blamed on the target. Only IPs that matter get a row
 - **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
+- **SpiderFoot import (`--import FILE`):** run Monomi on a [SpiderFoot](https://github.com/smicallef/spiderfoot) CSV export instead of querying certificate logs. Keeps the target's own hosts (with IPs, banners, ASNs), separates third-party services, drops noisy modules (username/account checks, co-hosted sites, raw data), and passes SpiderFoot's flagged findings to the AI with their source module so weak reputation hits aren't reported as confirmed threats. Works with `--enrich`, `--ports` and `--ai`; doesn't touch scan history
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
@@ -78,6 +79,8 @@ python monomi.py example.com --ports --cves cves.txt
 # With AI analysis + saved Markdown report
 python monomi.py example.com --ai
 
+# Analyze a SpiderFoot export (CSV: scan > Export > CSV) instead of querying CT logs
+python monomi.py --import spiderfoot.csv --ports --ai
 # Save raw results as JSON
 python monomi.py example.com --json results.json
 
@@ -136,7 +139,9 @@ monomi/
 ├── ui.py                 # colored banner + terminal output
 ├── collectors/
 │   ├── crtsh.py          # crt.sh collector (with retries)
-│   └── certspotter.py    # Cert Spotter collector (with pagination)
+├── importers/
+│   └── spiderfoot.py     # SpiderFoot CSV export parser
+   # Cert Spotter collector (with pagination)
 ├── scans/                # saved scans per domain (git-ignored)
 ├── reports/              # generated reports (git-ignored)
 └── requirements.txt
@@ -151,16 +156,16 @@ monomi/
 
 ## Roadmap
 
-## Roadmap
+
 
 **Done**
 - [x] Passive subdomain discovery (crt.sh + Cert Spotter)
 - [x] Change detection between scans
 - [x] DNS + hosting provider enrichment
 - [x] Open ports and known CVEs via Shodan InternetDB, with hand-off to [kaidøku](https://github.com/0x41io/kaidoku)
+- [x] SpiderFoot import (`--import`): run monomi's AI analysis on SpiderFoot exports
 
 **Next**
-- [ ] SpiderFoot import (`--import`): run monomi's AI analysis on SpiderFoot exports
 - [ ] Subdomain takeover / dangling DNS detection
 - [ ] Rule-based checks before the AI step
 
