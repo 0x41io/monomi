@@ -75,12 +75,27 @@ def main() -> int:
         return 1
     if sf and sf["target"] != domain:
         warn(f"Export was a scan of {sf['target']}, not {domain}; using {domain} as the target.")
-
     results = {"target": domain, "sources": {}, "errors": {}}
     info(f"Target: {ui.paint(domain, ui.BOLD, ui.WHITE)}")
+    if sf:
+        hosts = sorted(sf["hosts"])
+        results["sources"]["spiderfoot"] = {"source": "spiderfoot", "file": args.import_file, "subdomains": hosts}
+        results["spiderfoot"] = {
+            # sets -> sorted lists, so the data can be saved as JSON and sent to the AI
+            "hosts": {h: {k: sorted(v) for k, v in d.items()} for h, d in sf["hosts"].items()},
+            "findings": sf["findings"],
+            "third_party": sf["third_party"],
+            "context": sf["context"],
+            "skipped": dict(sf["skipped"].most_common()),
+        }
+        good(f"SpiderFoot export: {len(hosts)} hostnames, {len(sf['findings'])} possible findings, "
+             f"{len(sf['third_party'])} third-party services")
+        info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
+             f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
 
+    
     # Certificate Transparency: try both sources, merge whatever succeeds
-    for name, module in [("crt.sh", crtsh), ("Cert Spotter", certspotter)]:
+    for name, module in ([] if sf else [("crt.sh", crtsh), ("Cert Spotter", certspotter)]):
         info(f"Querying certificate transparency logs ({name})...")
         try:
             r = module.collect(domain)
