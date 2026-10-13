@@ -56,11 +56,25 @@ def main() -> int:
     if args.cves and not args.ports:
         warn("--cves only works together with --ports; ignoring it.")
 
+        # --import: load the SpiderFoot export first, since it tells us the target domain
+    sf = None
+    if args.import_file:
+        try:
+            sf = spiderfoot.load_spiderfoot_csv(args.import_file)
+        except (OSError, ValueError, KeyError) as e:
+            fail(f"Couldn't read SpiderFoot export {args.import_file}: {e}")
+            return 1
+        if not args.domain:
+            args.domain = sf["target"]
+    if not args.domain:
+        parser.error("a domain is required (or use --import FILE)")
     try:
         domain = clean_domain(args.domain)
     except ValueError as e:
         fail(str(e))
         return 1
+    if sf and sf["target"] != domain:
+        warn(f"Export was a scan of {sf['target']}, not {domain}; using {domain} as the target.")
 
     results = {"target": domain, "sources": {}, "errors": {}}
     info(f"Target: {ui.paint(domain, ui.BOLD, ui.WHITE)}")
