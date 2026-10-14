@@ -6,6 +6,7 @@ when output isn't a terminal (piping to a file) or when NO_COLOR is set.
 """
 
 import os
+import re
 import sys
 
 from collectors import VERSION
@@ -36,6 +37,19 @@ YELLOW = rgb(255, 200, 60)
 # Top-to-bottom red gradient for the "41" (bright at the top, deeper below)
 RED_RAMP = [rgb(255, 70, 85), rgb(255, 45, 62), rgb(235, 25, 45),
             rgb(210, 15, 35), rgb(180, 8, 28), rgb(150, 0, 22)]
+
+
+# Control characters (including ESC, which starts terminal escape codes)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def safe(text: str) -> str:
+    """Neutralize control characters in untrusted text before printing it.
+
+    Data from other people (web banners, SpiderFoot findings) can contain
+    escape codes that recolor, hide or rewrite lines in your terminal.
+    """
+    return _CONTROL.sub("?", str(text))
 
 
 def paint(text: str, *codes: str) -> str:
