@@ -104,18 +104,27 @@ def parse_cymru(text: str) -> dict[str, dict]:
 
 
 def enrich(hosts: list[str]) -> dict:
-    """Resolve + ASN-enrich hosts. Returns per-host data and a provider summary."""
+    """Resolve + ASN-enrich hosts. Returns per-host data, per-IP data and a provider summary."""
     resolved = resolve(hosts)
 
-    public_ips = sorted({
-        ip for ips in resolved.values() for ip in ips
-        if ipaddress.ip_address(ip).is_global
-    })
+    all_ips = sorted({ip for ips in resolved.values() for ip in ips})
+    public_ips = [ip for ip in all_ips if ipaddress.ip_address(ip).is_global]
     asn_error = None
     try:
         asn = asn_lookup(public_ips)
     except RuntimeError as e:
         asn, asn_error = {}, str(e)
+
+    # Owner of EVERY IP, not just one per host. A host can sit on several
+    # providers (e.g. a Cloudflare edge IP plus an AWS origin IP), and later
+    # steps (Shodan's CDN filter) must judge each IP on its own.
+    ip_info = {}
+    for ip in all_ips:
+        if not ipaddress.ip_address(ip).is_global:
+            ip_info[ip] = {"provider": "PRIVATE IP"}  # internal address in public DNS
+        else:
+            info = asn.get(ip, {})
+            ip_info[ip] = {**info, "provider": info.get("as_name", "unknown")}
 
     per_host = {}
     for host in hosts:
@@ -123,20 +132,33 @@ def enrich(hosts: list[str]) -> dict:
         entry = {"ips": ips}
         if not ips:
             entry["provider"] = None  # in CT logs but no DNS record now
-        elif not ipaddress.ip_address(ips[0]).is_global:
-            entry["provider"] = "PRIVATE IP"  # internal address in public DNS
+            entry["providers"] = []
+            per_host[host] = entry
+            continue
+
+        public = [ip for ip in ips if ip_info[ip]["provider"] != "PRIVATE IP"]
+        entry["private_ips"] = [ip for ip in ips if ip_info[ip]["provider"] == "PRIVATE IP"]
+        if not public:
+            entry["provider"] = "PRIVATE IP"
+            entry["providers"] = ["PRIVATE IP"]
         else:
-            info = asn.get(ips[0], {})
-            entry.update(info)
-            entry["provider"] = info.get("as_name", "unknown")
+            # Main label = the provider holding most of this host's public IPs
+            counts = Counter(ip_info[ip]["provider"] for ip in public)
+            entry["providers"] = [p for p, _ in counts.most_common()]
+            main = entry["providers"][0]
+            first = next(ip for ip in public if ip_info[ip]["provider"] == main)
+            entry.update({k: v for k, v in ip_info[first].items() if k != "provider"})
+            entry["provider"] = main
         per_host[host] = entry
 
     providers = Counter(e["provider"] or "no DNS record" for e in per_host.values())
     return {
         "hosts": per_host,
+        "ip_info": ip_info,
         "providers": dict(providers.most_common()),
         "resolved": sum(1 for e in per_host.values() if e["ips"]),
         "unique_ips": len({ip for e in per_host.values() for ip in e["ips"]}),
-        "private_ip_hosts": [h for h, e in per_host.items() if e["provider"] == "PRIVATE IP"],
+        # Any internal IP counts, even if the host also has public ones
+        "private_ip_hosts": [h for h, e in per_host.items() if e.get("private_ips")],
         "asn_error": asn_error,
     }

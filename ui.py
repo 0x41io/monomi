@@ -133,7 +133,12 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
 
     cols = shutil.get_terminal_size((110, 24)).columns
     ip_w = 18
-    prov_w = min(max([len(e["provider"] or "") for e in live.values()] + [8]), 20)
+    def prov_label(e):
+        # "Cloudflare +1" when a host's IPs belong to more than one provider
+        extra = len(e.get("providers") or []) - 1
+        return (e["provider"] or "") + (f" +{extra}" if extra > 0 else "")
+
+    prov_w = min(max([len(prov_label(e)) for e in live.values()] + [8]), 20)
     room = cols - len(indent) - ip_w - prov_w - 2 - 6 - 1  # gaps + CC column
     host_w = max(20, min(max([len(h) for h in live] + [4]), room))
 
@@ -146,7 +151,7 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
         ips = e["ips"]
         ip = ips[0] + (f" +{len(ips) - 1}" if len(ips) > 1 else "")
         provider = e["provider"]
-        prov = _cell(provider, prov_w)
+        prov = _cell(prov_label(e), prov_w)
         prov = paint(prov, YELLOW, BOLD) if provider == "PRIVATE IP" else paint(prov, WHITE)
         print(indent + line(host, paint(_cell(ip, ip_w), GREY), prov, e.get("country", "-")))
 

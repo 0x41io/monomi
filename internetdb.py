@@ -14,6 +14,7 @@ Two things to keep in mind:
   it needs a Shodan license.
 """
 
+import ipaddress
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -62,13 +63,15 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
 
     Returns {"ips": {ip: {...}}, "unique_cves": [...], "risky": [...], "errors": n, "skipped": n}.
     """
-    # Group hostnames by IP, using the provider info enrich already found
+    # Group hostnames by IP. Each IP gets its OWN provider from enrich's ip_info,
+    # so a host's CDN edge IP and its cloud origin IP are judged separately.
+    ip_info = enrichment.get("ip_info", {})
     by_ip: dict[str, dict] = {}
     for host, e in enrichment["hosts"].items():
-        provider = e.get("provider")
-        if not e["ips"] or provider == "PRIVATE IP":
-            continue
         for ip in e["ips"]:
+            if not ipaddress.ip_address(ip).is_global:
+                continue  # private/internal: Shodan can't see it
+            provider = ip_info.get(ip, {}).get("provider", e.get("provider"))
             entry = by_ip.setdefault(ip, {"hosts": [], "provider": provider})
             entry["hosts"].append(host)
 
