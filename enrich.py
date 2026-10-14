@@ -12,6 +12,8 @@ Host enrichment: resolve hostnames to IPs, then look up who hosts each IP.
 
 import ipaddress
 import socket
+
+import aws_ranges
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -126,6 +128,21 @@ def enrich(hosts: list[str]) -> dict:
             info = asn.get(ip, {})
             ip_info[ip] = {**info, "provider": info.get("as_name", "unknown")}
 
+    # Amazon's ASN covers both CloudFront edges and normal AWS servers; use
+    # Amazon's published range list to tell them apart. Only downloaded when
+    # the scan actually has AWS IPs.
+    cdn_error = None
+    aws_ips = [ip for ip, i in ip_info.items() if i["provider"] == "AWS"]
+    if aws_ips:
+        try:
+            nets = aws_ranges.cloudfront_networks()
+        except RuntimeError as e:
+            cdn_error = str(e)
+        else:
+            for ip in aws_ips:
+                if aws_ranges.in_networks(ip, nets):
+                    ip_info[ip]["provider"] = "AWS CloudFront"
+
     per_host = {}
     for host in hosts:
         ips = resolved.get(host, [])
@@ -161,4 +178,5 @@ def enrich(hosts: list[str]) -> dict:
         # Any internal IP counts, even if the host also has public ones
         "private_ip_hosts": [h for h, e in per_host.items() if e.get("private_ips")],
         "asn_error": asn_error,
+        "cdn_error": cdn_error,
     }

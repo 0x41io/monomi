@@ -24,7 +24,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Automatic fallback:** if one source is down, the scan continues with the other
 - **Merged, de-duplicated results**
 - **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS
-- **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs so their ports aren't blamed on the target. Only IPs that matter get a row
+- **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs (Cloudflare, Fastly, Akamai, Imperva, and AWS CloudFront, detected from [Amazon's published IP ranges](https://ip-ranges.amazonaws.com/ip-ranges.json)) so their ports aren't blamed on the target. Only IPs that matter get a row
 - **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
 - **SpiderFoot import (`--import FILE`):** run Monomi on a [SpiderFoot](https://github.com/smicallef/spiderfoot) CSV export instead of querying certificate logs. Keeps the target's own hosts (with IPs, banners, ASNs; `--enrich` looks up current IPs fresh instead), separates third-party services, drops noisy modules (username/account checks, co-hosted sites, raw data), and passes SpiderFoot's flagged findings to the AI with their source module so weak reputation hits aren't reported as confirmed threats. Works with `--enrich`, `--ports` and `--ai`; doesn't touch scan history
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
@@ -137,6 +137,7 @@ monomi/
 ├── analysis.py           # Claude analysis layer
 ├── enrich.py             # DNS + ASN/provider enrichment
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
+├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── history.py            # scan history + change detection
 ├── ui.py                 # colored banner + terminal output
 ├── collectors/
@@ -146,6 +147,7 @@ monomi/
 │   └── spiderfoot.py     # SpiderFoot CSV export parser
 ├── scans/                # saved scans per domain (git-ignored)
 ├── reports/              # generated reports (git-ignored)
+├── cache/                # cached AWS IP range list (git-ignored)
 └── requirements.txt
 ```
 

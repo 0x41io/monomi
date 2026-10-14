@@ -155,6 +155,9 @@ def main() -> int:
                 # ports and CVEs would be counted as the target's own.
                 warn("CDN edge filtering is OFF for this run: ports/CVEs below may belong to "
                      "Cloudflare/Fastly/etc., not the target. Re-run later for accurate numbers.")
+        if data.get("cdn_error"):
+            warn(f"CloudFront detection skipped: {data['cdn_error']}. CloudFront edge IPs will show as plain AWS"
+                 + (" and their ports/CVEs may be counted as the target's." if args.ports else "."))
         print()
         ui.host_table(data["hosts"])
         print()

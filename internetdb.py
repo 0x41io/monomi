@@ -33,7 +33,7 @@ RISKY_PORTS = {
 
 # Providers whose IPs are shared edge servers. Their open ports belong to
 # the CDN, not to the target's own server.
-SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva"}
+SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva", "AWS CloudFront"}
 
 
 def lookup_one(ip: str, timeout: int = 15) -> dict | None:
