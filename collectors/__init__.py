@@ -1,4 +1,4 @@
-VERSION = "0.7"
+VERSION = "0.8"
 USER_AGENT = f"0x41-monomi/{VERSION} (passive OSINT research)"
 
 import re
