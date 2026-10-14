@@ -4,7 +4,9 @@ import json
 import os
 from datetime import datetime
 
-SCANS_DIR = "scans"
+# Always inside the monomi folder, no matter where the command is run from;
+# otherwise each working folder would get its own separate history.
+SCANS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scans")
 
 
 def _domain_dir(domain: str) -> str:

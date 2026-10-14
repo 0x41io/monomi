@@ -214,6 +214,8 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
             cve_txt = paint(f"{n:>{cve_w}}", RED, BOLD) if n else paint(f"{n:>{cve_w}}", GREY)
             print(indent + f"{paint(_cell(ip, ip_w), GREY)}  {_cell(host, host_w)}  {_cell(ports, ports_w)}  {cve_txt}  {note}".rstrip())
         print()
+    elif not web_only and edge:
+        print(indent + paint("Every IP with open ports belongs to a CDN, so none of the target's own servers are visible to check.", GREEN))
     else:
         print(indent + paint("Nothing beyond normal web ports (80/443) on the target's own IPs, and no known CVEs.", GREEN))
 
