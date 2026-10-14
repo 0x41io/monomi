@@ -23,9 +23,18 @@ import internetdb
 import ui
 from ui import fail, good, info, warn
 
+# Reports always go in the monomi folder, wherever the command is run from
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
 )
+
+
+def short_path(path: str) -> str:
+    """'reports/x.md' when run from the monomi folder, the full path otherwise."""
+    rel = os.path.relpath(path)
+    return path if rel.startswith("..") else rel
 
 
 def clean_domain(raw: str) -> str:
@@ -77,8 +86,18 @@ def main() -> int:
     except ValueError as e:
         fail(str(e))
         return 1
-    if sf and sf["target"] != domain:
-        warn(f"Export was a scan of {sf['target']}, not {domain}; using {domain} as the target.")
+    if sf:
+        # Compare cleaned forms, so "www.example.com" in the export matches "example.com"
+        try:
+            sf_domain = clean_domain(sf["target"])
+        except ValueError:
+            sf_domain = sf["target"]
+        if sf_domain != domain:
+            # The export's hosts were filtered for its own target, so mixing the two
+            # would produce a report about one domain filled with another's data.
+            fail(f"This export is a scan of {sf['target']}, but you asked for {domain}.")
+            info(f"Run it without a domain to analyze {sf['target']}: python monomi.py --import {args.import_file}")
+            return 1
     results = {"target": domain, "sources": {}, "errors": {}}
     info(f"Target: {ui.paint(domain, ui.BOLD, ui.WHITE)}")
     if sf:
@@ -219,7 +238,7 @@ def main() -> int:
                 info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the failed source.")
     elif previous is None:
         print()
-        info(f"First scan of {domain} - saved as baseline ({saved_path})")
+        info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
     else:
         changes = history.compare(previous, all_subs)
         results["changes"] = changes
@@ -242,9 +261,9 @@ def main() -> int:
         except Exception as e:  # missing key, network, API errors
             fail(f"AI summary failed: {e}")
         else:
-            os.makedirs("reports", exist_ok=True)
+            os.makedirs(REPORTS_DIR, exist_ok=True)
             stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-            path = os.path.join("reports", f"{domain}_{stamp}.md")
+            path = os.path.join(REPORTS_DIR, f"{domain}_{stamp}.md")
             header = (
                 f"# mønømi report: {domain}\n\n"
                 f"*Generated {datetime.now():%Y-%m-%d %H:%M} · "
@@ -258,7 +277,7 @@ def main() -> int:
             print()
             ui.render_report(summary)
             print()
-            good(f"Report saved to {path}")
+            good(f"Report saved to {short_path(path)}")
 
     if args.json:
         with open(args.json, "w") as f:
