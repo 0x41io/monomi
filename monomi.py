@@ -151,7 +151,7 @@ def main() -> int:
                 "in public DNS (leaks internal network layout):"
             )
             for h in data["private_ip_hosts"]:
-                print(f"    {ui.paint(h, ui.YELLOW)}  {data['hosts'][h]['ips'][0]}")
+                print(f"    {ui.paint(h, ui.YELLOW)}  {', '.join(data['hosts'][h]['private_ips'])}")
 
         if args.ports:
             print()

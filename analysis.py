@@ -30,7 +30,9 @@ does not confirm which hosts are live, and names alone don't prove a problem.
 If the data includes "enrichment" (DNS + hosting provider per host), also:
 - In section 2, describe where things are hosted (providers/ASNs, countries) \
 and anything notable, like a sensitive-sounding host sitting on a different \
-provider than the rest, or self-hosted ranges next to cloud/CDN.
+provider than the rest, or self-hosted ranges next to cloud/CDN. A host whose \
+all_providers lists a CDN plus another provider may expose its origin server \
+directly; point that out.
 - In section 3, treat hosts resolving to private/internal IPs as worth \
 reviewing (internal addresses published in public DNS reveal network layout), \
 and note that CT-listed hosts with no DNS record are likely retired or stale.
@@ -112,6 +114,7 @@ def summarize(results: dict) -> tuple[str, str]:
                 "host": h,
                 "ips": enr["hosts"][h]["ips"],
                 "provider": enr["hosts"][h]["provider"] or "no DNS record",
+                "all_providers": enr["hosts"][h].get("providers", []),
                 "asn": enr["hosts"][h].get("asn"),
                 "country": enr["hosts"][h].get("country"),
             }
