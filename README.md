@@ -121,8 +121,10 @@ A report includes:
 ```
 domain ──► crt.sh ───────┐
                          ├──► merge + de-duplicate ──► terminal / JSON
-domain ──► Cert Spotter ─┘                │
-                                          └──► Claude (--ai) ──► Markdown report
+domain ──► Cert Spotter ─┘   (or SpiderFoot CSV    │
+                              via --import)        ├──► DNS + ASN (--enrich)
+                                                   ├──► Shodan InternetDB (--ports)
+                                                   └──► Claude (--ai) ──► Markdown report
 ```
 
 Certificate Transparency (CT) is a public log of every TLS certificate issued by trusted authorities. Certificates list the hostnames they cover, so CT logs reveal subdomains an organization has requested certificates for, without touching the organization's servers.
@@ -139,9 +141,9 @@ monomi/
 ├── ui.py                 # colored banner + terminal output
 ├── collectors/
 │   ├── crtsh.py          # crt.sh collector (with retries)
+│   └── certspotter.py    # Cert Spotter collector (with pagination)
 ├── importers/
 │   └── spiderfoot.py     # SpiderFoot CSV export parser
-   # Cert Spotter collector (with pagination)
 ├── scans/                # saved scans per domain (git-ignored)
 ├── reports/              # generated reports (git-ignored)
 └── requirements.txt
@@ -151,7 +153,7 @@ monomi/
 
 - CT logs only show hosts that have had TLS certificates; hosts behind wildcard certificates or without TLS won't appear.
 - A hostname appearing in CT logs doesn't mean it's currently live. `--enrich` shows which ones still have DNS records, but a DNS record doesn't prove a server is up.
-- AI analysis is based on hostnames alone. Treat its findings as leads to verify, not confirmed issues.
+- AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Treat its findings as leads to verify, not confirmed issues.
 - crt.sh and Cert Spotter are free services and are sometimes slow or rate-limited.
 
 ## Roadmap

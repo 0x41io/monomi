@@ -10,7 +10,7 @@ crt.sh, but it's much more reliable. Still 100% passive.
 import requests
 
 API_URL = "https://api.certspotter.com/v1/issuances"
-from collectors import USER_AGENT
+from collectors import USER_AGENT, is_hostname
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
 
 
@@ -33,7 +33,12 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
         if resp.status_code != 200:
             raise RuntimeError(f"Cert Spotter returned HTTP {resp.status_code}")
 
-        page = resp.json()
+        try:
+            page = resp.json()
+        except ValueError:  # HTML error page or cut-off body instead of JSON
+            if records:
+                break  # keep the pages we already got
+            raise RuntimeError("Cert Spotter returned invalid JSON")
         if not page:
             break
         records.extend(page)
@@ -50,6 +55,8 @@ def parse_subdomains(records: list[dict], domain: str) -> list[str]:
             name = name.strip().lower()
             if name.startswith("*."):
                 name = name[2:]
+            if not is_hostname(name):
+                continue
             if name == domain or name.endswith("." + domain):
                 found.add(name)
     return sorted(found)

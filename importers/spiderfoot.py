@@ -3,6 +3,8 @@
 import csv
 from collections import Counter
 
+from collectors import is_hostname
+
 # Event types that describe a single host (Source column = the hostname or IP)
 HOST_DETAIL_TYPES = {
     "WEBSERVER_BANNER": "banners",
@@ -29,11 +31,11 @@ CONTEXT_TYPES = {
 }
 
 
-
-
 def _belongs_to(name, target):
     """True if name is the target domain or one of its subdomains."""
-    name = name.lower().rstrip(".")
+    name = name.strip().lower().rstrip(".")
+    if not is_hostname(name):
+        return False
     return name == target or name.endswith("." + target)
 
 
@@ -67,7 +69,9 @@ def load_spiderfoot_csv(path):
 
     for r in rows:
         if r["Type"] == "INTERNET_NAME" and _belongs_to(r["Data"], target):
-            host(r["Data"].strip().lower().rstrip("."))    # 3. Link IPs to hosts using the Source column (source host -> resolved IP)
+            host(r["Data"].strip().lower().rstrip("."))
+
+    # 3. Link IPs to hosts using the Source column (source host -> resolved IP)
     for r in rows:
         if r["Type"] in ("IP_ADDRESS", "IPV6_ADDRESS"):
             src = r["Source"].strip().lower().rstrip(".")
@@ -90,7 +94,9 @@ def load_spiderfoot_csv(path):
         if src in hosts:
             hosts[src][field].add(value)
         for name in ip_to_hosts.get(src, []):
-            hosts[name][field].add(value)    # 5. Findings, third-party services, domain context
+            hosts[name][field].add(value)
+
+    # 5. Findings, third-party services, domain context
     findings, third_party = [], set()
     context = {v: set() for v in CONTEXT_TYPES.values()}
     for r in rows:

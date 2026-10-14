@@ -23,7 +23,9 @@ import internetdb
 import ui
 from ui import fail, good, info, warn
 
-DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+)
 
 
 def clean_domain(raw: str) -> str:
@@ -31,6 +33,8 @@ def clean_domain(raw: str) -> str:
     d = raw.strip().lower()
     d = re.sub(r"^[a-z]+://", "", d)  # strip scheme
     d = d.split("/")[0].split(":")[0]  # strip path and port
+    d = d.rstrip(".")  # "example.com." (fully qualified form) -> "example.com"
+    d = re.sub(r"^www\.", "", d)  # www.example.com -> example.com, so we search the whole domain
     if not DOMAIN_RE.match(d):
         raise ValueError(f"'{raw}' doesn't look like a valid domain")
     return d
@@ -56,7 +60,7 @@ def main() -> int:
     if args.cves and not args.ports:
         warn("--cves only works together with --ports; ignoring it.")
 
-        # --import: load the SpiderFoot export first, since it tells us the target domain
+    # --import: load the SpiderFoot export first, since it tells us the target domain
     sf = None
     if args.import_file:
         try:
@@ -90,8 +94,9 @@ def main() -> int:
         }
         good(f"SpiderFoot export: {len(hosts)} hostnames, {len(sf['findings'])} possible findings, "
              f"{len(sf['third_party'])} third-party services")
-        info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
-             f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
+        if sf["skipped"]:
+            info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
+                 f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
 
     
     # Certificate Transparency: try both sources, merge whatever succeeds
@@ -109,7 +114,10 @@ def main() -> int:
         if sf:
             fail(f"No hostnames for {domain} found in the SpiderFoot export.")   
             return 1 
-        fail("All certificate sources failed. They're free services - try again in a few minutes.")
+        if results["errors"]:
+            fail("All certificate sources failed. They're free services - try again in a few minutes.")
+        else:
+            fail(f"No certificates found for {domain}. Check the spelling, or the domain may not use TLS.")
         return 1
 
     all_subs = sorted({s for r in results["sources"].values() for s in r["subdomains"]})
@@ -123,6 +131,11 @@ def main() -> int:
         results["enrichment"] = data
         if data["asn_error"]:
             warn(f"{data['asn_error']} (showing IPs without provider info)")
+            if args.ports:
+                # Without provider names we can't tell CDN edge IPs apart, so their
+                # ports and CVEs would be counted as the target's own.
+                warn("CDN edge filtering is OFF for this run: ports/CVEs below may belong to "
+                     "Cloudflare/Fastly/etc., not the target. Re-run later for accurate numbers.")
         print()
         ui.host_table(data["hosts"])
         print()
@@ -182,14 +195,28 @@ def main() -> int:
         print()
         warn("SpiderFoot flagged these (unverified; the AI report weighs them):")
         for fnd in sf["findings"]:
-            first_line = fnd["data"].splitlines()[0]
-            print(f"    {ui.paint(fnd['type'], ui.YELLOW)}  {first_line}  ({fnd['module']})")
+            # SpiderFoot data comes from third parties: clean it before it hits the terminal
+            first_line = ui.safe((fnd["data"].splitlines() or ["(no data)"])[0])
+            print(f"    {ui.paint(ui.safe(fnd['type']), ui.YELLOW)}  {first_line}  ({ui.safe(fnd['module'])})")
 
     # Change detection: compare with the last scan of this domain, then save this one
+    # Only save a baseline when every source worked; a partial list would make
+    # the next full scan report lots of fake [NEW] hosts.
     previous = None if sf else history.load_last(domain)
-    saved_path = None if sf else history.save(domain, all_subs)
+    complete = not results["errors"]
+    saved_path = history.save(domain, all_subs) if (complete and not sf) else None
     if sf:
         pass
+    elif not complete:
+        print()
+        warn("A source failed, so this scan wasn't saved to history (it would be an incomplete baseline).")
+        if previous is not None:
+            changes = history.compare(previous, all_subs)
+            results["changes"] = changes
+            for sub in changes["added"]:
+                print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
+            if changes["removed"]:
+                info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the failed source.")
     elif previous is None:
         print()
         info(f"First scan of {domain} - saved as baseline ({saved_path})")

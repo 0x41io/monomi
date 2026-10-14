@@ -13,7 +13,7 @@ import time
 import requests
 
 CRTSH_URL = "https://crt.sh/"
-from collectors import USER_AGENT
+from collectors import USER_AGENT, is_hostname
 
 
 def fetch_raw(domain: str, retries: int = 3, timeout: int = 60) -> list[dict]:
@@ -55,8 +55,8 @@ def parse_subdomains(records: list[dict], domain: str) -> list[str]:
             name = name.strip().lower()
             if name.startswith("*."):
                 name = name[2:]  # wildcard cert -> the base it covers
-            if not name or "@" in name:
-                continue  # skip blanks and email addresses
+            if not is_hostname(name):
+                continue  # skip blanks, email addresses and anything that isn't a hostname
             if name == domain or name.endswith("." + domain):
                 found.add(name)
 
