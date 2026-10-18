@@ -5,6 +5,8 @@ The AI report must cite these IDs (E1, E2...) for every claim, so each
 finding can be traced back to where and when the data came from.
 Built by code, not by the AI, so the evidence itself can't be made up.
 """
+import re
+
 from datetime import datetime, timezone
 
 def build_evidence(results: dict) -> list[dict]:
@@ -84,3 +86,12 @@ def build_evidence(results: dict) -> list[dict]:
             first_line = (fnd["data"].splitlines() or ["(no data)"])[0][:200]
             add(f"SpiderFoot module {fnd['module']} reported {fnd['type']}: {first_line}", sf_source)
     return evidence
+
+
+def check_citations(report: str, evidence: list[dict]) -> list[str]:
+    """Return evidence IDs the report cites that don't exist (sorted, no repeats)."""
+    known = {e["id"] for e in evidence}
+    cited = set()
+    for group in re.findall(r"\[(E\d+(?:\s*,\s*E\d+)*)\]", report):
+        cited.update(re.findall(r"E\d+", group))
+    return sorted(cited - known, key=lambda i: int(i[1:]))

@@ -285,6 +285,12 @@ def main() -> int:
             ui.render_report(summary)
             print()
             good(f"Report saved to {short_path(path)}")
+            unknown = evidence.check_citations(summary, results["evidence"])
+            if unknown:
+                warn(f"The AI cited evidence that doesn't exist: {', '.join(unknown)}. "
+                     "Treat those findings with caution.")
+            else:
+                good("Every evidence ID the AI cited exists.")
 
     if args.json:
         with open(args.json, "w") as f:
