@@ -5,7 +5,7 @@ The AI report must cite these IDs (E1, E2...) for every claim, so each
 finding can be traced back to where and when the data came from.
 Built by code, not by the AI, so the evidence itself can't be made up.
 """
-
+from datetime import datetime, timezone
 
 def build_evidence(results: dict) -> list[dict]:
     """Turn raw recon results into a numbered list of evidence items."""
@@ -68,4 +68,16 @@ def build_evidence(results: dict) -> list[dict]:
                 more = f" (+{len(d['vulns']) - 15} more)" if len(d["vulns"]) > 15 else ""
                 add(f"Shodan InternetDB lists {len(d['vulns'])} CVE(s) for {ip} ({hosts}), "
                     f"matched from software version banners: {cves}{more}", shodan_source)
+
+    # 4. SpiderFoot findings (from --import)
+    sf = results.get("spiderfoot")
+    if sf:
+        sf_source = [{
+            "name": f"SpiderFoot export ({results['sources']['spiderfoot']['file']})",
+            "collected_at": None,  # SpiderFoot collected it at its own scan time, which we don't know
+            "imported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }]
+        for fnd in sf["findings"]:
+            first_line = (fnd["data"].splitlines() or ["(no data)"])[0][:200]
+            add(f"SpiderFoot module {fnd['module']} reported {fnd['type']}: {first_line}", sf_source)
     return evidence
