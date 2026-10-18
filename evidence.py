@@ -47,4 +47,25 @@ def build_evidence(results: dict) -> list[dict]:
         for host in enr["private_ip_hosts"]:
             private = ", ".join(enr["hosts"][host].get("private_ips", []))
             add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source)
+
+    # 3. Open ports, risky services and CVEs (from --ports)
+    exp = results.get("exposure")
+    if exp:
+        shodan_source = [{"name": "Shodan InternetDB", "collected_at": exp.get("collected_at")}]
+        for ip, d in exp["ips"].items():
+            if d["shared_edge"]:
+                continue  # CDN edge server: these ports belong to the CDN, not the target
+            hosts = ", ".join(d["hosts"][:3])
+            if len(d["hosts"]) > 3:
+                hosts += f" +{len(d['hosts']) - 3} more"
+            ports = ", ".join(str(p) for p in d["ports"])
+            add(f"{ip} ({hosts}) has open ports: {ports}", shodan_source)
+            if d["risky"]:
+                add(f"{ip} ({hosts}) runs services that usually shouldn't face the internet: "
+                    f"{', '.join(d['risky'])}", shodan_source)
+            if d["vulns"]:
+                cves = ", ".join(d["vulns"][:15])
+                more = f" (+{len(d['vulns']) - 15} more)" if len(d["vulns"]) > 15 else ""
+                add(f"Shodan InternetDB lists {len(d['vulns'])} CVE(s) for {ip} ({hosts}), "
+                    f"matched from software version banners: {cves}{more}", shodan_source)
     return evidence
