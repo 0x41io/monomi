@@ -9,6 +9,7 @@ import json
 import os
 
 MAX_HOSTS = 400  # keep requests small and cheap on very large domains
+MAX_EVIDENCE = 600  # same idea for the evidence list
 
 SYSTEM_PROMPT = """You are a security analyst at 0x41, writing an external \
 attack-surface summary for an authorized assessment. Your reader is the \
@@ -61,6 +62,18 @@ only describe an IP as a hosting provider, VPN or shared platform are weak \
 signals (shared IPs get flagged for other tenants); say so rather than \
 calling them malicious. Cloud storage buckets are worth reviewing for public \
 access, without assuming they are open.
+
+Evidence and labels (the most important rules):
+- The data includes "evidence": numbered facts (E1, E2, ...) collected by \
+code, each with its source. Every finding in section 3 must cite the \
+evidence it rests on in square brackets, e.g. [E12] or [E12, E194]. Use \
+only IDs that appear in the evidence list.
+- Start every finding in section 3 with one bold label: **Observed** (the \
+cited evidence directly shows it), **Inference** (your interpretation of \
+the cited evidence, e.g. what a hostname suggests), or **Lead** (worth \
+checking, but the evidence is weak or indirect, like a reputation-list hit).
+- Do not write a finding you cannot cite. Sections 1, 2 and 4 may summarize \
+without citations, but cite evidence whenever you name a specific host or IP.
 
 Formatting rules (the report is rendered in a terminal):
 - Start directly with "## 1. Overview". No title line above it.
@@ -155,6 +168,12 @@ def summarize(results: dict) -> tuple[str, str]:
             "context": sf["context"],
             "rows_skipped_by_type": sf["skipped"],
         }
+    ev = results.get("evidence", [])
+    payload["evidence"] = [
+        {"id": e["id"], "fact": e["fact"], "source": ", ".join(s["name"] for s in e["sources"])}
+        for e in ev[:MAX_EVIDENCE]
+    ]
+    payload["evidence_truncated"] = len(ev) > MAX_EVIDENCE
     msg = client.messages.create(
         model=model,
         max_tokens=8000,

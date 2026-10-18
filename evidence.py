@@ -59,7 +59,10 @@ def build_evidence(results: dict) -> list[dict]:
             if len(d["hosts"]) > 3:
                 hosts += f" +{len(d['hosts']) - 3} more"
             ports = ", ".join(str(p) for p in d["ports"])
-            add(f"{ip} ({hosts}) has open ports: {ports}", shodan_source)
+            fact = f"{ip} ({hosts}) has open ports: {ports}"
+            if d["tags"]:
+                fact += f"; Shodan tags: {', '.join(d['tags'])}"
+            add(fact, shodan_source)
             if d["risky"]:
                 add(f"{ip} ({hosts}) runs services that usually shouldn't face the internet: "
                     f"{', '.join(d['risky'])}", shodan_source)
