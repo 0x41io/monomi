@@ -29,4 +29,22 @@ def build_evidence(results: dict) -> list[dict]:
         names = ", ".join(s["name"] for s in seen_by[host])
         add(f"{host} was found by {names}", seen_by[host])
 
+    # 2. DNS and hosting (from --enrich)
+    enr = results.get("enrichment")
+    if enr:
+        dns_source = [{"name": "DNS + ASN lookup", "collected_at": enr.get("collected_at")}]
+        for host in results["subdomains"]:
+            h = enr["hosts"].get(host)
+            if not h:
+                continue
+            if h["ips"]:
+                where = h["provider"] or "unknown provider"
+                if h.get("country"):
+                    where += f", {h['country']}"
+                add(f"{host} resolves to {', '.join(h['ips'])} ({where})", dns_source)
+            else:
+                add(f"{host} had no DNS record when checked", dns_source)
+        for host in enr["private_ip_hosts"]:
+            private = ", ".join(enr["hosts"][host].get("private_ips", []))
+            add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source)
     return evidence
