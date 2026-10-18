@@ -88,10 +88,49 @@ def build_evidence(results: dict) -> list[dict]:
     return evidence
 
 
+def cited_ids(report: str) -> set[str]:
+    """Every evidence ID cited in brackets, e.g. [E1, E2] or a range [E5-E9]."""
+    cited = set()
+    for group in re.findall(r"\[(E\d+(?:\s*[,-]\s*E\d+)*)\]", report):
+        for part in re.split(r"\s*,\s*", group):
+            nums = [int(n) for n in re.findall(r"\d+", part)]
+            if len(nums) == 2 and 0 <= nums[1] - nums[0] <= 1000:
+                cited.update(f"E{n}" for n in range(nums[0], nums[1] + 1))  # a range: E5-E9
+            else:
+                cited.update(f"E{n}" for n in nums)
+    return cited
+
 def check_citations(report: str, evidence: list[dict]) -> list[str]:
     """Return evidence IDs the report cites that don't exist (sorted, no repeats)."""
     known = {e["id"] for e in evidence}
-    cited = set()
-    for group in re.findall(r"\[(E\d+(?:\s*,\s*E\d+)*)\]", report):
-        cited.update(re.findall(r"E\d+", group))
-    return sorted(cited - known, key=lambda i: int(i[1:]))
+    return sorted(cited_ids(report) - known, key=lambda i: int(i[1:]))
+
+
+def describe_source(s: dict) -> str:
+    """One readable line about where and when a fact came from."""
+    if s.get("collected_at"):
+        return f"{s['name']}, collected {s['collected_at']}"
+    if s.get("imported_at"):
+        return f"{s['name']}, imported {s['imported_at']} (original collection time unknown)"
+    return f"{s['name']} (collection time unknown)"
+
+
+def evidence_appendix(report: str, evidence: list[dict]) -> str:
+    """Markdown 'Evidence' section listing only the items the report cites."""
+    cited = cited_ids(report)
+    lines = [
+        "## Evidence",
+        "",
+        "Facts collected by monomi's code, not written by the AI. "
+        "Every citation in the report above points to one of these.",
+        "",
+    ]
+    for e in evidence:
+        if e["id"] not in cited:
+            continue
+        sources = "; ".join(describe_source(s) for s in e["sources"])
+        lines.append(f"- **{e['id']}**: {e['fact']}")
+        lines.append(f"  - Source: {sources}")
+    if len(lines) == 4:
+        lines.append("*The report cites no evidence.*")
+    return "\n".join(lines) + "\n"

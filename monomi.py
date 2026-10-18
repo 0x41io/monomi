@@ -280,7 +280,7 @@ def main() -> int:
                 f"{' · Shodan InternetDB' if 'exposure' in results else ''} · model: {model}*\n\n"
             )
             with open(path, "w") as f:
-                f.write(header + summary + "\n")
+                f.write(header + summary + "\n\n" + evidence.evidence_appendix(summary, results["evidence"]))
             print()
             ui.render_report(summary)
             print()

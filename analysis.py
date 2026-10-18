@@ -66,7 +66,8 @@ access, without assuming they are open.
 Evidence and labels (the most important rules):
 - The data includes "evidence": numbered facts (E1, E2, ...) collected by \
 code, each with its source. Every finding in section 3 must cite the \
-evidence it rests on in square brackets, e.g. [E12] or [E12, E194]. Use \
+evidence it rests on in square brackets, e.g. [E12], [E12, E194] or a \
+range with a plain hyphen like [E40-E52]. Use \
 only IDs that appear in the evidence list.
 - Start every finding in section 3 with one bold label: **Observed** (the \
 cited evidence directly shows it), **Inference** (your interpretation of \
