@@ -8,7 +8,7 @@ crt.sh, but it's much more reliable. Still 100% passive.
 """
 
 import requests
-
+from datetime import datetime, timezone
 API_URL = "https://api.certspotter.com/v1/issuances"
 from collectors import USER_AGENT, is_hostname
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
@@ -64,9 +64,11 @@ def parse_subdomains(records: list[dict], domain: str) -> list[str]:
 
 def collect(domain: str) -> dict:
     records = fetch_raw(domain)
+    collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     subdomains = parse_subdomains(records, domain)
     return {
         "source": "certspotter",
+        "collected_at": collected_at,
         "domain": domain,
         "certificates_seen": len(records),
         "subdomain_count": len(subdomains),

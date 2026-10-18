@@ -9,7 +9,7 @@ we only query crt.sh, never the target itself.
 """
 
 import time
-
+from datetime import datetime, timezone
 import requests
 
 CRTSH_URL = "https://crt.sh/"
@@ -66,9 +66,11 @@ def parse_subdomains(records: list[dict], domain: str) -> list[str]:
 def collect(domain: str) -> dict:
     """Run the collector and return a structured result for the report/AI layer."""
     records = fetch_raw(domain)
+    collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     subdomains = parse_subdomains(records, domain)
     return {
         "source": "crt.sh",
+        "collected_at": collected_at,
         "domain": domain,
         "certificates_seen": len(records),
         "subdomain_count": len(subdomains),

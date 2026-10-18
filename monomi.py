@@ -13,11 +13,12 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from collectors import certspotter, crtsh
 from importers import spiderfoot
 import enrich
+import evidence
 import history
 import internetdb
 import ui
@@ -147,6 +148,7 @@ def main() -> int:
     if args.enrich:
         info("Resolving hosts and looking up hosting providers...")
         data = enrich.enrich(all_subs)
+        data["collected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         results["enrichment"] = data
         if data["asn_error"]:
             warn(f"{data['asn_error']} (showing IPs without provider info)")
@@ -179,6 +181,7 @@ def main() -> int:
             print()
             info("Checking Shodan InternetDB for open ports and known CVEs (passive)...")
             exposure = internetdb.lookup(data)
+            exposure["collected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             results["exposure"] = exposure
             if exposure["errors"]:
                 warn(f"{exposure['errors']} Shodan lookup(s) failed (results may be incomplete).")
@@ -255,6 +258,7 @@ def main() -> int:
             print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
         if results["errors"] and changes["removed"]:
             print(f"    {ui.paint('[!]', ui.YELLOW)} A source failed this run, so GONE hosts may just be missing data.")
+    results["evidence"] = evidence.build_evidence(results)
     if args.ai:
         print()
         info("Asking Claude to analyze the results...")
