@@ -29,6 +29,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **SpiderFoot import (`--import FILE`):** run Monomi on a [SpiderFoot](https://github.com/smicallef/spiderfoot) CSV export instead of querying certificate logs. Keeps the target's own hosts (with IPs, banners, ASNs; `--enrich` looks up current IPs fresh instead), separates third-party services, drops noisy modules (username/account checks, co-hosted sites, raw data), and passes SpiderFoot's flagged findings to the AI with their source module so weak reputation hits aren't reported as confirmed threats. Works with `--enrich`, `--ports` and `--ai`; doesn't touch scan history
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
+- **Evidence-backed findings:** before the AI step, Monomi's code turns the collected data into a numbered evidence list (E1, E2, ...), each item a plain fact with its source and UTC collection time. Every finding in the AI report cites the evidence it rests on (e.g. `[E12, E194]`) and is labeled **Observed**, **Inference** or **Lead**. After the report is written, Monomi checks every citation and warns if the AI cited evidence that doesn't exist. Saved reports end with an **Evidence** section listing each cited item, written by code, not by the AI
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
 - **JSON export** for use in other tools
@@ -115,6 +116,20 @@ A report includes:
 3. **Worth reviewing:** prioritized hosts whose names suggest they may not need to be public
 4. **Recommendations:** concrete defensive steps
 5. **Limitations:** what passive data can and can't tell you
+6. **Evidence:** every cited fact with its source and collection time, written by Monomi's code (not the AI)
+
+### Example finding
+
+```
+### High
+- **Observed:** app.example.com resolves to 203.0.113.10, which Shodan lists
+  with 2 CVEs on ports 80/443 [E14, E52, E53]. These are matched from version
+  banners and must be verified.
+
+## Evidence
+- **E52**: 203.0.113.10 (app.example.com) has open ports: 80, 443; Shodan tags: cloud
+  - Source: Shodan InternetDB, collected 2026-10-18T18:35:13+00:00
+```
 
 ## How it works
 
@@ -138,6 +153,7 @@ monomi/
 ├── enrich.py             # DNS + ASN/provider enrichment
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
+├── evidence.py           # evidence list, citation check, Evidence section
 ├── history.py            # scan history + change detection
 ├── ui.py                 # colored banner + terminal output
 ├── collectors/
@@ -155,7 +171,7 @@ monomi/
 
 - CT logs only show hosts that have had TLS certificates; hosts behind wildcard certificates or without TLS won't appear.
 - A hostname appearing in CT logs doesn't mean it's currently live. `--enrich` shows which ones still have DNS records, but a DNS record doesn't prove a server is up.
-- AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Treat its findings as leads to verify, not confirmed issues.
+- AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
 - crt.sh and Cert Spotter are free services and are sometimes slow or rate-limited.
 
 ## Roadmap
@@ -168,19 +184,23 @@ monomi/
 - [x] DNS + hosting provider enrichment
 - [x] Open ports and known CVEs via Shodan InternetDB, with hand-off to [kaidøku](https://github.com/0x41io/kaidoku)
 - [x] SpiderFoot import (`--import`): run monomi's AI analysis on SpiderFoot exports
+- [x] Evidence-backed findings: numbered evidence, Observed / Inference / Lead labels, citation check, Evidence section in reports
 
 **Next**
 - [ ] Subdomain takeover / dangling DNS detection
 - [ ] Rule-based checks before the AI step
+- [ ] HTML report
+- [ ] Scheduled monitoring with alerts on new hostnames
+- [ ] IP / IP-range input (\
 
 **Later**
 - [ ] Liveness checks for discovered hosts
-- [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] Plugin system for data sources
 - [ ] Per-target scan history (SQLite)
 - [ ] HTML graph export
 - [ ] Installable package (`pip install monomi`)
 - [ ] Web interface
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
