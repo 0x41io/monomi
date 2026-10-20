@@ -118,7 +118,7 @@ def main() -> int:
             info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
                  f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
 
-    
+
     # Certificate Transparency: try both sources, merge whatever succeeds
     for name, module in ([] if sf else [("crt.sh", crtsh), ("Cert Spotter", certspotter)]):
         info(f"Querying certificate transparency logs ({name})...")
@@ -130,10 +130,10 @@ def main() -> int:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
 
-    if not results["sources"]    or not any(r["subdomains"] for r in results["sources"].values()):
+    if not results["sources"] or not any(r["subdomains"] for r in results["sources"].values()):
         if sf:
-            fail(f"No hostnames for {domain} found in the SpiderFoot export.")   
-            return 1 
+            fail(f"No hostnames for {domain} found in the SpiderFoot export.")
+            return 1
         if results["errors"]:
             fail("All certificate sources failed. They're free services - try again in a few minutes.")
         else:
@@ -256,8 +256,6 @@ def main() -> int:
             print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
         for sub in changes["removed"]:
             print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
-        if results["errors"] and changes["removed"]:
-            print(f"    {ui.paint('[!]', ui.YELLOW)} A source failed this run, so GONE hosts may just be missing data.")
     results["evidence"] = evidence.build_evidence(results)
     if args.ai:
         print()

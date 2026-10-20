@@ -7,10 +7,13 @@ certificates that are currently valid, so it usually finds fewer names than
 crt.sh, but it's much more reliable. Still 100% passive.
 """
 
-import requests
 from datetime import datetime, timezone
-API_URL = "https://api.certspotter.com/v1/issuances"
+
+import requests
+
 from collectors import USER_AGENT, is_hostname
+
+API_URL = "https://api.certspotter.com/v1/issuances"
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
 
 

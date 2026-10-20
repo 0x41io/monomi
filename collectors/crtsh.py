@@ -10,10 +10,12 @@ we only query crt.sh, never the target itself.
 
 import time
 from datetime import datetime, timezone
+
 import requests
 
-CRTSH_URL = "https://crt.sh/"
 from collectors import USER_AGENT, is_hostname
+
+CRTSH_URL = "https://crt.sh/"
 
 
 def fetch_raw(domain: str, retries: int = 3, timeout: int = 60) -> list[dict]:

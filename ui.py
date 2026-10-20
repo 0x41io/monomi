@@ -7,6 +7,7 @@ when output isn't a terminal (piping to a file) or when NO_COLOR is set.
 
 import os
 import re
+import shutil
 import sys
 
 from collectors import VERSION
@@ -126,7 +127,6 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
     Fits the terminal width. Hosts with no DNS record are listed after the
     live ones and collapsed to a few examples so they don't flood the screen.
     """
-    import shutil
 
     live = {h: e for h, e in hosts.items() if e["ips"]}
     dead = [h for h, e in hosts.items() if not e["ips"]]
@@ -187,7 +187,6 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
     Plain web servers and shared CDN edge IPs are summarized in one line each
     (their details stay in --json), so the important rows aren't buried.
     """
-    import shutil
 
     web = {80, 443}
     items = exposure["ips"].items()
@@ -231,14 +230,13 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
 # AI report rendering
 # ---------------------------------------------------------------------------
 
-import re as _re
 
 # Matches priority headers however the model writes them:
 #   "### High", "### High priority", "**High**", "**Medium:**", "High priority:"
-_PRIORITY = _re.compile(
+_PRIORITY = re.compile(
     r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?[ \t]*(High|Medium|Low)(?![A-Za-z-])(?:[ \t]+priority)?"
     r"[ \t]*:?[ \t]*(?:\*\*|__)?[ \t]*:?[ \t]*$",
-    _re.IGNORECASE | _re.MULTILINE,
+    re.IGNORECASE | re.MULTILINE,
 )
 _PRIORITY_STYLE = {"high": "bold #ffffff on #c8102e", "medium": "bold #0c0c0c on #ffc83c", "low": "bold #ffffff on #5a5a64"}
 
@@ -282,7 +280,7 @@ def render_report(markdown: str) -> None:
     console = Console(theme=theme, highlight=False)
 
     # rich centers top-level "# Title" headings; demote them so everything lines up left
-    markdown = _re.sub(r"^# ", "## ", markdown, flags=_re.MULTILINE)
+    markdown = re.sub(r"^# ", "## ", markdown, flags=re.MULTILINE)
 
     # Split around High / Medium / Low headings so they can be drawn as badges
     pos = 0
