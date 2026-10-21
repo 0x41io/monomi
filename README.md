@@ -82,6 +82,7 @@ python monomi.py example.com --ai
 
 # Analyze a SpiderFoot export (CSV: scan > Export > CSV) instead of querying CT logs
 python monomi.py --import spiderfoot.csv --ports --ai
+
 # Save raw results as JSON
 python monomi.py example.com --json results.json
 
@@ -156,6 +157,7 @@ monomi/
 ├── evidence.py           # evidence list, citation check, Evidence section
 ├── history.py            # scan history + change detection
 ├── ui.py                 # colored banner + terminal output
+├── common.py             # shared helpers: version, hostname checks, timestamps
 ├── collectors/
 │   ├── crtsh.py          # crt.sh collector (with retries)
 │   └── certspotter.py    # Cert Spotter collector (with pagination)
@@ -164,7 +166,10 @@ monomi/
 ├── scans/                # saved scans per domain (git-ignored)
 ├── reports/              # generated reports (git-ignored)
 ├── cache/                # cached AWS IP range list (git-ignored)
-└── requirements.txt
+├── tests/                # pytest suite (run: pytest)
+├── pytest.ini            # pytest settings
+├── requirements.txt
+└── requirements-dev.txt  # requirements + pytest, for development
 ```
 
 ## Limitations
@@ -174,9 +179,18 @@ monomi/
 - AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
 - crt.sh and Cert Spotter are free services and are sometimes slow or rate-limited.
 
+## Development
+
+Install the dev requirements and run the test suite:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests cover hostname filtering, domain cleaning, evidence citation checks and change detection. They run offline in under a second.
+
 ## Roadmap
-
-
 
 **Done**
 - [x] Passive subdomain discovery (crt.sh + Cert Spotter)
@@ -185,13 +199,15 @@ monomi/
 - [x] Open ports and known CVEs via Shodan InternetDB, with hand-off to [kaidøku](https://github.com/0x41io/kaidoku)
 - [x] SpiderFoot import (`--import`): run monomi's AI analysis on SpiderFoot exports
 - [x] Evidence-backed findings: numbered evidence, Observed / Inference / Lead labels, citation check, Evidence section in reports
+- [x] v1.0: code cleanup, shared helpers, test suite
 
 **Next**
+- [ ] Email spoofing check (SPF / DKIM / DMARC)
 - [ ] Subdomain takeover / dangling DNS detection
 - [ ] Rule-based checks before the AI step
 - [ ] HTML report
 - [ ] Scheduled monitoring with alerts on new hostnames
-- [ ] IP / IP-range input (\
+- [ ] IP / IP-range input (`--ip`)
 
 **Later**
 - [ ] Liveness checks for discovered hosts
