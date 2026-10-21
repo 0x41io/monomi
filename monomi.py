@@ -51,6 +51,57 @@ def clean_domain(raw: str) -> str:
 
 
     return d
+
+
+def show_import_findings(sf: dict) -> None:
+    """Print what SpiderFoot flagged (unverified leads)."""
+    print()
+    warn("SpiderFoot flagged these (unverified; the AI report weighs them):")
+    for fnd in sf["findings"]:
+        # SpiderFoot data comes from third parties: clean it before it hits the terminal
+        first_line = ui.safe((fnd["data"].splitlines() or ["(no data)"])[0])
+        print(f"    {ui.paint(ui.safe(fnd['type']), ui.YELLOW)}  {first_line}  ({ui.safe(fnd['module'])})")
+
+
+def show_changes(results: dict) -> None:
+    """Compare with the last scan of this domain, then save this one as the new baseline.
+
+    Only saves when every source worked: a partial list would make the next
+    full scan report lots of fake [NEW] hosts.
+    """
+    domain, all_subs = results["target"], results["subdomains"]
+    previous = history.load_last(domain)
+
+    if results["errors"]:
+        print()
+        warn("A source failed, so this scan wasn't saved to history (it would be an incomplete baseline).")
+        if previous is not None:
+            changes = history.compare(previous, all_subs)
+            results["changes"] = changes
+            for sub in changes["added"]:
+                print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
+            if changes["removed"]:
+                info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the failed source.")
+        return
+
+    saved_path = history.save(domain, all_subs)
+    if previous is None:
+        print()
+        info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
+        return
+
+    changes = history.compare(previous, all_subs)
+    results["changes"] = changes
+    print()
+    info(f"Changes since last scan ({changes['previous_scan']}):")
+    if not changes["added"] and not changes["removed"]:
+        print("    No changes.")
+    for sub in changes["added"]:
+        print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
+    for sub in changes["removed"]:
+        print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
+
+
 def write_ai_report(results: dict) -> None:
     """--ai: have Claude write the report, save it to reports/, and show it in the terminal."""
     print()
@@ -263,45 +314,14 @@ def main() -> int:
             print(f"    {sub}")
 
     if sf and sf["findings"]:
-        print()
-        warn("SpiderFoot flagged these (unverified; the AI report weighs them):")
-        for fnd in sf["findings"]:
-            # SpiderFoot data comes from third parties: clean it before it hits the terminal
-            first_line = ui.safe((fnd["data"].splitlines() or ["(no data)"])[0])
-            print(f"    {ui.paint(ui.safe(fnd['type']), ui.YELLOW)}  {first_line}  ({ui.safe(fnd['module'])})")
+        show_import_findings(sf)
 
-    # Change detection: compare with the last scan of this domain, then save this one
-    # Only save a baseline when every source worked; a partial list would make
-    # the next full scan report lots of fake [NEW] hosts.
-    previous = None if sf else history.load_last(domain)
-    complete = not results["errors"]
-    saved_path = history.save(domain, all_subs) if (complete and not sf) else None
-    if sf:
-        pass
-    elif not complete:
-        print()
-        warn("A source failed, so this scan wasn't saved to history (it would be an incomplete baseline).")
-        if previous is not None:
-            changes = history.compare(previous, all_subs)
-            results["changes"] = changes
-            for sub in changes["added"]:
-                print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
-            if changes["removed"]:
-                info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the failed source.")
-    elif previous is None:
-        print()
-        info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
-    else:
-        changes = history.compare(previous, all_subs)
-        results["changes"] = changes
-        print()
-        info(f"Changes since last scan ({changes['previous_scan']}):")
-        if not changes["added"] and not changes["removed"]:
-            print("    No changes.")
-        for sub in changes["added"]:
-            print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
-        for sub in changes["removed"]:
-            print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
+
+    # Change detection (live scans only: an import has no history to compare)
+    if not sf:
+        show_changes(results)
+
+
     results["evidence"] = evidence.build_evidence(results)
     if args.ai:
         write_ai_report(results)
