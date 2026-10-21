@@ -9,11 +9,11 @@ we only query crt.sh, never the target itself.
 """
 
 import time
-from datetime import datetime, timezone
 
 import requests
 
-from common import USER_AGENT, is_hostname
+from common import USER_AGENT, now_utc, subdomains_in
+from ui import warn
 
 CRTSH_URL = "https://crt.sh/"
 
@@ -40,7 +40,7 @@ def fetch_raw(domain: str, retries: int = 3, timeout: int = 60) -> list[dict]:
 
         if attempt < retries:
             wait = attempt * 5
-            print(f"  [!] crt.sh attempt {attempt} failed ({last_error}), retrying in {wait}s...")
+            warn(f"crt.sh attempt {attempt} failed ({last_error}), retrying in {wait}s...")
             time.sleep(wait)
 
     raise RuntimeError(f"crt.sh query failed after {retries} attempts: {last_error}")
@@ -48,27 +48,14 @@ def fetch_raw(domain: str, retries: int = 3, timeout: int = 60) -> list[dict]:
 
 def parse_subdomains(records: list[dict], domain: str) -> list[str]:
     """Turn raw crt.sh records into a clean, sorted, de-duplicated list."""
-    domain = domain.lower()
-    found = set()
-
-    for rec in records:
-        # One certificate can cover many names, separated by newlines
-        for name in rec.get("name_value", "").splitlines():
-            name = name.strip().lower()
-            if name.startswith("*."):
-                name = name[2:]  # wildcard cert -> the base it covers
-            if not is_hostname(name):
-                continue  # skip blanks, email addresses and anything that isn't a hostname
-            if name == domain or name.endswith("." + domain):
-                found.add(name)
-
-    return sorted(found)
-
+    # One certificate can cover many names, separated by newlines
+    names = [name for rec in records for name in rec.get("name_value", "").splitlines()]
+    return subdomains_in(names, domain)
 
 def collect(domain: str) -> dict:
     """Run the collector and return a structured result for the report/AI layer."""
     records = fetch_raw(domain)
-    collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    collected_at = now_utc()
     subdomains = parse_subdomains(records, domain)
     return {
         "source": "crt.sh",

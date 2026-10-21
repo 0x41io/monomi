@@ -7,11 +7,9 @@ certificates that are currently valid, so it usually finds fewer names than
 crt.sh, but it's much more reliable. Still 100% passive.
 """
 
-from datetime import datetime, timezone
-
 import requests
 
-from common import USER_AGENT, is_hostname
+from common import USER_AGENT, now_utc, subdomains_in
 
 API_URL = "https://api.certspotter.com/v1/issuances"
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
@@ -51,23 +49,13 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
 
 
 def parse_subdomains(records: list[dict], domain: str) -> list[str]:
-    domain = domain.lower()
-    found = set()
-    for rec in records:
-        for name in rec.get("dns_names", []):
-            name = name.strip().lower()
-            if name.startswith("*."):
-                name = name[2:]
-            if not is_hostname(name):
-                continue
-            if name == domain or name.endswith("." + domain):
-                found.add(name)
-    return sorted(found)
-
+    """Turn raw Cert Spotter records into a clean, sorted, de-duplicated list."""
+    names = [name for rec in records for name in rec.get("dns_names", [])]
+    return subdomains_in(names, domain)
 
 def collect(domain: str) -> dict:
     records = fetch_raw(domain)
-    collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    collected_at = now_utc()
     subdomains = parse_subdomains(records, domain)
     return {
         "source": "certspotter",

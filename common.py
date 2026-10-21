@@ -22,3 +22,20 @@ def is_hostname(name: str) -> bool:
 def now_utc() -> str:
     """Current time in UTC as a short ISO string, e.g. 2026-10-21T00:05:00+00:00."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+def subdomains_in(names, domain: str) -> list[str]:
+    """Clean a pile of certificate names down to the domain's own hostnames.
+
+    Lowercases, turns wildcards (*.example.com) into the name they cover,
+    drops anything that isn't a hostname, and keeps only the domain itself
+    and its subdomains. Returns a sorted list with no repeats.
+    """
+    domain = domain.lower()
+    found = set()
+    for name in names:
+        name = name.strip().lower()
+        if name.startswith("*."):
+            name = name[2:]  # wildcard cert -> the base name it covers
+        if is_hostname(name) and (name == domain or name.endswith("." + domain)):
+            found.add(name)
+    return sorted(found)
