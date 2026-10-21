@@ -53,6 +53,80 @@ def clean_domain(raw: str) -> str:
     return d
 
 
+def run_enrich(results: dict, ports_on: bool) -> dict:
+    """--enrich: resolve every host, look up who hosts it, and print the table."""
+    all_subs = results["subdomains"]
+    info("Resolving hosts and looking up hosting providers...")
+    data = enrich.enrich(all_subs)
+    data["collected_at"] = now_utc()
+    results["enrichment"] = data
+    if data["asn_error"]:
+        warn(f"{data['asn_error']} (showing IPs without provider info)")
+        if ports_on:
+            # Without provider names we can't tell CDN edge IPs apart, so their
+            # ports and CVEs would be counted as the target's own.
+            warn("CDN edge filtering is OFF for this run: ports/CVEs below may belong to "
+                 "Cloudflare/Fastly/etc., not the target. Re-run later for accurate numbers.")
+    if data.get("cdn_error"):
+        warn(f"CloudFront detection skipped: {data['cdn_error']}. CloudFront edge IPs will show as plain AWS"
+             + (" and their ports/CVEs may be counted as the target's." if ports_on else "."))
+    print()
+    ui.host_table(data["hosts"])
+    print()
+    good(
+        f"{data['resolved']}/{len(all_subs)} hosts resolve to "
+        f"{data['unique_ips']} unique IPs. Hosting breakdown:\n"
+    )
+    ui.provider_bars(data["providers"], len(all_subs))
+    if data["private_ip_hosts"]:
+        print()
+        warn(
+            f"{len(data['private_ip_hosts'])} host(s) point to private/internal IPs "
+            "in public DNS (leaks internal network layout):"
+        )
+        for h in data["private_ip_hosts"]:
+            print(f"    {ui.paint(h, ui.YELLOW)}  {', '.join(data['hosts'][h]['private_ips'])}")
+    return data
+
+
+def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
+    """--ports: ask Shodan InternetDB about every IP from --enrich, print what's exposed."""
+    print()
+    info("Checking Shodan InternetDB for open ports and known CVEs (passive)...")
+    exposure = internetdb.lookup(enrichment)
+    exposure["collected_at"] = now_utc()
+    results["exposure"] = exposure
+    if exposure["errors"]:
+        warn(f"{exposure['errors']} Shodan lookup(s) failed (results may be incomplete).")
+    if exposure["skipped"]:
+        warn(f"Only the first {internetdb.MAX_IPS} IPs were checked ({exposure['skipped']} skipped).")
+    print()
+    if not exposure["ips"]:
+        good(f"Shodan has no open ports on record for the {exposure['checked']} IPs checked.")
+    else:
+        ui.exposure_table(exposure)
+        print()
+        own = [d for d in exposure["ips"].values() if not d["shared_edge"]]
+        n_cves = len(exposure["unique_cves"])
+        good(
+            f"{len(own)} IP(s) with open ports, "
+            f"{len(exposure['risky'])} with risky services, "
+            f"{ui.paint(str(n_cves), ui.BOLD, ui.RED if n_cves else ui.GREEN)} unique CVE(s)"
+            + (" (matched from software versions; verify before acting)." if n_cves else ".")
+        )
+        if exposure["risky"]:
+            warn("Services that usually shouldn't face the internet:")
+            for ip, risky in exposure["risky"]:
+                print(f"    {ui.paint(ip, ui.YELLOW)}  {', '.join(risky)}")
+    if cves_file:
+        if exposure["unique_cves"]:
+            with open(cves_file, "w") as f:
+                f.write("\n".join(exposure["unique_cves"]) + "\n")
+            good(f"Saved {len(exposure['unique_cves'])} CVEs to {cves_file}. Triage them with: python kaidoku.py --file {cves_file}")
+        else:
+            info(f"No CVEs found, so {cves_file} wasn't written.")
+
+
 def show_import_findings(sf: dict) -> None:
     """Print what SpiderFoot flagged (unverified leads)."""
     print()
@@ -243,72 +317,9 @@ def main() -> int:
     good(f"{ui.paint(str(len(all_subs)), ui.BOLD, ui.RED)} unique hostnames total:\n")
 
     if args.enrich:
-        info("Resolving hosts and looking up hosting providers...")
-        data = enrich.enrich(all_subs)
-        data["collected_at"] = now_utc()
-        results["enrichment"] = data
-        if data["asn_error"]:
-            warn(f"{data['asn_error']} (showing IPs without provider info)")
-            if args.ports:
-                # Without provider names we can't tell CDN edge IPs apart, so their
-                # ports and CVEs would be counted as the target's own.
-                warn("CDN edge filtering is OFF for this run: ports/CVEs below may belong to "
-                     "Cloudflare/Fastly/etc., not the target. Re-run later for accurate numbers.")
-        if data.get("cdn_error"):
-            warn(f"CloudFront detection skipped: {data['cdn_error']}. CloudFront edge IPs will show as plain AWS"
-                 + (" and their ports/CVEs may be counted as the target's." if args.ports else "."))
-        print()
-        ui.host_table(data["hosts"])
-        print()
-        good(
-            f"{data['resolved']}/{len(all_subs)} hosts resolve to "
-            f"{data['unique_ips']} unique IPs. Hosting breakdown:\n"
-        )
-        ui.provider_bars(data["providers"], len(all_subs))
-        if data["private_ip_hosts"]:
-            print()
-            warn(
-                f"{len(data['private_ip_hosts'])} host(s) point to private/internal IPs "
-                "in public DNS (leaks internal network layout):"
-            )
-            for h in data["private_ip_hosts"]:
-                print(f"    {ui.paint(h, ui.YELLOW)}  {', '.join(data['hosts'][h]['private_ips'])}")
-
+        data = run_enrich(results, args.ports)
         if args.ports:
-            print()
-            info("Checking Shodan InternetDB for open ports and known CVEs (passive)...")
-            exposure = internetdb.lookup(data)
-            exposure["collected_at"] = now_utc()
-            results["exposure"] = exposure
-            if exposure["errors"]:
-                warn(f"{exposure['errors']} Shodan lookup(s) failed (results may be incomplete).")
-            if exposure["skipped"]:
-                warn(f"Only the first {internetdb.MAX_IPS} IPs were checked ({exposure['skipped']} skipped).")
-            print()
-            if not exposure["ips"]:
-                good(f"Shodan has no open ports on record for the {exposure['checked']} IPs checked.")
-            else:
-                ui.exposure_table(exposure)
-                print()
-                own = [d for d in exposure["ips"].values() if not d["shared_edge"]]
-                n_cves = len(exposure["unique_cves"])
-                good(
-                    f"{len(own)} IP(s) with open ports, "
-                    f"{len(exposure['risky'])} with risky services, "
-                    f"{ui.paint(str(n_cves), ui.BOLD, ui.RED if n_cves else ui.GREEN)} unique CVE(s)"
-                    + (" (matched from software versions; verify before acting)." if n_cves else ".")
-                )
-                if exposure["risky"]:
-                    warn("Services that usually shouldn't face the internet:")
-                    for ip, risky in exposure["risky"]:
-                        print(f"    {ui.paint(ip, ui.YELLOW)}  {', '.join(risky)}")
-            if args.cves:
-                if exposure["unique_cves"]:
-                    with open(args.cves, "w") as f:
-                        f.write("\n".join(exposure["unique_cves"]) + "\n")
-                    good(f"Saved {len(exposure['unique_cves'])} CVEs to {args.cves}. Triage them with: python kaidoku.py --file {args.cves}")
-                else:
-                    info(f"No CVEs found, so {args.cves} wasn't written.")
+            run_ports(results, data, args.cves)
     else:
         for sub in all_subs:
             print(f"    {sub}")
