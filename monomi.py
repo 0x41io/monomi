@@ -13,9 +13,10 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 from collectors import certspotter, crtsh
+from common import now_utc
 from importers import spiderfoot
 import enrich
 import evidence
@@ -148,7 +149,7 @@ def main() -> int:
     if args.enrich:
         info("Resolving hosts and looking up hosting providers...")
         data = enrich.enrich(all_subs)
-        data["collected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        data["collected_at"] = now_utc()
         results["enrichment"] = data
         if data["asn_error"]:
             warn(f"{data['asn_error']} (showing IPs without provider info)")
@@ -181,7 +182,7 @@ def main() -> int:
             print()
             info("Checking Shodan InternetDB for open ports and known CVEs (passive)...")
             exposure = internetdb.lookup(data)
-            exposure["collected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            exposure["collected_at"] = now_utc()
             results["exposure"] = exposure
             if exposure["errors"]:
                 warn(f"{exposure['errors']} Shodan lookup(s) failed (results may be incomplete).")

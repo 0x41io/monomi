@@ -7,7 +7,7 @@ Built by code, not by the AI, so the evidence itself can't be made up.
 """
 import re
 
-from datetime import datetime, timezone
+from common import now_utc
 
 def build_evidence(results: dict) -> list[dict]:
     """Turn raw recon results into a numbered list of evidence items."""
@@ -80,7 +80,7 @@ def build_evidence(results: dict) -> list[dict]:
         sf_source = [{
             "name": f"SpiderFoot export ({results['sources']['spiderfoot']['file']})",
             "collected_at": None,  # SpiderFoot collected it at its own scan time, which we don't know
-            "imported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "imported_at": now_utc(),
         }]
         for fnd in sf["findings"]:
             first_line = (fnd["data"].splitlines() or ["(no data)"])[0][:200]
