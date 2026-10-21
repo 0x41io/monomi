@@ -48,7 +48,52 @@ def clean_domain(raw: str) -> str:
     d = re.sub(r"^www\.", "", d)  # www.example.com -> example.com, so we search the whole domain
     if not DOMAIN_RE.match(d):
         raise ValueError(f"'{raw}' doesn't look like a valid domain")
+
+
     return d
+def write_ai_report(results: dict) -> None:
+    """--ai: have Claude write the report, save it to reports/, and show it in the terminal."""
+    print()
+    info("Asking Claude to analyze the results...")
+    try:
+        import analysis  # only loaded with --ai, so plain scans don't need the anthropic package
+        summary, model = analysis.summarize(results)
+    except Exception as e:  # missing key, network, API errors
+        fail(f"AI summary failed: {e}")
+        return
+
+    domain = results["target"]
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    path = os.path.join(REPORTS_DIR, f"{domain}_{stamp}.md")
+    header = (
+        f"# mønømi report: {domain}\n\n"
+        f"*Generated {datetime.now():%Y-%m-%d %H:%M} · "
+        f"sources: {', '.join(results['sources'])} · "
+        f"{len(results['subdomains'])} hostnames"
+        f"{' · enriched' if 'enrichment' in results else ''}"
+        f"{' · Shodan InternetDB' if 'exposure' in results else ''} · model: {model}*\n\n"
+    )
+    with open(path, "w") as f:
+        f.write(header + summary + "\n\n" + evidence.evidence_appendix(summary, results["evidence"]))
+    print()
+    ui.render_report(summary)
+    print()
+    good(f"Report saved to {short_path(path)}")
+    unknown = evidence.check_citations(summary, results["evidence"])
+    if unknown:
+        warn(f"The AI cited evidence that doesn't exist: {', '.join(unknown)}. "
+             "Treat those findings with caution.")
+    else:
+        good("Every evidence ID the AI cited exists.")
+
+
+def save_json(results: dict, path: str) -> None:
+    """--json: save every result to a file."""
+    with open(path, "w") as f:
+        json.dump(results, f, indent=2)
+    print()
+    good(f"Saved results to {path}")
 
 
 def main() -> int:
@@ -259,43 +304,10 @@ def main() -> int:
             print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
     results["evidence"] = evidence.build_evidence(results)
     if args.ai:
-        print()
-        info("Asking Claude to analyze the results...")
-        try:
-            import analysis
-            summary, model = analysis.summarize(results)
-        except Exception as e:  # missing key, network, API errors
-            fail(f"AI summary failed: {e}")
-        else:
-            os.makedirs(REPORTS_DIR, exist_ok=True)
-            stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-            path = os.path.join(REPORTS_DIR, f"{domain}_{stamp}.md")
-            header = (
-                f"# mønømi report: {domain}\n\n"
-                f"*Generated {datetime.now():%Y-%m-%d %H:%M} · "
-                f"sources: {', '.join(results['sources'])} · "
-                f"{len(all_subs)} hostnames"
-                f"{' · enriched' if 'enrichment' in results else ''}"
-                f"{' · Shodan InternetDB' if 'exposure' in results else ''} · model: {model}*\n\n"
-            )
-            with open(path, "w") as f:
-                f.write(header + summary + "\n\n" + evidence.evidence_appendix(summary, results["evidence"]))
-            print()
-            ui.render_report(summary)
-            print()
-            good(f"Report saved to {short_path(path)}")
-            unknown = evidence.check_citations(summary, results["evidence"])
-            if unknown:
-                warn(f"The AI cited evidence that doesn't exist: {', '.join(unknown)}. "
-                     "Treat those findings with caution.")
-            else:
-                good("Every evidence ID the AI cited exists.")
+        write_ai_report(results)
 
     if args.json:
-        with open(args.json, "w") as f:
-            json.dump(results, f, indent=2)
-        print()
-        good(f"Saved results to {args.json}")
+        save_json(results, args.json)
 
     return 0
 
