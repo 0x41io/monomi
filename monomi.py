@@ -53,6 +53,77 @@ def clean_domain(raw: str) -> str:
     return d
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """All of monomi's command-line options."""
+    parser = argparse.ArgumentParser(description="0x41 / monomi - passive domain recon")
+    parser.add_argument("domain", nargs="?", help="target domain, e.g. example.com")
+    parser.add_argument("--import", dest="import_file", metavar="FILE", help="analyze a SpiderFoot CSV export")
+    parser.add_argument("--json", metavar="FILE", help="save raw results to a JSON file")
+    parser.add_argument("--ai", action="store_true", help="have Claude write a summary report (needs ANTHROPIC_API_KEY)")
+    parser.add_argument("--enrich", action="store_true", help="resolve hosts to IPs and look up hosting provider/ASN (sends DNS queries)")
+    parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
+    parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
+    parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
+    return parser
+
+
+def load_import(path: str) -> dict | None:
+    """Read a SpiderFoot CSV export. On failure, say why and return None."""
+    try:
+        return spiderfoot.load_spiderfoot_csv(path)
+    except (OSError, ValueError, KeyError) as e:
+        fail(f"Couldn't read SpiderFoot export {path}: {e}")
+        return None
+
+
+def import_matches(sf: dict, domain: str, path: str) -> bool:
+    """True if the export is a scan of the domain asked for. Otherwise, explain and return False."""
+    # Compare cleaned forms, so "www.example.com" in the export matches "example.com"
+    try:
+        sf_domain = clean_domain(sf["target"])
+    except ValueError:
+        sf_domain = sf["target"]
+    if sf_domain == domain:
+        return True
+    # The export's hosts were filtered for its own target, so mixing the two
+    # would produce a report about one domain filled with another's data.
+    fail(f"This export is a scan of {sf['target']}, but you asked for {domain}.")
+    info(f"Run it without a domain to analyze {sf['target']}: python monomi.py --import {path}")
+    return False
+
+
+def add_import(results: dict, sf: dict, path: str) -> None:
+    """Put the SpiderFoot export's hosts, findings and context into results."""
+    hosts = sorted(sf["hosts"])
+    results["sources"]["spiderfoot"] = {"source": "spiderfoot", "file": path, "subdomains": hosts}
+    results["spiderfoot"] = {
+        # sets -> sorted lists, so the data can be saved as JSON and sent to the AI
+        "hosts": {h: {k: sorted(v) for k, v in d.items()} for h, d in sf["hosts"].items()},
+        "findings": sf["findings"],
+        "third_party": sf["third_party"],
+        "context": sf["context"],
+        "skipped": dict(sf["skipped"].most_common()),
+    }
+    good(f"SpiderFoot export: {len(hosts)} hostnames, {len(sf['findings'])} possible findings, "
+         f"{len(sf['third_party'])} third-party services")
+    if sf["skipped"]:
+        info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
+             f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
+
+
+def collect_ct(results: dict, domain: str) -> None:
+    """Query both Certificate Transparency sources and merge whatever succeeds."""
+    for name, module in [("crt.sh", crtsh), ("Cert Spotter", certspotter)]:
+        info(f"Querying certificate transparency logs ({name})...")
+        try:
+            r = module.collect(domain)
+            results["sources"][r["source"]] = r
+            good(f"{name}: {r['certificates_seen']} certificates -> {r['subdomain_count']} hostnames")
+        except RuntimeError as e:
+            results["errors"][name] = str(e)
+            warn(f"{name} unavailable: {e}")
+
+
 def run_enrich(results: dict, ports_on: bool) -> dict:
     """--enrich: resolve every host, look up who hosts it, and print the table."""
     all_subs = results["subdomains"]
@@ -222,15 +293,7 @@ def save_json(results: dict, path: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="0x41 / monomi - passive domain recon")
-    parser.add_argument("domain", nargs="?", help="target domain, e.g. example.com")
-    parser.add_argument("--import", dest="import_file", metavar="FILE", help="analyze a SpiderFoot CSV export")
-    parser.add_argument("--json", metavar="FILE", help="save raw results to a JSON file")
-    parser.add_argument("--ai", action="store_true", help="have Claude write a summary report (needs ANTHROPIC_API_KEY)")
-    parser.add_argument("--enrich", action="store_true", help="resolve hosts to IPs and look up hosting provider/ASN (sends DNS queries)")
-    parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
-    parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
-    parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
+    parser = build_parser()
     args = parser.parse_args()
     if args.no_color:
         ui.disable()
@@ -244,10 +307,8 @@ def main() -> int:
     # --import: load the SpiderFoot export first, since it tells us the target domain
     sf = None
     if args.import_file:
-        try:
-            sf = spiderfoot.load_spiderfoot_csv(args.import_file)
-        except (OSError, ValueError, KeyError) as e:
-            fail(f"Couldn't read SpiderFoot export {args.import_file}: {e}")
+        sf = load_import(args.import_file)
+        if sf is None:
             return 1
         if not args.domain:
             args.domain = sf["target"]
@@ -258,54 +319,21 @@ def main() -> int:
     except ValueError as e:
         fail(str(e))
         return 1
-    if sf:
-        # Compare cleaned forms, so "www.example.com" in the export matches "example.com"
-        try:
-            sf_domain = clean_domain(sf["target"])
-        except ValueError:
-            sf_domain = sf["target"]
-        if sf_domain != domain:
-            # The export's hosts were filtered for its own target, so mixing the two
-            # would produce a report about one domain filled with another's data.
-            fail(f"This export is a scan of {sf['target']}, but you asked for {domain}.")
-            info(f"Run it without a domain to analyze {sf['target']}: python monomi.py --import {args.import_file}")
-            return 1
+    if sf and not import_matches(sf, domain, args.import_file):
+        return 1
+
+    # 1. Collect hostnames
     results = {"target": domain, "sources": {}, "errors": {}}
     info(f"Target: {ui.paint(domain, ui.BOLD, ui.WHITE)}")
     if sf:
-        hosts = sorted(sf["hosts"])
-        results["sources"]["spiderfoot"] = {"source": "spiderfoot", "file": args.import_file, "subdomains": hosts}
-        results["spiderfoot"] = {
-            # sets -> sorted lists, so the data can be saved as JSON and sent to the AI
-            "hosts": {h: {k: sorted(v) for k, v in d.items()} for h, d in sf["hosts"].items()},
-            "findings": sf["findings"],
-            "third_party": sf["third_party"],
-            "context": sf["context"],
-            "skipped": dict(sf["skipped"].most_common()),
-        }
-        good(f"SpiderFoot export: {len(hosts)} hostnames, {len(sf['findings'])} possible findings, "
-             f"{len(sf['third_party'])} third-party services")
-        if sf["skipped"]:
-            info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
-                 f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
+        add_import(results, sf, args.import_file)
+    else:
+        collect_ct(results, domain)
 
-
-    # Certificate Transparency: try both sources, merge whatever succeeds
-    for name, module in ([] if sf else [("crt.sh", crtsh), ("Cert Spotter", certspotter)]):
-        info(f"Querying certificate transparency logs ({name})...")
-        try:
-            r = module.collect(domain)
-            results["sources"][r["source"]] = r
-            good(f"{name}: {r['certificates_seen']} certificates -> {r['subdomain_count']} hostnames")
-        except RuntimeError as e:
-            results["errors"][name] = str(e)
-            warn(f"{name} unavailable: {e}")
-
-    if not results["sources"] or not any(r["subdomains"] for r in results["sources"].values()):
+    if not any(r["subdomains"] for r in results["sources"].values()):
         if sf:
             fail(f"No hostnames for {domain} found in the SpiderFoot export.")
-            return 1
-        if results["errors"]:
+        elif results["errors"]:
             fail("All certificate sources failed. They're free services - try again in a few minutes.")
         else:
             fail(f"No certificates found for {domain}. Check the spelling, or the domain may not use TLS.")
@@ -316,6 +344,7 @@ def main() -> int:
     print()
     good(f"{ui.paint(str(len(all_subs)), ui.BOLD, ui.RED)} unique hostnames total:\n")
 
+    # 2. Optional enrichment
     if args.enrich:
         data = run_enrich(results, args.ports)
         if args.ports:
@@ -327,19 +356,16 @@ def main() -> int:
     if sf and sf["findings"]:
         show_import_findings(sf)
 
-
-    # Change detection (live scans only: an import has no history to compare)
+    # 3. Change detection (live scans only: an import has no history to compare)
     if not sf:
         show_changes(results)
 
-
+    # 4. Evidence, AI report, JSON
     results["evidence"] = evidence.build_evidence(results)
     if args.ai:
         write_ai_report(results)
-
     if args.json:
         save_json(results, args.json)
-
     return 0
 
 
