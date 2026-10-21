@@ -17,7 +17,7 @@ import time
 
 import requests
 
-from collectors import USER_AGENT
+from common import USER_AGENT
 
 URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")

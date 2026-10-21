@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from collectors import USER_AGENT, is_hostname
+from common import USER_AGENT, is_hostname
 
 API_URL = "https://api.certspotter.com/v1/issuances"
 MAX_PAGES = 5  # be gentle with the free tier (no API key)

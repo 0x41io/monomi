@@ -3,7 +3,7 @@
 import csv
 from collections import Counter
 
-from collectors import is_hostname
+from common import is_hostname
 
 # Event types that describe a single host (Source column = the hostname or IP)
 HOST_DETAIL_TYPES = {

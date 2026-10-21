@@ -10,7 +10,7 @@ import re
 import shutil
 import sys
 
-from collectors import VERSION
+from common import VERSION
 
 ENABLED = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 

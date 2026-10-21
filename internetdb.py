@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-from collectors import USER_AGENT
+from common import USER_AGENT
 
 API_URL = "https://internetdb.shodan.io/{ip}"
 MAX_IPS = 200  # be polite to a free service
