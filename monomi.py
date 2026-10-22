@@ -20,6 +20,7 @@ from common import now_utc
 from importers import spiderfoot
 import enrich
 import evidence
+import fingerprint
 import history
 import internetdb
 import ui
@@ -63,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enrich", action="store_true", help="resolve hosts to IPs and look up hosting provider/ASN (sends DNS queries)")
     parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
     parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
+    parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
     return parser
 
@@ -198,6 +200,32 @@ def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
             info(f"No CVEs found, so {cves_file} wasn't written.")
 
 
+def run_fingerprint(results: dict, enrichment: dict) -> None:
+    """--fingerprint: one homepage request per live host, then show what tech it gives away (ACTIVE)."""
+    print()
+    info("Fingerprinting web servers (active: one homepage request per live host)...")
+    fp = fingerprint.fingerprint_all(enrichment)
+    fp["collected_at"] = now_utc()
+    results["fingerprint"] = fp
+    if fp["skipped"]:
+        warn(f"Only the first {fingerprint.MAX_HOSTS} hosts were checked ({fp['skipped']} skipped).")
+    print()
+    for host, r in fp["hosts"].items():
+        techs = []
+        for t in r["techs"]:
+            name = ui.safe(t["tech"])  # headers come from the target: clean them first
+            techs.append(ui.paint(name, ui.YELLOW) if t["version"] else name)
+        line = ", ".join(techs) or "no clues"
+        if "location" in r["headers"]:
+            line += f"  -> {ui.safe(r['headers']['location'])}"
+        print(f"    {host}  [{r['status']}]  {line}")
+    print()
+    versions = sum(1 for r in fp["hosts"].values() for t in r["techs"] if t["version"])
+    good(f"{len(fp['hosts'])}/{fp['checked']} hosts answered on HTTPS"
+         + (f", {ui.paint(str(versions), ui.BOLD, ui.YELLOW)} leaked a software version (can be matched to CVEs)." if versions else "."))
+    if fp["errors"]:
+        info(f"{len(fp['errors'])} host(s) didn't answer on HTTPS (timeouts, TLS errors, refused).")
+
 def show_import_findings(sf: dict) -> None:
     """Print what SpiderFoot flagged (unverified leads)."""
     print()
@@ -301,6 +329,8 @@ def main() -> int:
 
     if args.ports and not args.enrich:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
+    if args.fingerprint and not args.enrich:
+        args.enrich = True  # we only fingerprint hosts that resolve, which --enrich tells us
     if args.cves and not args.ports:
         warn("--cves only works together with --ports; ignoring it.")
 
@@ -349,6 +379,8 @@ def main() -> int:
         data = run_enrich(results, args.ports)
         if args.ports:
             run_ports(results, data, args.cves)
+        if args.fingerprint:
+            run_fingerprint(results, data)
     else:
         for sub in all_subs:
             print(f"    {sub}")

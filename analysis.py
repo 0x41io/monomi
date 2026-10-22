@@ -50,6 +50,14 @@ Cloudflare); they belong to the CDN, not the target. Say so once.
 firewalling services that don't need to be public.
 - In Limitations, note that Shodan's data can be days or weeks old.
 
+If the evidence includes "HTTP fingerprint" items (one homepage request per host):
+- In section 2, summarize the web servers and frameworks seen, citing them. \
+A header naming a CDN (Cloudflare, Vercel, Fastly, CloudFront) describes the \
+CDN in front of the site, not the origin server; say so once.
+- Any exposed exact version is worth reviewing: name the host and version, \
+and say it can be matched to CVEs but the version banner must be verified.
+- In section 4, suggest hiding version details in Server/X-Powered-By headers.
+- In Limitations, note this was the only active check and saw one page per host.
 If the data includes "spiderfoot" (imported from a SpiderFoot scan export):
 - The hostnames came from that SpiderFoot scan, not certificate logs; adjust \
 section 1 and Limitations to say so (and that an aborted or passive scan may \

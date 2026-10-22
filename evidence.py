@@ -85,6 +85,16 @@ def build_evidence(results: dict) -> list[dict]:
         for fnd in sf["findings"]:
             first_line = (fnd["data"].splitlines() or ["(no data)"])[0][:200]
             add(f"SpiderFoot module {fnd['module']} reported {fnd['type']}: {first_line}", sf_source)
+    # 5. Web technology seen in HTTP headers (from --fingerprint, ACTIVE)
+    fp = results.get("fingerprint")
+    if fp:
+        for host, r in fp["hosts"].items():
+            fp_source = [{"name": "HTTP fingerprint (active, 1 request)", "collected_at": r["collected_at"]}]
+            for t in r["techs"]:
+                fact = f"{host} (HTTP {r['status']}) shows {t['tech']} in its response ({t['evidence']})"
+                if t["version"]:
+                    fact += f"; exact version {t['version']} is exposed"
+                add(fact, fp_source)
     return evidence
 
 

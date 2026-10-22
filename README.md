@@ -13,8 +13,7 @@
 
 Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, and what the owner can do about it.
 
-> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich` step adds standard DNS lookups. Even so, only assess domains you own or have permission to review.
-
+> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich` step adds standard DNS lookups, and `--fingerprint` is the one active check: a single homepage request per host. Only assess domains you own or have permission to review.
 ---
 
 ## Features
@@ -76,6 +75,9 @@ python monomi.py example.com --ports
 
 # Save the CVEs and triage them with kaidoku
 python monomi.py example.com --ports --cves cves.txt
+
+# Fingerprint web servers (ACTIVE: one request per host; turns on --enrich)
+python monomi.py example.com --fingerprint
 
 # With AI analysis + saved Markdown report
 python monomi.py example.com --ai
@@ -153,6 +155,7 @@ monomi/
 ├── analysis.py           # Claude analysis layer
 ├── enrich.py             # DNS + ASN/provider enrichment
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
+├── fingerprint.py        # HTTP header fingerprinting (--fingerprint, active)
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── evidence.py           # evidence list, citation check, Evidence section
 ├── history.py            # scan history + change detection
@@ -177,6 +180,7 @@ monomi/
 - CT logs only show hosts that have had TLS certificates; hosts behind wildcard certificates or without TLS won't appear.
 - A hostname appearing in CT logs doesn't mean it's currently live. `--enrich` shows which ones still have DNS records, but a DNS record doesn't prove a server is up.
 - AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
+- `--fingerprint` only sees the homepage of each host over HTTPS. Behind a CDN (Cloudflare, Vercel, Fastly) it mostly sees the CDN, not the origin server, and many servers hide their versions.
 - crt.sh and Cert Spotter are free services and are sometimes slow or rate-limited.
 
 ## Development
@@ -200,6 +204,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks an
 - [x] SpiderFoot import (`--import`): run monomi's AI analysis on SpiderFoot exports
 - [x] Evidence-backed findings: numbered evidence, Observed / Inference / Lead labels, citation check, Evidence section in reports
 - [x] v1.0: code cleanup, shared helpers, test suite
+- [x] v1.1: opt-in HTTP tech fingerprinting (`--fingerprint`)
 
 **Next**
 - [ ] Email spoofing check (SPF / DKIM / DMARC)
