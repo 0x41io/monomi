@@ -25,8 +25,11 @@ regional clusters, etc.) and note naming patterns.
 publicly listed (internal tools, staging, admin, cost/billing, legacy). Explain \
 why each matters in one line. Prioritize: High / Medium / Low.
 4. **Recommendations**: concrete defensive steps for the owner.
-5. **Limitations**: this data comes only from public certificate logs; it \
-does not confirm which hosts are live, and names alone don't prove a problem.
+5. **Limitations**: list only limits that apply to the data provided. \
+Always: names alone don't prove a problem, and certificate logs miss hosts \
+that never had a certificate. Without "enrichment", say the data doesn't show \
+which hosts still resolve. Without HTTP fingerprint evidence, say it doesn't \
+show which hosts serve web pages or what software they run.
 
 If the data includes "enrichment" (DNS + hosting provider per host), also:
 - In section 2, describe where things are hosted (providers/ASNs, countries) \
