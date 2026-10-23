@@ -25,6 +25,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS
 - **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs (Cloudflare, Fastly, Akamai, Imperva, and AWS CloudFront, detected from [Amazon's published IP ranges](https://ip-ranges.amazonaws.com/ip-ranges.json)) so their ports aren't blamed on the target. Only IPs that matter get a row
 - **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
+- **Web tech + security headers (`--fingerprint`, active):** one homepage request per live host reads headers like Server and X-Powered-By to spot web servers, frameworks and exposed versions, and checks the same response for missing or weak security headers (HSTS, CSP, X-Frame-Options / frame-ancestors, X-Content-Type-Options, Referrer-Policy). Hosts that redirect aren't judged, and the header check makes no extra requests
 - **SpiderFoot import (`--import FILE`):** run Monomi on a [SpiderFoot](https://github.com/smicallef/spiderfoot) CSV export instead of querying certificate logs. Keeps the target's own hosts (with IPs, banners, ASNs; `--enrich` looks up current IPs fresh instead), separates third-party services, drops noisy modules (username/account checks, co-hosted sites, raw data), and passes SpiderFoot's flagged findings to the AI with their source module so weak reputation hits aren't reported as confirmed threats. Works with `--enrich`, `--ports` and `--ai`; doesn't touch scan history
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
@@ -156,6 +157,7 @@ monomi/
 ├── enrich.py             # DNS + ASN/provider enrichment
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
 ├── fingerprint.py        # HTTP header fingerprinting (--fingerprint, active)
+├── headers.py            # security headers check (reads the --fingerprint response)
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── evidence.py           # evidence list, citation check, Evidence section
 ├── history.py            # scan history + change detection
@@ -181,6 +183,7 @@ monomi/
 - A hostname appearing in CT logs doesn't mean it's currently live. `--enrich` shows which ones still have DNS records, but a DNS record doesn't prove a server is up.
 - AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
 - `--fingerprint` only sees the homepage of each host over HTTPS. Behind a CDN (Cloudflare, Vercel, Fastly) it mostly sees the CDN, not the origin server, and many servers hide their versions.
+- The security headers check only judges hosts that served a real page (HTTP 2xx), and only the homepage. Other pages can send different headers, and a missing header is a missing defense, not a confirmed vulnerability.
 - crt.sh and Cert Spotter are free services and are sometimes slow or rate-limited.
 
 ## Development
@@ -205,6 +208,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks an
 - [x] Evidence-backed findings: numbered evidence, Observed / Inference / Lead labels, citation check, Evidence section in reports
 - [x] v1.0: code cleanup, shared helpers, test suite
 - [x] v1.1: opt-in HTTP tech fingerprinting (`--fingerprint`)
+- [x] v1.2: security headers check (from the `--fingerprint` request)
 
 **Next**
 - [ ] Email spoofing check (SPF / DKIM / DMARC)

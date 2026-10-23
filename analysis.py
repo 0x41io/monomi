@@ -31,6 +31,10 @@ that never had a certificate. Without "enrichment", say the data doesn't show \
 which hosts still resolve. Without HTTP fingerprint evidence, say it doesn't \
 show which hosts serve web pages or what software they run.
 
+"sources_used" shows how many hostnames each source returned. Only credit \
+sources that returned at least one; if a source returned zero, you may note \
+it in Limitations but never say it found anything.
+
 If the data includes "enrichment" (DNS + hosting provider per host), also:
 - In section 2, describe where things are hosted (providers/ASNs, countries) \
 and anything notable, like a sensitive-sounding host sitting on a different \
@@ -61,6 +65,17 @@ CDN in front of the site, not the origin server; say so once.
 and say it can be matched to CVEs but the version banner must be verified.
 - In section 4, suggest hiding version details in Server/X-Powered-By headers.
 - In Limitations, note this was the only active check and saw one page per host.
+If the evidence includes "HTTP security headers" items (read from the same request):
+- In section 3, list hosts missing protective headers. Rank missing HSTS on \
+login, admin or app hosts as Medium, missing CSP or clickjacking protection \
+on pages that handle logins or user input as Medium, and everything else as \
+Low. Don't call missing headers a vulnerability on their own; they are \
+missing defenses.
+- If many hosts share the same gaps, say so once instead of repeating each host.
+- In section 4, name the exact headers to add, and note that a CDN like \
+Cloudflare can usually add them in one place.
+- In Limitations, note headers were checked on each host's homepage only, \
+and hosts that redirected were not judged.
 If the data includes "spiderfoot" (imported from a SpiderFoot scan export):
 - The hostnames came from that SpiderFoot scan, not certificate logs; adjust \
 section 1 and Limitations to say so (and that an aborted or passive scan may \
@@ -127,7 +142,7 @@ def summarize(results: dict) -> tuple[str, str]:
     hosts = results.get("subdomains", [])
     payload = {
         "target": results["target"],
-        "sources_used": list(results.get("sources", {}).keys()),
+        "sources_used": {name: len(r["subdomains"]) for name, r in results.get("sources", {}).items()},
         "total_hostnames": len(hosts),
         "hostnames": hosts[:MAX_HOSTS],
         "truncated": len(hosts) > MAX_HOSTS,

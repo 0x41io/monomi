@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 from common import USER_AGENT, now_utc
+from headers import check_headers
 
 # A version number like 2.4.41 or 7.4: digits, then one or more ".digits".
 VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
@@ -139,6 +140,7 @@ def fingerprint_all(enrichment: dict, workers: int = 8) -> dict:
                 errors[host] = err
                 continue
             result["techs"] = detect(result)
+            result["header_issues"] = check_headers(result)
             found[host] = result
     return {"hosts": found, "checked": len(hosts), "errors": errors, "skipped": skipped}
 

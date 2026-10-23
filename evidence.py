@@ -95,6 +95,15 @@ def build_evidence(results: dict) -> list[dict]:
                 if t["version"]:
                     fact += f"; exact version {t['version']} is exposed"
                 add(fact, fp_source)
+
+    # 6. Security headers missing or weak (from the same --fingerprint request)
+    if fp:
+        for host, r in fp["hosts"].items():
+            if not r.get("header_issues"):
+                continue
+            hdr_source = [{"name": "HTTP security headers (same fingerprint request)", "collected_at": r["collected_at"]}]
+            problems = "; ".join(f"{i['header']} {i['problem']} ({i['detail']})" for i in r["header_issues"])
+            add(f"{host} (HTTP {r['status']}) security headers: {problems}", hdr_source)
     return evidence
 
 

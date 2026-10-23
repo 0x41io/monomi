@@ -225,6 +225,20 @@ def run_fingerprint(results: dict, enrichment: dict) -> None:
          + (f", {ui.paint(str(versions), ui.BOLD, ui.YELLOW)} leaked a software version (can be matched to CVEs)." if versions else "."))
     if fp["errors"]:
         info(f"{len(fp['errors'])} host(s) didn't answer on HTTPS (timeouts, TLS errors, refused).")
+    
+    # Security headers: count how many real pages are missing each one
+    counts = {}
+    for r in fp["hosts"].values():
+        for issue in r["header_issues"]:
+            counts[issue["header"]] = counts.get(issue["header"], 0) + 1
+    pages = sum(1 for r in fp["hosts"].values() if 200 <= r["status"] < 300)
+    if counts:
+        print()
+        warn(f"Security headers missing or weak ({pages} hosts served a real page):")
+        for header, n in sorted(counts.items(), key=lambda item: item[1], reverse=True):
+            print(f"    {header}: {n}/{pages}")
+    elif pages:
+        good(f"All {pages} hosts that served a page have the checked security headers.")
 
 def show_import_findings(sf: dict) -> None:
     """Print what SpiderFoot flagged (unverified leads)."""
