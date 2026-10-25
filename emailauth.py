@@ -11,7 +11,6 @@ lookups), it retries with public DNS: Cloudflare, then Google.
 
 from concurrent.futures import ThreadPoolExecutor
 
-
 import dns.exception
 import dns.resolver
 
@@ -277,30 +276,21 @@ def check_email(domain: str) -> dict:
 if __name__ == "__main__":
     import sys
 
-    domain = sys.argv[1]
     try:
-        records = get_txt(domain)
-        dmarc_records = get_txt(f"_dmarc.{domain}")
-        dkim = check_dkim(domain)
+        report = check_email(sys.argv[1])
     except DNSLookupError as e:
         print(f"error: {e}")
         sys.exit(1)
 
-    spf = check_spf(records)
-    dmarc = check_dmarc(dmarc_records)
-
-    def show(label, result):
+    for label, key in (("SPF", "spf"), ("DMARC", "dmarc"), ("DKIM", "dkim")):
+        result = report[key]
         print(f"{label} record: {result['record']}")
         if not result["issues"]:
             print(f"  {label} looks strong")
         for issue in result["issues"]:
             print(f"  {issue['problem']}: {issue['detail']}")
 
-    show("SPF", spf)
-    show("DMARC", dmarc)
-    show("DKIM", dkim)
-
-    verdict = email_verdict(spf, dmarc, dkim)
+    verdict = report["verdict"]
     print(f"\nVERDICT: {verdict['verdict'].upper()}")
     print(f"  {verdict['summary']}")
     for note in verdict["notes"]:
