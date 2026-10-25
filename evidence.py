@@ -104,6 +104,39 @@ def build_evidence(results: dict) -> list[dict]:
             hdr_source = [{"name": "HTTP security headers (same fingerprint request)", "collected_at": r["collected_at"]}]
             problems = "; ".join(f"{i['header']} {i['problem']} ({i['detail']})" for i in r["header_issues"])
             add(f"{host} (HTTP {r['status']}) security headers: {problems}", hdr_source)
+
+    # 7. Email spoofing protection (from --email, DNS lookups only)
+    em = results.get("email")
+    if em and "error" not in em:
+        target = results["target"]
+        mail_source = [{"name": "DNS TXT lookups (SPF, DMARC, DKIM)", "collected_at": em["collected_at"]}]
+        spf, dmarc, dkim, v = em["spf"], em["dmarc"], em["dkim"], em["verdict"]
+
+        def with_issues(fact, check):
+            if check["issues"]:
+                fact += "; issues: " + "; ".join(f"{i['problem']} ({i['detail']})" for i in check["issues"])
+            return fact
+
+        if spf["record"]:
+            add(with_issues(f"{target} SPF record: {spf['record']}", spf), mail_source)
+        else:
+            add(f"{target} has no SPF record", mail_source)
+
+        if dmarc["record"]:
+            add(with_issues(f"_dmarc.{target} DMARC record: {dmarc['record']}", dmarc), mail_source)
+        else:
+            add(f"{target} has no DMARC record (nothing at _dmarc.{target})", mail_source)
+
+        if dkim["selectors"]:
+            add(f"{target} has DKIM keys under selector(s): {', '.join(dkim['selectors'])}", mail_source)
+        else:
+            add(f"No DKIM key found for {target} under common selector names; "
+                "a custom selector can't be ruled out", mail_source)
+
+        fact = f"Email spoofing verdict for {target} (worked out by code from the DMARC policy): {v['verdict']}, {v['summary']}"
+        if v["notes"]:
+            fact += "; notes: " + "; ".join(v["notes"])
+        add(fact, mail_source)
     return evidence
 
 

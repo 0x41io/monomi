@@ -76,6 +76,19 @@ missing defenses.
 Cloudflare can usually add them in one place.
 - In Limitations, note headers were checked on each host's homepage only, \
 and hosts that redirected were not judged.
+If the evidence includes "DNS TXT lookups (SPF, DMARC, DKIM)" items:
+- Base the email finding on the code's spoofing verdict item, citing it \
+with the SPF and DMARC items. "spoofable" is High (anyone can send mail \
+pretending to be the domain), "partial" is Medium, and "protected" is not \
+a section 3 finding; mention it briefly in section 2 instead.
+- When the verdict is protected, don't flag SPF ~all softfail as a problem: \
+DMARC enforcement covers it.
+- A DKIM key that wasn't found is a Lead at most. Selectors can't be \
+listed, so never say DKIM is missing.
+- In section 4, for spoofable or partial domains, give the exact DMARC \
+record to publish (p=quarantine if the domain sends mail, p=reject if it \
+doesn't).
+- In Limitations, note DKIM was checked only under common selector names.
 If the data includes "spiderfoot" (imported from a SpiderFoot scan export):
 - The hostnames came from that SpiderFoot scan, not certificate logs; adjust \
 section 1 and Limitations to say so (and that an aborted or passive scan may \
