@@ -24,6 +24,7 @@ import evidence
 import fingerprint
 import history
 import internetdb
+import takeover
 import ui
 from ui import fail, good, info, warn
 
@@ -66,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
     parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
-    parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")
+    parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")           
+    parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
     return parser
 
@@ -276,6 +278,32 @@ def run_email(results: dict, domain: str) -> None:
     for note in v["notes"]:
         info(note)
 
+
+def run_takeover(results: dict) -> None:
+    """--takeover: CNAMEs pointing at deleted third-party resources (DNS lookups only)."""
+    hosts = results["subdomains"]
+    print()
+    info(f"Checking {len(hosts)} hosts for dangling CNAMEs / subdomain takeover (DNS lookups only)...")
+    report = takeover.check_hosts(hosts)
+    results["takeover"] = report
+
+    print()
+    for lead in report["leads"]:
+        host = ui.safe(lead["host"])
+        cname = ui.safe(lead["cname"])
+        if lead["claimable"]:
+            warn(f"{ui.paint('TAKEOVER LEAD', ui.BOLD, ui.RED)}  {host} -> {cname}  "
+                 f"({lead['service']}: target deleted, name may be claimable)")
+        else:
+            warn(f"{ui.paint('DANGLING CNAME', ui.BOLD, ui.YELLOW)}  {host} -> {cname}  "
+                 f"(target no longer exists)")
+    if report["errors"]:
+        warn(f"{len(report['errors'])} host(s) couldn't be checked (DNS didn't answer).")
+    if not report["leads"]:
+        checked = report["checked"] - len(report["errors"])
+        good(f"No dangling CNAMEs among {checked} hosts checked.")
+
+
 def show_import_findings(sf: dict) -> None:
     """Print what SpiderFoot flagged (unverified leads)."""
     print()
@@ -438,6 +466,10 @@ def main() -> int:
     # Email spoofing check: DNS lookups on the domain itself, so it doesn't need --enrich
     if args.email:
         run_email(results, domain)
+
+        # Takeover check: DNS lookups on every hostname, so it doesn't need --enrich
+    if args.takeover:
+        run_takeover(results)
 
     if sf and sf["findings"]:
         show_import_findings(sf)
