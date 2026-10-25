@@ -13,7 +13,7 @@
 
 Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, and what the owner can do about it.
 
-> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich` step adds standard DNS lookups, and `--fingerprint` is the one active check: a single homepage request per host. Only assess domains you own or have permission to review.
+> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich` and `--email` steps add standard DNS lookups, and `--fingerprint` is the one active check: a single homepage request per host. Only assess domains you own or have permission to review.
 ---
 
 ## Features
@@ -26,6 +26,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs (Cloudflare, Fastly, Akamai, Imperva, and AWS CloudFront, detected from [Amazon's published IP ranges](https://ip-ranges.amazonaws.com/ip-ranges.json)) so their ports aren't blamed on the target. Only IPs that matter get a row
 - **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
 - **Web tech + security headers (`--fingerprint`, active):** one homepage request per live host reads headers like Server and X-Powered-By to spot web servers, frameworks and exposed versions, and checks the same response for missing or weak security headers (HSTS, CSP, X-Frame-Options / frame-ancestors, X-Content-Type-Options, Referrer-Policy). Hosts that redirect aren't judged, and the header check makes no extra requests
+- **Email spoofing check (`--email`):** looks up the domain's SPF, DMARC and DKIM records (DNS lookups only, nothing sent to the target's servers) and gives one verdict: **protected**, **partial** or **spoofable**. DMARC decides the verdict, so an SPF `~all` softfail isn't flagged when DMARC enforces. DKIM is checked under common selector names, and a key that isn't found is reported as "not confirmed", never "missing". If the system's DNS can't answer (WSL's DNS relay often times out on TXT lookups), Monomi retries with public DNS (Cloudflare, then Google)
 - **SpiderFoot import (`--import FILE`):** run Monomi on a [SpiderFoot](https://github.com/smicallef/spiderfoot) CSV export instead of querying certificate logs. Keeps the target's own hosts (with IPs, banners, ASNs; `--enrich` looks up current IPs fresh instead), separates third-party services, drops noisy modules (username/account checks, co-hosted sites, raw data), and passes SpiderFoot's flagged findings to the AI with their source module so weak reputation hits aren't reported as confirmed threats. Works with `--enrich`, `--ports` and `--ai`; doesn't touch scan history
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
@@ -79,6 +80,9 @@ python monomi.py example.com --ports --cves cves.txt
 
 # Fingerprint web servers (ACTIVE: one request per host; turns on --enrich)
 python monomi.py example.com --fingerprint
+
+# Check email spoofing protection (SPF, DMARC, DKIM; DNS lookups only)
+python monomi.py example.com --email
 
 # With AI analysis + saved Markdown report
 python monomi.py example.com --ai
@@ -158,6 +162,7 @@ monomi/
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
 ├── fingerprint.py        # HTTP header fingerprinting (--fingerprint, active)
 ├── headers.py            # security headers check (reads the --fingerprint response)
+├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── evidence.py           # evidence list, citation check, Evidence section
 ├── history.py            # scan history + change detection
@@ -184,6 +189,7 @@ monomi/
 - AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
 - `--fingerprint` only sees the homepage of each host over HTTPS. Behind a CDN (Cloudflare, Vercel, Fastly) it mostly sees the CDN, not the origin server, and many servers hide their versions.
 - The security headers check only judges hosts that served a real page (HTTP 2xx), and only the homepage. Other pages can send different headers, and a missing header is a missing defense, not a confirmed vulnerability.
+- `--email` checks DKIM only under common selector names (Google, Microsoft 365, Mailchimp, SendGrid, Cloudflare and a few generic ones), because DNS can't list selectors. A domain using a custom selector will show DKIM as "not confirmed" even if it's set up.
 - crt.sh and Cert Spotter are free services and are sometimes slow or rate-limited.
 
 ## Development
@@ -195,7 +201,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover hostname filtering, domain cleaning, evidence citation checks and change detection. They run offline in under a second.
+The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection and the email check (using fake DNS records). They run offline in under a second.
 
 ## Roadmap
 
@@ -209,9 +215,9 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks an
 - [x] v1.0: code cleanup, shared helpers, test suite
 - [x] v1.1: opt-in HTTP tech fingerprinting (`--fingerprint`)
 - [x] v1.2: security headers check (from the `--fingerprint` request)
+- [x] v1.3: email spoofing check (`--email`: SPF, DMARC, DKIM + overall verdict)
 
 **Next**
-- [ ] Email spoofing check (SPF / DKIM / DMARC)
 - [ ] Subdomain takeover / dangling DNS detection
 - [ ] Rule-based checks before the AI step
 - [ ] HTML report
