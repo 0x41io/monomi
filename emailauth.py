@@ -222,6 +222,46 @@ def check_dkim(domain: str, selectors: list[str] = COMMON_SELECTORS) -> dict:
             "selectors": found, "issues": issues}
 
 
+# What each enforcing DMARC policy tells receivers to do with failing mail.
+ACTIONS = {
+    "reject": "bounce failing mail",
+    "quarantine": "send failing mail to spam",
+}
+
+
+def email_verdict(spf: dict, dmarc: dict, dkim: dict) -> dict:
+    """Combine SPF, DMARC and DKIM into one answer: can this domain be spoofed?
+
+    DMARC decides: it's the rule that tells receivers what to do when mail
+    fails SPF/DKIM. Returns {"verdict": "protected" | "partial" | "spoofable",
+    "summary": one plain-English sentence, "notes": [extra context]}.
+    """
+    spf_problems = {i["problem"] for i in spf["issues"]}
+    dmarc_problems = {i["problem"] for i in dmarc["issues"]}
+    policy = dmarc["policy"]
+    enforcing = policy in ACTIONS
+    notes = []
+
+    if enforcing and "partial" not in dmarc_problems:
+        verdict = "protected"
+        summary = f"DMARC p={policy} tells receivers to {ACTIONS[policy]}, so spoofed mail is stopped"
+        if "softfail" in spf_problems:
+            notes.append("SPF's ~all softfail is fine here: DMARC blocks what SPF only marks as suspicious")
+    elif enforcing:
+        verdict = "partial"
+        summary = "DMARC enforces, but only on some failing mail (pct under 100), so some spoofed mail gets through"
+    else:
+        verdict = "spoofable"
+        summary = "DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes"
+        if spf["record"] and not spf_problems:
+            notes.append("SPF -all helps, but without DMARC the From address people see can still be faked")
+
+    if enforcing and spf["record"] is None and not dkim["selectors"]:
+        notes.append("no SPF and no DKIM found, so this domain's own real mail may get rejected too")
+
+    return {"verdict": verdict, "summary": summary, "notes": notes}
+
+
 if __name__ == "__main__":
     import sys
 
@@ -234,6 +274,9 @@ if __name__ == "__main__":
         print(f"error: {e}")
         sys.exit(1)
 
+    spf = check_spf(records)
+    dmarc = check_dmarc(dmarc_records)
+
     def show(label, result):
         print(f"{label} record: {result['record']}")
         if not result["issues"]:
@@ -241,6 +284,12 @@ if __name__ == "__main__":
         for issue in result["issues"]:
             print(f"  {issue['problem']}: {issue['detail']}")
 
-    show("SPF", check_spf(records))
-    show("DMARC", check_dmarc(dmarc_records))
+    show("SPF", spf)
+    show("DMARC", dmarc)
     show("DKIM", dkim)
+
+    verdict = email_verdict(spf, dmarc, dkim)
+    print(f"\nVERDICT: {verdict['verdict'].upper()}")
+    print(f"  {verdict['summary']}")
+    for note in verdict["notes"]:
+        print(f"  note: {note}")
