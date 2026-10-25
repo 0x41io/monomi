@@ -137,6 +137,22 @@ def build_evidence(results: dict) -> list[dict]:
         if v["notes"]:
             fact += "; notes: " + "; ".join(v["notes"])
         add(fact, mail_source)
+    # 8. Dangling CNAMEs / subdomain takeover (from --takeover, DNS lookups only)
+    tk = results.get("takeover")
+    if tk:
+        for lead in tk["leads"]:
+            lead_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": lead["collected_at"]}]
+            if lead["claimable"]:
+                add(f"{lead['host']} has a CNAME to {lead['cname']} ({lead['service']}), and that target "
+                    "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source)
+            else:
+                add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
+                    "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source)
+        if not tk["leads"]:
+            checked = tk["checked"] - len(tk["errors"])
+            check_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": tk["collected_at"]}]
+            add(f"Takeover check: none of {checked} hostnames has a CNAME pointing to a name that doesn't exist",
+                check_source)
     return evidence
 
 

@@ -285,6 +285,7 @@ def run_takeover(results: dict) -> None:
     print()
     info(f"Checking {len(hosts)} hosts for dangling CNAMEs / subdomain takeover (DNS lookups only)...")
     report = takeover.check_hosts(hosts)
+    report["collected_at"] = now_utc()
     results["takeover"] = report
 
     print()

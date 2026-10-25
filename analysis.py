@@ -89,6 +89,21 @@ listed, so never say DKIM is missing.
 record to publish (p=quarantine if the domain sends mail, p=reject if it \
 doesn't).
 - In Limitations, note DKIM was checked only under common selector names.
+If the evidence includes "DNS CNAME lookups (takeover check)" items:
+- A CNAME to a deleted target on a service that lets names be claimed again \
+is High, labeled **Lead**: whoever claims that name controls what the \
+subdomain serves (phishing pages, stealing cookies set for the parent \
+domain). It is not confirmed until someone tries to claim the name, so \
+never call it proven or exploitable.
+- This check is passive (DNS lookups only); never call it an active check.
+- A CNAME to a deleted target that isn't a known service is Medium, labeled \
+**Lead**: if the target's domain has expired, anyone may be able to buy it.
+- If the check found nothing, mention it briefly in section 2, not section 3.
+- In section 4, for each lead, say to delete the stale CNAME record (or \
+reclaim the resource) as soon as possible.
+- In Limitations, note this check only catches services where deleted names \
+stop resolving; services that answer for every name (GitHub Pages, S3, \
+Heroku, Netlify) need an HTTP check and were not covered.
 If the data includes "spiderfoot" (imported from a SpiderFoot scan export):
 - The hostnames came from that SpiderFoot scan, not certificate logs; adjust \
 section 1 and Limitations to say so (and that an aborted or passive scan may \
