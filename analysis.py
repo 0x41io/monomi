@@ -34,6 +34,9 @@ show which hosts serve web pages or what software they run.
 "sources_used" shows how many hostnames each source returned. Only credit \
 sources that returned at least one; if a source returned zero, you may note \
 it in Limitations but never say it found anything.
+"sources_failed" lists sources that couldn't be reached during this scan. \
+Say each one was unavailable, never that it returned zero or found nothing, \
+and note in Limitations that the hostname list may be incomplete because of it.
 
 If the data includes "enrichment" (DNS + hosting provider per host), also:
 - In section 2, describe where things are hosted (providers/ASNs, countries) \
@@ -174,6 +177,7 @@ def summarize(results: dict) -> tuple[str, str]:
         "total_hostnames": len(hosts),
         "hostnames": hosts[:MAX_HOSTS],
         "truncated": len(hosts) > MAX_HOSTS,
+        "sources_failed": sorted(results.get("errors", {})),
     }
     enr = results.get("enrichment")
     if enr:
