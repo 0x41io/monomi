@@ -262,6 +262,18 @@ def email_verdict(spf: dict, dmarc: dict, dkim: dict) -> dict:
     return {"verdict": verdict, "summary": summary, "notes": notes}
 
 
+def check_email(domain: str) -> dict:
+    """Run the whole email check for one domain: SPF, DMARC, DKIM and the verdict.
+
+    Raises DNSLookupError if DNS can't be reached at all.
+    """
+    spf = check_spf(get_txt(domain))
+    dmarc = check_dmarc(get_txt(f"_dmarc.{domain}"))
+    dkim = check_dkim(domain)
+    return {"spf": spf, "dmarc": dmarc, "dkim": dkim,
+            "verdict": email_verdict(spf, dmarc, dkim)}
+
+
 if __name__ == "__main__":
     import sys
 

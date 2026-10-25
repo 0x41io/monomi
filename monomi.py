@@ -18,6 +18,7 @@ from datetime import datetime
 from collectors import certspotter, crtsh
 from common import now_utc
 from importers import spiderfoot
+import emailauth
 import enrich
 import evidence
 import fingerprint
@@ -65,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
     parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
+    parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
     return parser
 
@@ -240,6 +242,40 @@ def run_fingerprint(results: dict, enrichment: dict) -> None:
     elif pages:
         good(f"All {pages} hosts that served a page have the checked security headers.")
 
+
+def run_email(results: dict, domain: str) -> None:
+    """--email: can someone send mail pretending to be this domain? (DNS lookups only)"""
+    print()
+    info("Checking email spoofing protection (SPF, DMARC, DKIM; DNS lookups only)...")
+    try:
+        report = emailauth.check_email(domain)
+    except emailauth.DNSLookupError as e:
+        # Not in results["errors"]: that would stop change detection saving a good host list
+        results["email"] = {"error": str(e)}
+        fail(f"Email check failed: {e}")
+        return
+    report["collected_at"] = now_utc()
+    results["email"] = report
+
+    print()
+    for label, key in (("SPF", "spf"), ("DMARC", "dmarc"), ("DKIM", "dkim")):
+        r = report[key]
+        record = ui.safe(r["record"]) if r["record"] else "none found"
+        print(f"    {label:<6} {record}")
+        for issue in r["issues"]:
+            print(f"           {ui.paint(issue['problem'], ui.YELLOW)}: {ui.safe(issue['detail'])}")
+
+    print()
+    v = report["verdict"]
+    if v["verdict"] == "protected":
+        good(f"Email spoofing: {ui.paint('PROTECTED', ui.BOLD, ui.GREEN)}. {v['summary']}")
+    elif v["verdict"] == "partial":
+        warn(f"Email spoofing: {ui.paint('PARTIAL', ui.BOLD, ui.YELLOW)}. {ui.safe(v['summary'])}")
+    else:
+        warn(f"Email spoofing: {ui.paint('SPOOFABLE', ui.BOLD, ui.RED)}. {v['summary']}")
+    for note in v["notes"]:
+        info(note)
+
 def show_import_findings(sf: dict) -> None:
     """Print what SpiderFoot flagged (unverified leads)."""
     print()
@@ -398,6 +434,10 @@ def main() -> int:
     else:
         for sub in all_subs:
             print(f"    {sub}")
+
+    # Email spoofing check: DNS lookups on the domain itself, so it doesn't need --enrich
+    if args.email:
+        run_email(results, domain)
 
     if sf and sf["findings"]:
         show_import_findings(sf)
