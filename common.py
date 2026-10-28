@@ -39,3 +39,22 @@ def subdomains_in(names, domain: str) -> list[str]:
         if is_hostname(name) and (name == domain or name.endswith("." + domain)):
             found.add(name)
     return sorted(found)
+
+
+def wildcards_in(names, domain: str) -> list[str]:
+    """Pick out the wildcard certificate names (*.example.com) for the domain.
+
+    A wildcard cert covers every name under it without listing them, so these
+    point to subdomains that CT logs can't show us. Keeps the "*." so it's
+    clear they're wildcards. Returns a sorted list with no repeats.
+    """
+    domain = domain.lower()
+    found = set()
+    for name in names:
+        name = name.strip().lower()
+        if not name.startswith("*."):
+            continue  # not a wildcard, skip it
+        base = name[2:]  # the part after "*."
+        if is_hostname(base) and (base == domain or base.endswith("." + domain)):
+            found.add(name)
+    return sorted(found)

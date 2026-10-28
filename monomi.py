@@ -117,13 +117,16 @@ def add_import(results: dict, sf: dict, path: str) -> None:
              f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
 
 
-def collect_ct(results: dict, domain: str) -> None:
+def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET) -> None:
     """Query both Certificate Transparency sources and merge whatever succeeds."""
     for name, module in [("crt.sh", crtsh), ("Cert Spotter", certspotter)]:
         info(f"Querying certificate transparency logs ({name})...")
         try:
-            r = module.collect(domain)
-            results["sources"][r["source"]] = r
+            if module is crtsh:
+                r = module.collect(domain, budget=crtsh_budget)
+            else:
+                r = module.collect(domain)
+            results["sources"][r["source"]] = r            
             good(f"{name}: {r['certificates_seen']} certificates -> {r['subdomain_count']} hostnames")
         except RuntimeError as e:
             results["errors"][name] = str(e)

@@ -9,7 +9,7 @@ crt.sh, but it's much more reliable. Still 100% passive.
 
 import requests
 
-from common import USER_AGENT, now_utc, subdomains_in
+from common import USER_AGENT, now_utc, subdomains_in, wildcards_in
 
 API_URL = "https://api.certspotter.com/v1/issuances"
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
@@ -53,10 +53,16 @@ def parse_subdomains(records: list[dict], domain: str) -> list[str]:
     names = [name for rec in records for name in rec.get("dns_names", [])]
     return subdomains_in(names, domain)
 
+def parse_wildcards(records: list[dict], domain: str) -> list[str]:
+    """Pull the wildcard cert names (*.domain) out of raw Cert Spotter records."""
+    names = [name for rec in records for name in rec.get("dns_names", [])]
+    return wildcards_in(names, domain)
+
 def collect(domain: str) -> dict:
     records = fetch_raw(domain)
     collected_at = now_utc()
     subdomains = parse_subdomains(records, domain)
+    wildcards = parse_wildcards(records, domain)
     return {
         "source": "certspotter",
         "collected_at": collected_at,
@@ -64,4 +70,5 @@ def collect(domain: str) -> dict:
         "certificates_seen": len(records),
         "subdomain_count": len(subdomains),
         "subdomains": subdomains,
+        "wildcards": wildcards,
     }
