@@ -35,6 +35,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
 - **JSON export** for use in other tools
+- **MCP server mode (passive-only):** run Monomi as an MCP server so AI agents can call its checks directly. Six tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, and takeover checks.
 
 ## Installation
 
@@ -138,6 +139,24 @@ A report includes:
   with 2 CVEs on ports 80/443 [E14, E52, E53]. These are matched from version
   banners and must be verified.
 
+## MCP server mode
+
+Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI, and **passive-only**: no active scanning is exposed over MCP.
+
+Tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hosts`, `check_ports`, `check_email_auth`, `check_takeover`.
+
+Add Monomi to your MCP client's config:
+
+```json
+{
+  "mcpServers": {
+    "monomi": {
+      "command": "/path/to/monomi/venv/bin/python",
+      "args": ["/path/to/monomi/mcp_server.py"]
+    }
+  }
+}
+```
 ## Evidence
 - **E52**: 203.0.113.10 (app.example.com) has open ports: 80, 443; Shodan tags: cloud
   - Source: Shodan InternetDB, collected 2026-10-18T18:35:13+00:00
@@ -166,6 +185,8 @@ monomi/
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
 ├── fingerprint.py        # HTTP header fingerprinting (--fingerprint, active)
 ├── headers.py            # security headers check (reads the --fingerprint response)
+├── categorize.py         # rule-based hostname categories
+├── mcp_server.py         # MCP server mode (6 passive tools)
 ├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
 ├── takeover.py           # dangling CNAME / subdomain takeover check (--takeover)
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
@@ -223,12 +244,14 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.2: security headers check (from the `--fingerprint` request)
 - [x] v1.3: email spoofing check (`--email`: SPF, DMARC, DKIM + overall verdict)
 - [x] v1.4: subdomain takeover / dangling DNS detection (`--takeover`)
+- [x] v1.5: MCP server mode 
 
 **Next**
 - [ ] Rule-based checks before the AI step
 - [ ] HTML report
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
+- [ ] IP threat-intel mode: investigate a suspicious IP (anonymizer/Tor check, reputation, network info, honest AI verdict)
 
 **Later**
 - [ ] HTTP-based takeover checks for wildcard services (GitHub Pages, S3, Heroku, Netlify)
