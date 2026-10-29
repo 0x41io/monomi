@@ -139,6 +139,11 @@ A report includes:
   with 2 CVEs on ports 80/443 [E14, E52, E53]. These are matched from version
   banners and must be verified.
 
+## Evidence
+- **E52**: 203.0.113.10 (app.example.com) has open ports: 80, 443; Shodan tags: cloud
+  - Source: Shodan InternetDB, collected 2026-10-18T18:35:13+00:00
+```
+
 ## MCP server mode
 
 Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI, and **passive-only**: no active scanning is exposed over MCP.
@@ -157,11 +162,6 @@ Add Monomi to your MCP client's config:
   }
 }
 ```
-## Evidence
-- **E52**: 203.0.113.10 (app.example.com) has open ports: 80, 443; Shodan tags: cloud
-  - Source: Shodan InternetDB, collected 2026-10-18T18:35:13+00:00
-```
-
 ## How it works
 
 ```
