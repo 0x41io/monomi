@@ -15,6 +15,7 @@ import re
 import sys
 from datetime import datetime
 
+from concurrent.futures import ThreadPoolExecutor
 from collectors import certspotter, crtsh
 from common import now_utc
 from importers import spiderfoot
@@ -117,20 +118,47 @@ def add_import(results: dict, sf: dict, path: str) -> None:
              f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
 
 
-def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET) -> None:
-    """Query both Certificate Transparency sources and merge whatever succeeds."""
-    for name, module in [("crt.sh", crtsh), ("Cert Spotter", certspotter)]:
-        info(f"Querying certificate transparency logs ({name})...")
+def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET,
+               crtsh_light: bool = False) -> None:
+    """Query both Certificate Transparency sources at the same time and merge whatever succeeds."""
+    jobs = {
+        "crt.sh": lambda: crtsh.collect(domain, budget=crtsh_budget, light=crtsh_light),
+        "Cert Spotter": lambda: certspotter.collect(domain),
+    }
+    info("Querying certificate transparency logs (crt.sh + Cert Spotter, in parallel)...")
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = {name: pool.submit(job) for name, job in jobs.items()}
+
+    for name, future in futures.items():
         try:
-            if module is crtsh:
-                r = module.collect(domain, budget=crtsh_budget)
-            else:
-                r = module.collect(domain)
-            results["sources"][r["source"]] = r            
+            r = future.result()
+            results["sources"][r["source"]] = r
             good(f"{name}: {r['certificates_seen']} certificates -> {r['subdomain_count']} hostnames")
         except RuntimeError as e:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
+            flag_silent_crtsh_failure(results)
+
+def flag_silent_crtsh_failure(results: dict) -> None:
+    """Catch crt.sh failing without an error.
+
+    Cert Spotter only returns certificates that are still valid, while crt.sh
+    keeps every certificate ever logged, so crt.sh should always see at least
+    as many. If crt.sh saw 0 but Cert Spotter saw some, crt.sh broke silently
+    (it sometimes answers with an empty reply when it's overloaded). Treat that
+    as a failure, so change detection won't save an incomplete baseline and the
+    AI report won't say crt.sh found nothing.
+    """
+    crt = results["sources"].get("crt.sh")
+    cs = results["sources"].get("certspotter")
+    if crt and cs and crt["certificates_seen"] == 0 and cs["certificates_seen"] > 0:
+        del results["sources"]["crt.sh"]
+        results["errors"]["crt.sh"] = (
+            f"returned no certificates while Cert Spotter found {cs['certificates_seen']}; "
+            "crt.sh likely failed silently (empty reply)"
+        )
+        warn("crt.sh returned nothing but Cert Spotter found certificates, so crt.sh probably failed silently. Treating it as unavailable.")
 
 
 def run_enrich(results: dict, ports_on: bool) -> dict:

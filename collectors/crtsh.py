@@ -20,7 +20,7 @@ CRTSH_URL = "https://crt.sh/"
 DEFAULT_BUDGET = 200  # seconds; roomy enough for all 3 tries (the old worst case was 195s)
 
 
-def fetch_raw(domain: str, budget: float = DEFAULT_BUDGET, retries: int = 3, timeout: int = 60) -> list[dict]:
+def fetch_raw(domain: str, budget: float = DEFAULT_BUDGET, retries: int = 3, timeout: int = 60, light: bool = False) -> list[dict]:
     """Query crt.sh for all certificates matching *.domain.
 
     crt.sh is free and often slow or overloaded (502/503/timeouts),
@@ -30,7 +30,9 @@ def fetch_raw(domain: str, budget: float = DEFAULT_BUDGET, retries: int = 3, tim
     tries and waits. The CLI uses the roomy default; the MCP server passes a
     short one so the whole call finishes before the 60s bridge limit.
     """
-    params = {"q": f"%.{domain}", "output": "json"}
+    params = {"q": f"%.{domain}", "output": "json", "deduplicate": "Y"}
+    if light:
+        params["exclude"] = "expired"
     headers = {"User-Agent": USER_AGENT}
     last_error = "time budget used up"
     deadline = time.monotonic() + budget
@@ -70,14 +72,15 @@ def parse_wildcards(records: list[dict], domain: str) -> list[str]:
     """Pull the wildcard cert names (*.domain) out of raw crt.sh records."""
     names = [name for rec in records for name in rec.get("name_value", "").splitlines()]
     return wildcards_in(names, domain)
-def collect(domain: str, budget: float = DEFAULT_BUDGET) -> dict:
+def collect(domain: str, budget: float = DEFAULT_BUDGET, light: bool = False) -> dict:
     """Run the collector and return a structured result for the report/AI layer."""
-    records = fetch_raw(domain, budget=budget)
+    records = fetch_raw(domain, budget=budget, light=light)
     collected_at = now_utc()
     subdomains = parse_subdomains(records, domain)
     wildcards = parse_wildcards(records, domain)
     return {
         "source": "crt.sh",
+        "expired_excluded": light,
         "collected_at": collected_at,
         "domain": domain,
         "certificates_seen": len(records),

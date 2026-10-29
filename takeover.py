@@ -95,28 +95,40 @@ def match_service(target: str) -> str | None:
             return service
     return None
 
-def check_host(host: str) -> dict | None:
-    """Check one hostname. Returns a lead if its CNAME dangles, else None."""
+def inspect_host(host: str) -> dict:
+    """Check one hostname and report what was found, clean or not.
+
+    Returns {"status": ..., "cname": ..., "lead": ...}:
+      "no_cname"  -> plain A-record host, nothing can dangle
+      "cname_ok"  -> CNAME points at a name that exists: fine
+      "lead"      -> CNAME target is NXDOMAIN (dangling)
+    "lead" holds the full lead dict when status is "lead", else None.
+    """
     target = get_cname(host)
     if target is None:
-        return None              # no CNAME, so nothing can dangle
+        return {"status": "no_cname", "cname": None, "lead": None}
     if name_exists(target):
-        return None              # CNAME points somewhere real: fine
+        return {"status": "cname_ok", "cname": target, "lead": None}
 
     service = match_service(target)
-    return {
+    lead = {
         "host": host,
         "cname": target,
         "service": service,              # None = not a known service
         "claimable": service is not None,
         "collected_at": now_utc(),
     }
+    return {"status": "lead", "cname": target, "lead": lead}
 
+
+def check_host(host: str) -> dict | None:
+    """Check one hostname. Returns a lead if its CNAME dangles, else None."""
+    return inspect_host(host)["lead"]
 
 def _safe_check(host: str):
     """check_host() that never crashes: returns (host, lead, error)."""
     try:
-        return host, check_host(host), None
+        return host, inspect_host(host), None
     except DNSLookupError as e:
         return host, None, str(e)
 
@@ -124,17 +136,20 @@ def _safe_check(host: str):
 def check_hosts(hosts: list[str], workers: int = 16) -> dict:
     """Run the takeover check on every hostname.
 
-    Returns {"leads": [...], "checked": count, "errors": {host: reason}}.
+    Returns {"leads": [...], "results": {host: {"status", "cname"}},
+             "checked": count, "errors": {host: reason}}.
     """
-    leads, errors = [], {}
+    leads, errors, results = [], {}, {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, lead, err in pool.map(_safe_check, hosts):
+        for host, info, err in pool.map(_safe_check, hosts):
             if err:
                 errors[host] = err
-            elif lead:
-                leads.append(lead)
-    return {"leads": leads, "checked": len(hosts), "errors": errors}
-
+                results[host] = {"status": "error", "cname": None}
+            else:
+                results[host] = {"status": info["status"], "cname": info["cname"]}
+                if info["lead"]:
+                    leads.append(info["lead"])
+    return {"leads": leads, "results": results, "checked": len(hosts), "errors": errors}
 if __name__ == "__main__":
     import sys
 
