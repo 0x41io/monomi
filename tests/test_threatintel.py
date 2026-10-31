@@ -3,7 +3,7 @@ import requests
 import enrich
 import internetdb
 import threatintel
-from threatintel import clean_ip, label
+from threatintel import clean_ip, label, reject_reason
 
 
 def facts(**changes):
@@ -207,3 +207,18 @@ def test_ip_payload_calls_country_registered_location():
     assert data["registered_network_location"] == "SE"
     assert "country" not in data
     assert data["failed_sources"] == ["shodan"]
+
+def test_reject_reason_explains_each_kind():
+    assert reject_reason("not-an-ip") == "not an IP address"
+    assert reject_reason("192.168.1.1") == "private (internal network)"
+    assert reject_reason("127.0.0.1") == "loopback (this machine)"
+    assert reject_reason("169.254.1.1") == "link-local"
+    assert reject_reason("224.0.0.1") == "multicast"
+    assert reject_reason("0.0.0.0") == "unspecified (0.0.0.0 / ::)"
+    assert reject_reason("100.64.0.1") == "reserved, not a public internet address"
+
+
+def test_google_network_is_hosting():
+    facts = {"tor_exit": False, "shodan": None, "rdns": None,
+             "network": {"as_name": "Google"}}
+    assert "hosting" in {l["label"] for l in label(facts)}  

@@ -35,6 +35,7 @@ def test_check_takeover_uses_cleaned_hosts(monkeypatch):
     assert seen["hosts"] == ["www.example.com"]
     assert result["hosts_checked"] == 1
     assert result["hosts_skipped"] == 0
+    assert "checked" not in result  # the duplicate of hosts_checked is gone
 
 
 def test_check_ports_uses_smaller_cap(monkeypatch):
@@ -44,3 +45,30 @@ def test_check_ports_uses_smaller_cap(monkeypatch):
     result = mcp_server.check_ports(names)
     assert result["hosts_checked"] == mcp_server.MAX_PORT_HOSTS
     assert result["hosts_skipped"] == 150 - mcp_server.MAX_PORT_HOSTS
+
+
+
+def fake_investigate(ip):
+    """A boring investigate() result, so no test touches the network."""
+    return {"ip": ip, "collected_at": "2026-10-31T16:00:00+00:00", "tor_exit": False,
+            "network": None, "rdns": None, "shodan": None, "errors": {}, "labels": []}
+
+
+def test_investigate_ip_cleans_rejects_and_dedupes(monkeypatch):
+    monkeypatch.setattr(mcp_server.threatintel, "investigate", fake_investigate)
+    result = mcp_server.investigate_ip([" 8.8.8.8 ", "8.8.8.8", "192.168.1.1", "junk"])
+    assert list(result["ips"]) == ["8.8.8.8"]
+    assert result["rejected"] == [
+        {"ip": "192.168.1.1", "reason": "private (internal network)"},
+        {"ip": "junk", "reason": "not an IP address"},
+    ]
+    assert result["ips_checked"] == 1
+    assert result["evidence"][0]["id"] == "E1"
+
+
+def test_investigate_ip_caps_and_counts_skipped(monkeypatch):
+    monkeypatch.setattr(mcp_server.threatintel, "investigate", fake_investigate)
+    ips = [f"8.8.8.{i}" for i in range(1, 16)]
+    result = mcp_server.investigate_ip(ips)
+    assert result["ips_checked"] == mcp_server.MAX_IPS
+    assert result["ips_skipped"] == 15 - mcp_server.MAX_IPS

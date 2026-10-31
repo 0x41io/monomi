@@ -28,7 +28,7 @@ TOR_EXIT_URL = "https://check.torproject.org/torbulkexitlist"
 # Network owners that mostly rent out servers. Traffic from these is usually
 # a server (a VPS, a bot, a VPN box), not someone's home internet.
 HOSTING_PROVIDERS = {
-    "AWS", "Google Cloud", "Microsoft/Azure", "DigitalOcean", "Hetzner",
+    "AWS", "Google Cloud", "Google", "Microsoft/Azure", "DigitalOcean", "Hetzner",
     "OVH", "Vultr", "Oracle Cloud", "Akamai/Linode",
 }
 
@@ -54,6 +54,24 @@ def clean_ip(text: str) -> str | None:
     except ValueError:
         return None
     return str(ip) if ip.is_global else None
+
+def reject_reason(text: str) -> str:
+    """Why clean_ip() turned this down, in plain words."""
+    try:
+        ip = ipaddress.ip_address(text.strip())
+    except ValueError:
+        return "not an IP address"
+    if ip.is_loopback:
+        return "loopback (this machine)"
+    if ip.is_link_local:
+        return "link-local"
+    if ip.is_multicast:
+        return "multicast"
+    if ip.is_unspecified:
+        return "unspecified (0.0.0.0 / ::)"
+    if ip.is_private:
+        return "private (internal network)"
+    return "reserved, not a public internet address"
 
 def tor_exit_ips(timeout: int = 20) -> set[str]:
     """Download the Tor Project's current list of exit node IPs.

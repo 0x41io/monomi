@@ -505,7 +505,7 @@ def run_investigate(raw_ips: list[str], json_file: str | None, ai: bool) -> int:
     for raw in raw_ips:
         ip = threatintel.clean_ip(raw)
         if ip is None:
-            fail(f"'{ui.safe(raw)}' isn't a public IP address")
+            fail(f"'{ui.safe(raw)}' can't be investigated: {threatintel.reject_reason(raw)}")
             return 1
         if ip not in ips:
             ips.append(ip)  # skip repeats, keep the order they were typed in

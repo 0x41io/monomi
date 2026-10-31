@@ -14,6 +14,7 @@ from emailauth import check_email
 from takeover import check_hosts
 from enrich import enrich
 import internetdb
+import threatintel
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
@@ -26,6 +27,7 @@ CRTSH_BUDGET = 50
 
 # Max hostnames one tool call handles, to stay under the 60s limit.
 MAX_HOSTS = 200
+MAX_IPS = 10  # investigate_ip asks 4 sources per IP, one IP at a time
 MAX_PORT_HOSTS = 100  # check_ports also queries Shodan per IP, so it's slower
 
 
@@ -106,6 +108,7 @@ def check_takeover(hostnames: list[str]) -> dict:
     checked, skipped = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_hosts(checked)
+    result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, **result}
 
 
@@ -137,6 +140,36 @@ def check_ports(hostnames: list[str]) -> dict:
         enrichment = enrich(checked)
         exposure = internetdb.lookup(enrichment)
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, **exposure}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+def investigate_ip(ips: list[str]) -> dict:
+    """Look into suspicious IP addresses (e.g. from logs or alerts): is each
+    one a Tor exit, VPN/proxy, hosting/cloud server or CDN edge? Returns
+    facts from the Tor exit list, Team Cymru (network owner, ASN), reverse
+    DNS and Shodan InternetDB, rule-based labels with their source, and a
+    numbered evidence list (E1, E2...) to cite.
+    Passive: asks these public sources about the IPs, never contacts the
+    IPs themselves. Private/internal IPs are rejected, each with a reason.
+    When explaining results: "country" is where the network is registered,
+    NOT where the person using the IP is. Never claim or guess a person's
+    location or identity from an IP. A failed lookup ("errors") means
+    unknown, not "no". Checks at most 10 IPs per call."""
+    cleaned, rejected = [], []
+    for raw in ips:
+        ip = threatintel.clean_ip(raw)
+        if ip is None:
+            rejected.append({"ip": raw[:100],  # cut long junk short
+                             "reason": threatintel.reject_reason(raw)})
+        elif ip not in cleaned:
+            cleaned.append(ip)
+    checked, skipped = cleaned[:MAX_IPS], max(len(cleaned) - MAX_IPS, 0)
+
+    with contextlib.redirect_stdout(sys.stderr):
+        results = {"ips": {ip: threatintel.investigate(ip) for ip in checked}}
+    results["evidence"] = threatintel.build_evidence(results)
+    return {"ips_checked": len(checked), "ips_skipped": skipped,
+            "rejected": rejected[:20], **results}
 
 
 if __name__ == "__main__":
