@@ -26,11 +26,15 @@ import fingerprint
 import history
 import internetdb
 import takeover
+import threatintel
 import ui
 from ui import fail, good, info, warn
 
 # Reports always go in the monomi folder, wherever the command is run from
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+
+# --investigate-ip: at most this many IPs per run, to be polite to the free sources
+MAX_INVESTIGATE = 20
 
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
@@ -70,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")           
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
+    parser.add_argument("--investigate-ip", nargs="+", metavar="IP",
+                help="look into suspicious IP(s): Tor/VPN/hosting signs, network owner, Shodan (asks public sources, never the IP)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
     return parser
 
@@ -430,13 +436,74 @@ def save_json(results: dict, path: str) -> None:
     good(f"Saved results to {path}")
 
 
+def show_investigation(r: dict) -> None:
+    """Print one investigate() result: the facts, then the labels."""
+    net = r["network"] or {}
+    print()
+    print(f"    Network   {ui.safe(net.get('as_name', 'unknown'))} ({net.get('asn', '?')}), "
+          f"registered in {ui.safe(net.get('country', '?'))}")
+    print(f"    rDNS      {ui.safe(r['rdns']) if r['rdns'] else 'none'}")
+    shodan = r["shodan"]
+    if shodan:
+        ports = ", ".join(str(p) for p in shodan["ports"]) or "none"
+        cves = f", {len(shodan['vulns'])} CVEs" if shodan["vulns"] else ""
+        print(f"    Shodan    open ports {ports}{cves}")
+    elif "shodan" not in r["errors"]:
+        print("    Shodan    nothing on record")
+
+    print()
+    for l in r["labels"]:
+        text = f"{ui.paint(l['label'].upper(), ui.BOLD, ui.RED)}  {ui.safe(l['reason'])}  [{l['source']}]"
+        if l["label"] in threatintel.ANONYMIZERS or l["label"] == "known_bad":
+            warn(text)
+        else:
+            info(text)
+    for source, err in r["errors"].items():
+        fail(f"{source} lookup failed: {ui.safe(err)}")
+
+
+def run_investigate(raw_ips: list[str], json_file: str | None) -> int:
+    """--investigate-ip: what kind of IP is this? (asks public sources, never the IP)"""
+    ips = []
+    for raw in raw_ips:
+        ip = threatintel.clean_ip(raw)
+        if ip is None:
+            fail(f"'{ui.safe(raw)}' isn't a public IP address")
+            return 1
+        if ip not in ips:
+            ips.append(ip)  # skip repeats, keep the order they were typed in
+    if len(ips) > MAX_INVESTIGATE:
+        fail(f"{len(ips)} IPs is too many for one run (max {MAX_INVESTIGATE})")
+        return 1
+
+    results = {"mode": "investigate_ip", "ips": {}}
+    for ip in ips:
+        print()
+        info(f"Investigating {ui.paint(ip, ui.BOLD, ui.WHITE)} (public sources only, nothing is sent to the IP)...")
+        r = threatintel.investigate(ip)
+        results["ips"][ip] = r
+        show_investigation(r)
+
+    if json_file:
+        save_json(results, json_file)
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     if args.no_color:
         ui.disable()
     print(ui.banner())
-
+    
+    # --investigate-ip is its own mode: IPs in, no domain scan
+    if args.investigate_ip:
+        if args.domain or args.import_file:
+            parser.error("--investigate-ip works on its own: don't pass a domain or --import with it")
+        if args.ai:
+            warn("--ai doesn't work with --investigate-ip yet; ignoring it.")
+        return run_investigate(args.investigate_ip, args.json) 
+    
     if args.ports and not args.enrich:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
     if args.fingerprint and not args.enrich:
