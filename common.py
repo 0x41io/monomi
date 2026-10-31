@@ -5,7 +5,7 @@ Shared helpers used across monomi: version info, hostname checks, timestamps.
 import re
 from datetime import datetime, timezone
 
-VERSION = "1.5"
+VERSION = "1.5.1"
 USER_AGENT = f"0x41-monomi/{VERSION} (passive OSINT research)"
 
 # Real hostnames only use letters, digits, dots, hyphens (and sometimes underscores).

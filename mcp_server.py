@@ -20,7 +20,7 @@ from mcp.types import ToolAnnotations
 # The server itself. "monomi" is the name agents will see.
 mcp = MCPServer("monomi")
 
-# The Claude app's bridge gives up after 60s, so crt.sh gets at most 40s.
+# The Claude app's bridge gives up after 60s, so crt.sh gets at most 50s.
 # That leaves room for Cert Spotter (which runs after it) plus overhead.
 CRTSH_BUDGET = 50
 
@@ -41,7 +41,8 @@ def ping(name: str = "world") -> str:
     """Say hello. Used to check that the Monomi MCP server is connected."""
     return f"hello {name}, monomi MCP server is running"
 
-@mcp.tool()
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def find_subdomains(domain: str) -> dict:
     """Find a domain's subdomains from public Certificate Transparency logs
     (crt.sh and Cert Spotter). Passive: never contacts the target itself.
@@ -99,16 +100,13 @@ def check_takeover(hostnames: list[str]) -> dict:
     Beanstalk) whose target no longer exists and could be claimed by
     someone else. Pass the hostnames from find_subdomains.
     Passive: DNS lookups only, never contacts the hosts themselves.
-    A flagged host is a lead to verify, not a confirmed takeover. 
+    A flagged host is a lead to verify, not a confirmed takeover.
     Every host gets a status in "results": no_cname, cname_ok, lead or error.
     Checks at most 200 hostnames per call."""
     checked, skipped = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_hosts(checked)
-    return {
-        "hosts_skipped": skipped,
-        **result,
-    }
+    return {"hosts_checked": len(checked), "hosts_skipped": skipped, **result}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
