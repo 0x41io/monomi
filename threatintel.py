@@ -165,6 +165,69 @@ def label(facts: dict) -> list[dict]:
 
     return labels
 
+# Readable source names for the error keys investigate() uses
+SOURCE_NAMES = {"tor": "Tor exit list", "asn": "Team Cymru ASN",
+                "aws": "AWS IP ranges", "shodan": "Shodan InternetDB"}
+
+
+def build_evidence(results: dict) -> list[dict]:
+    """Numbered facts (E1, E2...) for the AI verdict to cite.
+
+    Same format as evidence.build_evidence(), so evidence.check_citations()
+    and evidence.evidence_appendix() work on it unchanged.
+    """
+    evidence = []
+
+    def add(fact, source, when):
+        evidence.append({"id": f"E{len(evidence) + 1}", "fact": fact,
+                         "sources": [{"name": source, "collected_at": when}]})
+
+    for ip, r in results["ips"].items():
+        when = r["collected_at"]
+        errors = r["errors"]
+
+        if r["tor_exit"] is True:
+            add(f"{ip} is in the Tor Project's current exit node list", "Tor exit list", when)
+        elif r["tor_exit"] is False:
+            add(f"{ip} is not in the Tor Project's current exit node list", "Tor exit list", when)
+
+        net = r["network"]
+        if net:
+            add(f"{ip} belongs to {net['asn']} ({net.get('raw_as_name', net['as_name'])}); "
+                f"the network is registered in {net['country']} "
+                "(where the network is registered, not where its user is)",
+                "Team Cymru ASN", when)
+        elif "asn" not in errors:
+            add(f"No network owner (ASN) was found for {ip}", "Team Cymru ASN", when)
+
+        if r["rdns"]:
+            add(f"{ip}'s reverse DNS name is {r['rdns']}", "reverse DNS", when)
+        else:
+            add(f"{ip} has no reverse DNS name", "reverse DNS", when)
+
+        s = r["shodan"]
+        if s:
+            ports = ", ".join(str(p) for p in s["ports"]) or "none"
+            fact = f"Shodan last saw open ports on {ip}: {ports}"
+            if s["tags"]:
+                fact += f"; tags: {', '.join(s['tags'])}"
+            if s["vulns"]:
+                fact += f"; {len(s['vulns'])} CVE(s) matched from version banners"
+            add(fact, "Shodan InternetDB", when)
+        elif "shodan" not in errors:
+            add(f"Shodan InternetDB has no record of {ip}", "Shodan InternetDB", when)
+
+        for key in errors:
+            name = SOURCE_NAMES.get(key, key)
+            add(f"The {name} lookup for {ip} failed, so that part is unknown", name, when)
+
+        for l in r["labels"]:
+            add(f"monomi rule: {ip} labeled {l['label']} ({l['reason']})",
+                f"monomi rules, from {l['source']}", when)
+
+    return evidence
+
+
 if __name__ == "__main__":
     import json
     import sys

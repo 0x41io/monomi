@@ -121,3 +121,89 @@ def test_investigate_puts_facts_together(monkeypatch):
     assert result["errors"] == {}
     assert result["tor_exit"] is True
     assert names(result["labels"]) == ["tor_exit", "hosting"]
+
+
+# --- evidence for the AI verdict ---
+
+def investigated(**changes):
+    """A full investigate()-style result: facts + collected_at + labels."""
+    r = facts(collected_at="2026-10-31T16:00:00+00:00", **changes)
+    r["labels"] = label(r)
+    return r
+
+
+def test_evidence_is_numbered_in_order():
+    ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated()}})
+    assert [e["id"] for e in ev] == [f"E{n}" for n in range(1, len(ev) + 1)]
+    assert all(e["sources"][0]["collected_at"] == "2026-10-31T16:00:00+00:00" for e in ev)
+
+
+def test_evidence_says_country_is_registration_not_location():
+    r = investigated(network={"asn": "AS198093", "as_name": "DFRI-AS",
+                              "raw_as_name": "DFRI-AS - Foreningen, SE", "country": "SE"})
+    ev = threatintel.build_evidence({"ips": {"203.0.113.7": r}})
+    fact = next(e["fact"] for e in ev if "AS198093" in e["fact"])
+    assert "not where its user is" in fact
+
+
+def test_failed_source_becomes_unknown_not_missing():
+    r = investigated(tor_exit=None, errors={"tor": "timed out"})
+    facts_text = [e["fact"] for e in threatintel.build_evidence({"ips": {"203.0.113.7": r}})]
+    assert not any("exit node list" in f and "not in" in f for f in facts_text)
+    assert any("Tor exit list lookup" in f and "unknown" in f for f in facts_text)
+
+
+def test_evidence_works_with_citation_checker():
+    from evidence import check_citations
+    ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated(tor_exit=True)}})
+    assert check_citations("Tor exit [E1].", ev) == []
+    assert check_citations("Made up [E99].", ev) == ["E99"]# --- evidence for the AI verdict ---
+
+def investigated(**changes):
+    """A full investigate()-style result: facts + collected_at + labels."""
+    r = facts(collected_at="2026-10-31T16:00:00+00:00", **changes)
+    r["labels"] = label(r)
+    return r
+
+
+def test_evidence_is_numbered_in_order():
+    ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated()}})
+    assert [e["id"] for e in ev] == [f"E{n}" for n in range(1, len(ev) + 1)]
+    assert all(e["sources"][0]["collected_at"] == "2026-10-31T16:00:00+00:00" for e in ev)
+
+
+def test_evidence_says_country_is_registration_not_location():
+    r = investigated(network={"asn": "AS198093", "as_name": "DFRI-AS",
+                              "raw_as_name": "DFRI-AS - Foreningen, SE", "country": "SE"})
+    ev = threatintel.build_evidence({"ips": {"203.0.113.7": r}})
+    fact = next(e["fact"] for e in ev if "AS198093" in e["fact"])
+    assert "not where its user is" in fact
+
+
+def test_failed_source_becomes_unknown_not_missing():
+    r = investigated(tor_exit=None, errors={"tor": "timed out"})
+    facts_text = [e["fact"] for e in threatintel.build_evidence({"ips": {"203.0.113.7": r}})]
+    assert not any("exit node list" in f and "not in" in f for f in facts_text)
+    assert any("Tor exit list lookup" in f and "unknown" in f for f in facts_text)
+
+
+def test_evidence_works_with_citation_checker():
+    from evidence import check_citations
+    ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated(tor_exit=True)}})
+    assert check_citations("Tor exit [E1].", ev) == []
+    assert check_citations("Made up [E99].", ev) == ["E99"]
+
+
+# --- what the AI verdict sees ---
+
+def test_ip_payload_calls_country_registered_location():
+    from analysis import ip_payload
+    r = investigated(network={"asn": "AS198093", "as_name": "DFRI-AS",
+                              "raw_as_name": "DFRI-AS - Foreningen, SE", "country": "SE"},
+                     errors={"shodan": "timed out"})
+    results = {"ips": {"203.0.113.7": r}}
+    results["evidence"] = threatintel.build_evidence(results)
+    data = ip_payload(results)["ips"]["203.0.113.7"]
+    assert data["registered_network_location"] == "SE"
+    assert "country" not in data
+    assert data["failed_sources"] == ["shodan"]

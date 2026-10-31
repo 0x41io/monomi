@@ -462,7 +462,44 @@ def show_investigation(r: dict) -> None:
         fail(f"{source} lookup failed: {ui.safe(err)}")
 
 
-def run_investigate(raw_ips: list[str], json_file: str | None) -> int:
+def write_ip_report(results: dict) -> None:
+    """--investigate-ip --ai: Claude's verdict, saved to reports/ and shown in the terminal."""
+    print()
+    info("Asking Claude for a verdict...")
+    try:
+        import analysis  # only loaded with --ai
+        verdict, model = analysis.ip_verdict(results)
+    except Exception as e:  # missing key, network, API errors
+        fail(f"AI verdict failed: {e}")
+        return
+
+    ips = list(results["ips"])
+    name = ips[0].replace(":", "-")  # IPv6 colons aren't allowed in Windows file names
+    if len(ips) > 1:
+        name += f"_and_{len(ips) - 1}_more"
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    path = os.path.join(REPORTS_DIR, f"ip_{name}_{stamp}.md")
+    header = (
+        f"# mønømi IP report: {', '.join(ips)}\n\n"
+        f"*Generated {datetime.now():%Y-%m-%d %H:%M} · "
+        f"sources: Tor exit list, Team Cymru ASN, reverse DNS, Shodan InternetDB · model: {model}*\n\n"
+    )
+    with open(path, "w") as f:
+        f.write(header + verdict + "\n\n" + evidence.evidence_appendix(verdict, results["evidence"]))
+    print()
+    ui.render_report(verdict)
+    print()
+    good(f"Report saved to {short_path(path)}")
+    unknown = evidence.check_citations(verdict, results["evidence"])
+    if unknown:
+        warn(f"The AI cited evidence that doesn't exist: {', '.join(unknown)}. "
+             "Treat those findings with caution.")
+    else:
+        good("Every evidence ID the AI cited exists.")
+
+
+def run_investigate(raw_ips: list[str], json_file: str | None, ai: bool) -> int:
     """--investigate-ip: what kind of IP is this? (asks public sources, never the IP)"""
     ips = []
     for raw in raw_ips:
@@ -484,6 +521,9 @@ def run_investigate(raw_ips: list[str], json_file: str | None) -> int:
         results["ips"][ip] = r
         show_investigation(r)
 
+    results["evidence"] = threatintel.build_evidence(results)
+    if ai:
+        write_ip_report(results)
     if json_file:
         save_json(results, json_file)
     return 0
@@ -495,14 +535,12 @@ def main() -> int:
     if args.no_color:
         ui.disable()
     print(ui.banner())
-    
+
     # --investigate-ip is its own mode: IPs in, no domain scan
     if args.investigate_ip:
         if args.domain or args.import_file:
             parser.error("--investigate-ip works on its own: don't pass a domain or --import with it")
-        if args.ai:
-            warn("--ai doesn't work with --investigate-ip yet; ignoring it.")
-        return run_investigate(args.investigate_ip, args.json) 
+        return run_investigate(args.investigate_ip, args.json, args.ai)
     
     if args.ports and not args.enrich:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
