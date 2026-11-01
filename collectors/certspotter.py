@@ -7,12 +7,30 @@ certificates that are currently valid, so it usually finds fewer names than
 crt.sh, but it's much more reliable. Still 100% passive.
 """
 
+import time
+
 import requests
 
 from common import USER_AGENT, now_utc, subdomains_in, wildcards_in
+from ui import warn
 
 API_URL = "https://api.certspotter.com/v1/issuances"
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
+MAX_RATE_WAIT = 10  # most seconds we'll wait on a rate limit (the MCP call has 60s in total)
+RATE_RETRIES = 2    # how many times we'll wait and try again after a rate limit
+
+
+def rate_limit_wait(resp) -> float | None:
+    """Seconds Cert Spotter asks us to wait (its Retry-After header).
+
+    Returns None if that's longer than we're willing to wait. If the header
+    is missing or isn't a plain number of seconds, use a short default.
+    """
+    try:
+        wait = float(resp.headers.get("Retry-After", ""))
+    except ValueError:
+        wait = 5.0
+    return wait if 0 <= wait <= MAX_RATE_WAIT else None
 
 
 def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
@@ -20,20 +38,25 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
     params = {"domain": domain, "include_subdomains": "true", "expand": "dns_names"}
     headers = {"User-Agent": USER_AGENT}
     records = []
+    pages = 0
+    rate_waits = 0
 
-    for _ in range(MAX_PAGES):
+    while pages < MAX_PAGES:
         try:
             resp = requests.get(API_URL, params=params, headers=headers, timeout=timeout)
         except requests.RequestException as e:
             raise RuntimeError(f"Cert Spotter request failed: {e}")
 
         if resp.status_code == 429:
+            wait = rate_limit_wait(resp)
+            if wait is not None and rate_waits < RATE_RETRIES:
+                rate_waits += 1
+                warn(f"Cert Spotter rate limit hit, waiting {wait:.0f}s and trying again...")
+                time.sleep(wait)
+                continue  # ask for the same page again
             if records:
                 break  # rate limited mid-way: keep what we already have
             raise RuntimeError("Cert Spotter rate limit hit (free tier). Try again later.")
-        if resp.status_code != 200:
-            raise RuntimeError(f"Cert Spotter returned HTTP {resp.status_code}")
-
         try:
             page = resp.json()
         except ValueError:  # HTML error page or cut-off body instead of JSON
@@ -43,6 +66,7 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
         if not page:
             break
         records.extend(page)
+        pages += 1
         params["after"] = page[-1]["id"]  # next page starts after the last id
 
     return records
