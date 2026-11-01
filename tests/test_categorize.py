@@ -32,6 +32,16 @@ DOMAIN = "example.com"
     ("tableau-old", "legacy"),
     ("oldies", "uncategorized"),
     ("prd", "uncategorized"),
+    # New categories (v1.7, from the adminml.com and Amazon VRP field runs)
+    ("scada", "iot-ot"),
+    ("forklift-cam2", "iot-ot"),
+    ("cameras", "iot-ot"),
+    ("camp", "uncategorized"),
+    ("plc-dev", "non-production"),
+    ("seller", "partner-portal"),
+    ("vendor-portal", "partner-portal"),
+    ("brandregistry", "partner-portal"),
+    ("partnership", "uncategorized"),
 ])
 def test_label_categories(label, expected):
     result = categorize(f"{label}.{DOMAIN}", DOMAIN)

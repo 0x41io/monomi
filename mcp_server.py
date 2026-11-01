@@ -54,7 +54,7 @@ def find_subdomains(domain: str) -> dict:
     Usually under a minute. If crt.sh is too slow, results come from
     Cert Spotter alone and "errors" says crt.sh timed out.
     Each hostname also gets a rule-based category (non-production, legacy,
-    access, internal-tools, app-api, email, marketing, content, apex,
+    access, iot-ot, partner-portal, internal-tools, app-api, email, marketing, content, apex,
     uncategorized) with the reason
     it matched: facts from naming patterns, not confirmed by contacting hosts."""
     domain = clean_domain(domain)
