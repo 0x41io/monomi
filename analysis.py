@@ -101,6 +101,10 @@ never call it proven or exploitable.
 - This check is passive (DNS lookups only); never call it an active check.
 - A CNAME to a deleted target that isn't a known service is Medium, labeled \
 **Lead**: if the target's domain has expired, anyone may be able to buy it.
+- A stale DNS record (a CNAME to a deleted target whose names can't be \
+claimed again, such as an AWS load balancer) is not a takeover risk: never \
+call it a Lead. At most mention it in section 2 as housekeeping (delete the \
+old record).
 - If the check found nothing, mention it briefly in section 2, not section 3.
 - In section 4, for each lead, say to delete the stale CNAME record (or \
 reclaim the resource) as soon as possible.

@@ -84,6 +84,27 @@ TAKEOVER_SERVICES = [
 ]
 
 
+# Services whose deleted names can NOT be claimed again: AWS adds a random
+# ID to every load balancer and CloudFront name, so nobody can register the
+# same name. A dangling CNAME to one of these is a stale DNS record (old
+# housekeeping), not a takeover risk. Each entry: (CNAME ending, name).
+NOT_CLAIMABLE = [
+    (".elb.amazonaws.com", "AWS Elastic Load Balancing"),
+    (".cloudfront.net", "AWS CloudFront"),
+]
+
+
+def match_not_claimable(target: str) -> str | None:
+    """Which never-claimable service a CNAME target belongs to, if any.
+
+    'internal-lb-1234.us-east-1.elb.amazonaws.com' -> 'AWS Elastic Load Balancing'
+    """
+    for ending, service in NOT_CLAIMABLE:
+        if target.endswith(ending):
+            return service
+    return None
+
+
 def match_service(target: str) -> str | None:
     """Which takeover-prone service a CNAME target belongs to, if any.
 
@@ -98,17 +119,24 @@ def match_service(target: str) -> str | None:
 def inspect_host(host: str) -> dict:
     """Check one hostname and report what was found, clean or not.
 
-    Returns {"status": ..., "cname": ..., "lead": ...}:
+    Returns {"status": ..., "cname": ..., "lead": ..., "stale": ...}:
       "no_cname"  -> plain A-record host, nothing can dangle
       "cname_ok"  -> CNAME points at a name that exists: fine
+      "stale"     -> CNAME target is NXDOMAIN, but on a service whose names
+                     can't be claimed again: old record, not a takeover risk
       "lead"      -> CNAME target is NXDOMAIN (dangling)
-    "lead" holds the full lead dict when status is "lead", else None.
+    "lead" / "stale" hold the full record for that status, else None.
     """
     target = get_cname(host)
     if target is None:
-        return {"status": "no_cname", "cname": None, "lead": None}
+        return {"status": "no_cname", "cname": None, "lead": None, "stale": None}
     if name_exists(target):
-        return {"status": "cname_ok", "cname": target, "lead": None}
+        return {"status": "cname_ok", "cname": target, "lead": None, "stale": None}
+
+    unclaimable = match_not_claimable(target)
+    if unclaimable:
+        stale = {"host": host, "cname": target, "service": unclaimable, "collected_at": now_utc()}
+        return {"status": "stale", "cname": target, "lead": None, "stale": stale}
 
     service = match_service(target)
     lead = {
@@ -118,8 +146,7 @@ def inspect_host(host: str) -> dict:
         "claimable": service is not None,
         "collected_at": now_utc(),
     }
-    return {"status": "lead", "cname": target, "lead": lead}
-
+    return {"status": "lead", "cname": target, "lead": lead, "stale": None}
 
 def check_host(host: str) -> dict | None:
     """Check one hostname. Returns a lead if its CNAME dangles, else None."""
@@ -132,14 +159,13 @@ def _safe_check(host: str):
     except DNSLookupError as e:
         return host, None, str(e)
 
-
 def check_hosts(hosts: list[str], workers: int = 16) -> dict:
     """Run the takeover check on every hostname.
 
-    Returns {"leads": [...], "results": {host: {"status", "cname"}},
+    Returns {"leads": [...], "stale": [...], "results": {host: {"status", "cname"}},
              "checked": count, "errors": {host: reason}}.
     """
-    leads, errors, results = [], {}, {}
+    leads, stale, errors, results = [], [], {}, {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for host, info, err in pool.map(_safe_check, hosts):
             if err:
@@ -149,7 +175,11 @@ def check_hosts(hosts: list[str], workers: int = 16) -> dict:
                 results[host] = {"status": info["status"], "cname": info["cname"]}
                 if info["lead"]:
                     leads.append(info["lead"])
-    return {"leads": leads, "results": results, "checked": len(hosts), "errors": errors}
+                if info["stale"]:
+                    stale.append(info["stale"])
+    return {"leads": leads, "stale": stale, "results": results, "checked": len(hosts), "errors": errors}
+
+
 if __name__ == "__main__":
     import sys
 

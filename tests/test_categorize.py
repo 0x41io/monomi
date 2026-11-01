@@ -24,6 +24,14 @@ DOMAIN = "example.com"
     # Riskier category wins, on either side of the hyphen
     ("dev-api", "non-production"),
     ("api-dev", "non-production"),
+    # New words and categories (v1.6.2, from the MercadoLibre field run)
+    ("is-opensearch-stg", "non-production"),
+    ("auth-testing", "non-production"),
+    ("sdl-kibana", "internal-tools"),
+    ("puppetboard-open", "internal-tools"),
+    ("tableau-old", "legacy"),
+    ("oldies", "uncategorized"),
+    ("prd", "uncategorized"),
 ])
 def test_label_categories(label, expected):
     result = categorize(f"{label}.{DOMAIN}", DOMAIN)

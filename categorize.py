@@ -9,14 +9,18 @@ same output, so a category is a fact with a stated reason, not a guess.
 # ORDER MATTERS: the first rule that matches wins. Riskier categories
 # come first, so "dev-api.example.com" counts as non-production.
 RULES = [
-    ("non-production", ["dev", "staging", "stage", "test", "uat", "qa", "sandbox", "preview"]),
+    ("non-production", ["dev", "staging", "stage", "stg", "test", "testing", "uat", "qa",
+                        "sandbox", "preview", "nonprod", "preprod", "poc", "demo", "beta"]),
+    ("legacy", ["old", "legacy", "deprecated"]),
     ("access", ["admin", "vpn", "sso", "login", "auth", "portal", "remote"]),
+    ("internal-tools", ["kibana", "grafana", "opensearch", "elasticsearch", "jenkins",
+                        "gitlab", "puppet", "puppetboard", "gradle", "sonarqube", "tableau",
+                        "prometheus", "argocd", "jira", "confluence", "wiki", "scada"]),
     ("app-api", ["api", "graphql", "ws", "websockets", "app"]),
     ("email", ["mta-sts", "mail", "smtp", "imap", "autodiscover", "webmail", "mx"]),
     ("marketing", ["go", "info", "links", "click", "url", "email", "events", "lp"]),
     ("content", ["www", "docs", "blog", "support", "help", "status", "cdn", "static", "design"]),
 ]
-
 
 def _label_matches(label, word):
     """True if a label is the word, or the word followed by a number or hyphen.

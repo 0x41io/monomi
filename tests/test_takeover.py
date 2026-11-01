@@ -1,6 +1,6 @@
 import takeover
 from evidence import build_evidence
-from takeover import check_host, check_hosts, match_service
+from takeover import check_host, check_hosts, inspect_host, match_not_claimable, match_service
 
 
 def fake_dns(monkeypatch, cnames, dead):
@@ -56,6 +56,23 @@ def test_dangling_cname_to_unknown_target_is_still_a_lead(monkeypatch):
     assert lead["claimable"] is False
 
 
+def test_dangling_cname_to_load_balancer_is_stale_not_a_lead(monkeypatch):
+    target = "internal-lb-sorter-prd-1879541874.sa-east-1.elb.amazonaws.com"
+    fake_dns(monkeypatch, cnames={"amr.example.com": target}, dead={target})
+    info = inspect_host("amr.example.com")
+    assert info["status"] == "stale"
+    assert info["lead"] is None
+    assert info["stale"]["service"] == "AWS Elastic Load Balancing"
+
+
+def test_live_load_balancer_is_just_cname_ok(monkeypatch):
+    target = "internal-lb-1553539328.sa-east-1.elb.amazonaws.com"
+    fake_dns(monkeypatch, cnames={"amr.example.com": target}, dead=set())
+    assert inspect_host("amr.example.com")["status"] == "cname_ok"
+
+
+def test_lookalike_load_balancer_domain_does_not_match():
+    assert match_not_claimable("evil-elb.amazonaws.com.attacker.net") is None
 # --- checking many hosts ---
 
 def test_one_broken_host_does_not_stop_the_scan(monkeypatch):
@@ -85,6 +102,16 @@ def test_lead_becomes_evidence():
     report = {"leads": [lead], "checked": 1, "errors": {}, "collected_at": "2026-10-25T16:00:00+00:00"}
     facts = [e["fact"] for e in build_evidence(base_results(report))]
     assert any("gone.azurewebsites.net" in f and "claimed again" in f for f in facts)
+
+
+def test_stale_record_becomes_evidence_not_a_lead():
+    record = {"host": "amr.example.com", "cname": "internal-lb-1.sa-east-1.elb.amazonaws.com",
+              "service": "AWS Elastic Load Balancing", "collected_at": "2026-11-01T03:11:30+00:00"}
+    report = {"leads": [], "stale": [record], "checked": 1, "errors": {},
+              "collected_at": "2026-11-01T03:11:30+00:00"}
+    facts = [e["fact"] for e in build_evidence(base_results(report))]
+    assert any("stale DNS record, not a takeover risk" in f for f in facts)
+    assert not any(f.startswith("Takeover check: none of") for f in facts)
 
 
 def test_clean_result_still_becomes_evidence():

@@ -40,12 +40,23 @@ def test_check_takeover_uses_cleaned_hosts(monkeypatch):
 
 def test_check_ports_uses_smaller_cap(monkeypatch):
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": hosts})
-    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {"ips": {}})
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
+        "ips": {}, "checked": 0, "errors": 0, "skipped": 0})
     names = [f"h{i}.example.com" for i in range(150)]
     result = mcp_server.check_ports(names)
     assert result["hosts_checked"] == mcp_server.MAX_PORT_HOSTS
     assert result["hosts_skipped"] == 150 - mcp_server.MAX_PORT_HOSTS
 
+def test_check_ports_renames_ip_counts(monkeypatch):
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": hosts})
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
+        "ips": {}, "checked": 2, "errors": 1, "skipped": 0})
+    result = mcp_server.check_ports(["a.example.com"])
+    assert result["ips_checked"] == 2
+    assert result["ip_errors"] == 1
+    assert result["ips_skipped"] == 0
+    for old in ("checked", "errors", "skipped"):
+        assert old not in result
 
 
 def fake_investigate(ip):

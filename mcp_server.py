@@ -52,8 +52,9 @@ def find_subdomains(domain: str) -> dict:
     are likely more subdomains that CT logs can't list.
     Usually under a minute. If crt.sh is too slow, results come from
     Cert Spotter alone and "errors" says crt.sh timed out.
-    Each hostname also gets a rule-based category (app-api, email, access,
-    non-production, marketing, content, apex, uncategorized) with the reason
+    Each hostname also gets a rule-based category (non-production, legacy,
+    access, internal-tools, app-api, email, marketing, content, apex,
+    uncategorized) with the reason
     it matched: facts from naming patterns, not confirmed by contacting hosts."""
     domain = clean_domain(domain)
 
@@ -103,7 +104,10 @@ def check_takeover(hostnames: list[str]) -> dict:
     someone else. Pass the hostnames from find_subdomains.
     Passive: DNS lookups only, never contacts the hosts themselves.
     A flagged host is a lead to verify, not a confirmed takeover.
-    Every host gets a status in "results": no_cname, cname_ok, lead or error.
+    Every host gets a status in "results": no_cname, cname_ok, stale, lead
+    or error. "stale" means the target was deleted but its name can't be
+    claimed again (e.g. an AWS load balancer): an old DNS record, not a
+    takeover risk, listed in "stale" instead of "leads".
     Checks at most 200 hostnames per call."""
     checked, skipped = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
@@ -139,6 +143,11 @@ def check_ports(hostnames: list[str]) -> dict:
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         exposure = internetdb.lookup(enrichment)
+    exposure["ips_checked"] = exposure.pop("checked")
+    exposure["ip_errors"] = exposure.pop("errors")
+    exposure["ips_skipped"] = exposure.pop("skipped")
+
+
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, **exposure}
 
 

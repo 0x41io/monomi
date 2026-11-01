@@ -148,7 +148,12 @@ def build_evidence(results: dict) -> list[dict]:
             else:
                 add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
                     "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source)
-        if not tk["leads"]:
+        for record in tk.get("stale", []):
+            stale_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": record["collected_at"]}]
+            add(f"{record['host']} has a CNAME to {record['cname']} ({record['service']}), and that target "
+                f"does not exist (NXDOMAIN); {record['service']} names include a random ID and can't be "
+                "claimed again, so this is a stale DNS record, not a takeover risk", stale_source)
+        if not tk["leads"] and not tk.get("stale"):
             checked = tk["checked"] - len(tk["errors"])
             check_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": tk["collected_at"]}]
             add(f"Takeover check: none of {checked} hostnames has a CNAME pointing to a name that doesn't exist",

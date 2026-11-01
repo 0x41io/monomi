@@ -169,9 +169,14 @@ def label(facts: dict) -> list[dict]:
                 add(name, "reverse DNS", f"its hostname ({facts['rdns']}) contains '{word}'")
 
     provider = (facts["network"] or {}).get("as_name")
+    cpe_edge = internetdb.edge_from_cpes((facts["shodan"] or {}).get("cpes", []))
     if provider in internetdb.SHARED_EDGE:
         add("cdn_edge", "Team Cymru ASN",
             f"{provider} edge server: the real source is behind the CDN")
+    elif cpe_edge:
+        add("cdn_edge", "Shodan InternetDB",
+            f"Shodan identifies the service as {cpe_edge[0]} ({cpe_edge[1]}): "
+            "the real source is behind it")
     elif provider in HOSTING_PROVIDERS:
         add("hosting", "Team Cymru ASN",
             f"network belongs to {provider}, a hosting/cloud provider")

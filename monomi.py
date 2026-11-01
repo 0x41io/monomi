@@ -335,11 +335,16 @@ def run_takeover(results: dict) -> None:
         else:
             warn(f"{ui.paint('DANGLING CNAME', ui.BOLD, ui.YELLOW)}  {host} -> {cname}  "
                  f"(target no longer exists)")
+    for record in report["stale"]:
+        host = ui.safe(record["host"])
+        cname = ui.safe(record["cname"])
+        info(f"{ui.paint('STALE', ui.BOLD, ui.GREY)}  {host} -> {cname}  "
+             f"({record['service']}: target deleted, but its name can't be claimed again)")
     if report["errors"]:
         warn(f"{len(report['errors'])} host(s) couldn't be checked (DNS didn't answer).")
     if not report["leads"]:
         checked = report["checked"] - len(report["errors"])
-        good(f"No dangling CNAMEs among {checked} hosts checked.")
+        good(f"No takeover leads among {checked} hosts checked.")
 
 
 def show_import_findings(sf: dict) -> None:

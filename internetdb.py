@@ -35,6 +35,42 @@ RISKY_PORTS = {
 # the CDN, not to the target's own server.
 SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva", "AWS CloudFront"}
 
+# Shodan CPE names (software fingerprints) that mean "this IP is a shared
+# edge server", even when the network owner isn't a CDN: e.g. Cloudflare
+# serving from a customer's own IP range, or Okta running on AWS.
+EDGE_CPES = {
+    "cloudflare": "Cloudflare",
+    "amazon_cloudfront": "AWS CloudFront",
+    "fastly": "Fastly",
+    "akamai": "Akamai",
+    "okta": "Okta",
+}
+
+
+def edge_from_cpes(cpes: list[str]) -> tuple[str, str] | None:
+    """Which shared-edge vendor Shodan's CPEs point to, if any.
+
+    'cpe:/a:cloudflare:cloudflare' -> ('Cloudflare', 'cpe:/a:cloudflare:cloudflare')
+    Matches whole CPE parts only, so 'cpe:/a:cloudflarex:thing' doesn't count.
+    """
+    for cpe in cpes:
+        parts = cpe.lower().split(":")
+        for key, vendor in EDGE_CPES.items():
+            if key in parts:
+                return vendor, cpe
+    return None
+
+
+def edge_reason(provider: str | None, cpes: list[str]) -> str | None:
+    """Why an IP counts as a shared edge server, or None if it doesn't."""
+    if provider in SHARED_EDGE:
+        return f"network owner is {provider}"
+    found = edge_from_cpes(cpes)
+    if found:
+        vendor, cpe = found
+        return f"Shodan identifies the service as {vendor} ({cpe})"
+    return None
+
 
 def lookup_one(ip: str, timeout: int = 15) -> dict | None:
     """Return Shodan's data for one IP, or None if Shodan has nothing on it."""
@@ -90,7 +126,8 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
             meta = by_ip[ip]
             data["hosts"] = sorted(meta["hosts"])
             data["provider"] = meta["provider"]
-            data["shared_edge"] = meta["provider"] in SHARED_EDGE
+            data["edge_reason"] = edge_reason(meta["provider"], data["cpes"])
+            data["shared_edge"] = data["edge_reason"] is not None
             data["risky"] = [f"{p}/{RISKY_PORTS[p]}" for p in data["ports"] if p in RISKY_PORTS]
             found[ip] = data
 

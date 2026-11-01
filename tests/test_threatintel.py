@@ -75,6 +75,12 @@ def test_cdn_edge_from_network_owner():
     assert names(labels) == ["cdn_edge", "no_anonymizer_found"]
 
 
+def test_cdn_edge_from_shodan_cpe():
+    shodan = {"tags": [], "cpes": ["cpe:/a:cloudflare:cloudflare"]}
+    labels = label(facts(network={"as_name": "MFI-AS"}, shodan=shodan))
+    assert "cdn_edge" in names(labels)
+
+
 def test_hosting_provider():
     assert "hosting" in names(label(facts(network={"as_name": "DigitalOcean"})))
 
@@ -157,40 +163,6 @@ def test_evidence_works_with_citation_checker():
     from evidence import check_citations
     ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated(tor_exit=True)}})
     assert check_citations("Tor exit [E1].", ev) == []
-    assert check_citations("Made up [E99].", ev) == ["E99"]# --- evidence for the AI verdict ---
-
-def investigated(**changes):
-    """A full investigate()-style result: facts + collected_at + labels."""
-    r = facts(collected_at="2026-10-31T16:00:00+00:00", **changes)
-    r["labels"] = label(r)
-    return r
-
-
-def test_evidence_is_numbered_in_order():
-    ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated()}})
-    assert [e["id"] for e in ev] == [f"E{n}" for n in range(1, len(ev) + 1)]
-    assert all(e["sources"][0]["collected_at"] == "2026-10-31T16:00:00+00:00" for e in ev)
-
-
-def test_evidence_says_country_is_registration_not_location():
-    r = investigated(network={"asn": "AS198093", "as_name": "DFRI-AS",
-                              "raw_as_name": "DFRI-AS - Foreningen, SE", "country": "SE"})
-    ev = threatintel.build_evidence({"ips": {"203.0.113.7": r}})
-    fact = next(e["fact"] for e in ev if "AS198093" in e["fact"])
-    assert "not where its user is" in fact
-
-
-def test_failed_source_becomes_unknown_not_missing():
-    r = investigated(tor_exit=None, errors={"tor": "timed out"})
-    facts_text = [e["fact"] for e in threatintel.build_evidence({"ips": {"203.0.113.7": r}})]
-    assert not any("exit node list" in f and "not in" in f for f in facts_text)
-    assert any("Tor exit list lookup" in f and "unknown" in f for f in facts_text)
-
-
-def test_evidence_works_with_citation_checker():
-    from evidence import check_citations
-    ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated(tor_exit=True)}})
-    assert check_citations("Tor exit [E1].", ev) == []
     assert check_citations("Made up [E99].", ev) == ["E99"]
 
 
@@ -221,4 +193,4 @@ def test_reject_reason_explains_each_kind():
 def test_google_network_is_hosting():
     facts = {"tor_exit": False, "shodan": None, "rdns": None,
              "network": {"as_name": "Google"}}
-    assert "hosting" in {l["label"] for l in label(facts)}  
+    assert "hosting" in {l["label"] for l in label(facts)}
