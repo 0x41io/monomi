@@ -372,6 +372,17 @@ def show_import_findings(sf: dict) -> None:
         print(f"    {ui.paint(ui.safe(fnd['type']), ui.YELLOW)}  {first_line}  ({ui.safe(fnd['module'])})")
 
 
+def baseline_gaps(results: dict) -> list[str]:
+    """Failed sources that leave a real gap in the hostname list.
+
+    The crt.sh website and database hold the same data, so one of them
+    failing while the other worked loses nothing.
+    """
+    crtsh_ok = any(name in results["sources"] for name in FULL_HISTORY_SOURCES)
+    return [name for name in results["errors"]
+            if not (name in FULL_HISTORY_SOURCES and crtsh_ok)]
+
+
 def show_changes(results: dict) -> None:
     """Compare with the last scan of this domain, then save this one as the new baseline.
 
@@ -381,9 +392,10 @@ def show_changes(results: dict) -> None:
     domain, all_subs = results["target"], results["subdomains"]
     previous = history.load_last(domain)
 
-    if results["errors"]:
+    gaps = baseline_gaps(results)
+    if gaps:
         print()
-        warn("A source failed, so this scan wasn't saved to history (it would be an incomplete baseline).")
+        warn(f"{', '.join(gaps)} failed, so this scan wasn't saved to history (it would be an incomplete baseline).")
         if previous is not None:
             changes = history.compare(previous, all_subs)
             results["changes"] = changes

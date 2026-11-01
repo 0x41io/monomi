@@ -1,6 +1,6 @@
 import pytest
 
-from monomi import clean_domain, flag_silent_crtsh_failure
+from monomi import baseline_gaps, clean_domain, collect_ct, flag_silent_crtsh_failure
 
 
 def test_clean_domain_strips_url_parts():
@@ -79,3 +79,21 @@ def test_collect_ct_runs_silent_check_when_every_source_succeeds(monkeypatch):
     monomi.collect_ct(results, "example.com")
     assert "crt.sh" in results["errors"]
     assert set(results["sources"]) == {"crt.sh database", "certspotter"}
+
+
+def test_one_crtsh_source_failing_leaves_no_gap():
+    results = {"sources": {"crt.sh database": {}, "certspotter": {}},
+               "errors": {"crt.sh": "HTTP 502"}}
+    assert baseline_gaps(results) == []
+
+
+def test_both_crtsh_sources_failing_is_a_gap():
+    results = {"sources": {"certspotter": {}},
+               "errors": {"crt.sh": "HTTP 502", "crt.sh database": "timeout"}}
+    assert baseline_gaps(results) == ["crt.sh", "crt.sh database"]
+
+
+def test_cert_spotter_failing_is_still_a_gap():
+    results = {"sources": {"crt.sh": {}, "crt.sh database": {}},
+               "errors": {"certspotter": "rate limited"}}
+    assert baseline_gaps(results) == ["certspotter"]
