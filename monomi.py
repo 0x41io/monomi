@@ -15,7 +15,7 @@ import re
 import sys
 from datetime import datetime
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from collectors import certspotter, crtsh, crtsh_db
 from common import now_utc
 from importers import spiderfoot
@@ -128,7 +128,7 @@ FULL_HISTORY_SOURCES = ("crt.sh", "crt.sh database")
 
 
 def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET,
-               crtsh_light: bool = False) -> None:
+               crtsh_light: bool = False, total_budget: float | None = None) -> None:
     """Query all Certificate Transparency sources at the same time and merge whatever succeeds."""
     jobs = {
         "crt.sh": lambda: crtsh.collect(domain, budget=crtsh_budget, light=crtsh_light),
@@ -136,10 +136,18 @@ def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_B
         "Cert Spotter": lambda: certspotter.collect(domain),
     }
     info("Querying certificate transparency logs (crt.sh, crt.sh database, Cert Spotter, in parallel)...")
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        futures = {name: pool.submit(job) for name, job in jobs.items()}
+    pool = ThreadPoolExecutor(max_workers=len(jobs))
+    futures = {name: pool.submit(job) for name, job in jobs.items()}
+    # Wait for every source, but never longer than total_budget (None = no limit)
+    wait_for(futures.values(), timeout=total_budget)
+    # Don't block on a source that's still running; its result is dropped
+    pool.shutdown(wait=False, cancel_futures=True)
 
     for name, future in futures.items():
+        if not future.done():
+            results["errors"][name] = f"still running after the {total_budget:.0f}s total budget, skipped"
+            warn(f"{name} skipped: took longer than {total_budget:.0f}s")
+            continue
         try:
             r = future.result()
             results["sources"][r["source"]] = r
@@ -147,7 +155,6 @@ def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_B
         except RuntimeError as e:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
-
     flag_silent_crtsh_failure(results)
 
 def flag_silent_crtsh_failure(results: dict) -> None:

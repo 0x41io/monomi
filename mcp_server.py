@@ -24,6 +24,7 @@ mcp = MCPServer("monomi")
 # The Claude app's bridge gives up after 60s, so crt.sh gets at most 50s.
 # That leaves room for Cert Spotter (which runs after it) plus overhead.
 CRTSH_BUDGET = 50
+TOTAL_BUDGET = 45  # whole find_subdomains call; leaves room under the Claude app's 60s limit
 
 # Max hostnames one tool call handles, to stay under the 60s limit.
 MAX_HOSTS = 200
@@ -60,7 +61,7 @@ def find_subdomains(domain: str) -> dict:
 
     results = {"sources": {}, "errors": {}}
     with contextlib.redirect_stdout(sys.stderr):
-        collect_ct(results, domain, crtsh_budget=CRTSH_BUDGET, crtsh_light=True)
+        collect_ct(results, domain, crtsh_budget=CRTSH_BUDGET, crtsh_light=True, total_budget=TOTAL_BUDGET)
     hostnames = sorted({h for r in results["sources"].values() for h in r["subdomains"]})
     wildcards = sorted({w for r in results["sources"].values() for w in r.get("wildcards", [])})
     categories = categorize_all(hostnames, domain)
