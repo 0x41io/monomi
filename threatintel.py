@@ -142,7 +142,25 @@ def investigate(ip: str) -> dict:
         result["errors"]["shodan"] = str(e)
 
     result["labels"] = label(result)
+    add_vulns_note(result)
     return result
+
+
+def add_vulns_note(result: dict) -> None:
+    """Explain CVEs seen on a shared CDN edge IP.
+
+    Thousands of sites share one CDN edge IP, and Shodan records whatever
+    version banners it saw there, so these CVEs most likely belong to
+    another site behind the IP. Needs result["labels"] already set.
+    """
+    shodan = result["shodan"]
+    if not shodan or not shodan["vulns"]:
+        return
+    if any(l["label"] == "cdn_edge" for l in result["labels"]):
+        shodan["vulns_note"] = ("seen on a shared CDN edge IP: these CVEs most "
+                                "likely belong to another site behind it, "
+                                "not to this IP's owner")
+
 
 def label(facts: dict) -> list[dict]:
     """Turn investigate() facts into labels, each with its source and reason.
@@ -236,6 +254,9 @@ def build_evidence(results: dict) -> list[dict]:
                 fact += f"; tags: {', '.join(s['tags'])}"
             if s["vulns"]:
                 fact += f"; {len(s['vulns'])} CVE(s) matched from version banners"
+                if s.get("vulns_note"):
+                    fact += (" (seen on a shared CDN edge IP, so these likely "
+                             "belong to another site behind it)")
             add(fact, "Shodan InternetDB", when)
         elif "shodan" not in errors:
             add(f"Shodan InternetDB has no record of {ip}", "Shodan InternetDB", when)

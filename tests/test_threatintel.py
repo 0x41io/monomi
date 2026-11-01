@@ -3,8 +3,7 @@ import requests
 import enrich
 import internetdb
 import threatintel
-from threatintel import clean_ip, label, reject_reason
-
+from threatintel import add_vulns_note, build_evidence, clean_ip, label, reject_reason
 
 def facts(**changes):
     """A clean, boring IP's facts. Pass keyword args to change any part."""
@@ -194,3 +193,36 @@ def test_google_network_is_hosting():
     facts = {"tor_exit": False, "shodan": None, "rdns": None,
              "network": {"as_name": "Google"}}
     assert "hosting" in {l["label"] for l in label(facts)}
+
+def edge_result(labels, vulns):
+    """A minimal investigate() result with the given labels and CVEs."""
+    return {"collected_at": "2026-11-01T00:00:00+00:00", "errors": {},
+            "tor_exit": False, "network": None, "rdns": None,
+            "shodan": {"ports": [443], "tags": [], "vulns": vulns, "cpes": []},
+            "labels": [{"label": n, "source": "test", "reason": "test"}
+                       for n in labels]}
+
+
+def test_vulns_note_on_cdn_edge_with_cves():
+    r = edge_result(["cdn_edge"], ["CVE-2020-11022"])
+    add_vulns_note(r)
+    assert "another site" in r["shodan"]["vulns_note"]
+
+
+def test_no_vulns_note_on_hosting_ip():
+    r = edge_result(["hosting"], ["CVE-2020-11022"])
+    add_vulns_note(r)
+    assert "vulns_note" not in r["shodan"]
+
+
+def test_no_vulns_note_without_cves():
+    r = edge_result(["cdn_edge"], [])
+    add_vulns_note(r)
+    assert "vulns_note" not in r["shodan"]
+
+
+def test_evidence_explains_cves_on_cdn_edge():
+    r = edge_result(["cdn_edge"], ["CVE-2020-11022"])
+    add_vulns_note(r)
+    facts = [e["fact"] for e in build_evidence({"ips": {"104.21.37.188": r}})]
+    assert any("shared CDN edge" in f for f in facts)
