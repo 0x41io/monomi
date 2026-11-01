@@ -1,8 +1,7 @@
 """Tests for internetdb.py: shared edge detection."""
 
 import internetdb
-from internetdb import edge_from_cpes, edge_reason
-
+from internetdb import edge_from_cname, edge_from_cpes, edge_reason
 
 def test_cdn_network_owner_is_edge():
     assert edge_reason("Cloudflare", []) == "network owner is Cloudflare"
@@ -38,3 +37,36 @@ def test_cpe_edge_ports_are_not_blamed_on_target(monkeypatch):
     assert ip["shared_edge"] is True
     assert ip["edge_reason"].startswith("Shodan identifies the service as Cloudflare")
 
+
+
+
+def test_okta_cname_is_edge():
+    assert edge_from_cname({"meli.customdomains.okta.com"}) == ("Okta", "meli.customdomains.okta.com")
+
+
+def test_lookalike_cname_does_not_match():
+    # No dot before "cloudfront.net", so it's someone else's domain
+    assert edge_from_cname({"evilcloudfront.net"}) is None
+
+
+def test_cname_is_used_when_owner_and_cpes_say_nothing():
+    reason = edge_reason("AWS", [], {"d3rx.cloudfront.net"})
+    assert reason == "hostname's CNAME points to AWS CloudFront (d3rx.cloudfront.net)"
+
+
+def test_network_owner_wins_over_cname():
+    assert edge_reason("Cloudflare", [], {"x.cloudfront.net"}) == "network owner is Cloudflare"
+
+
+def test_cname_edge_ports_are_not_blamed_on_target(monkeypatch):
+    # The adminml.com case: Okta on plain AWS IPs, Shodan has no Okta CPE
+    shodan = {"ports": [80, 443], "vulns": ["CVE-2023-0001"], "tags": [], "cpes": []}
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: dict(shodan))
+    enrichment = {"hosts": {"auth.example.com": {"ips": ["3.3.3.3"], "provider": "AWS",
+                                                 "canonical": "example.customdomains.okta.com"}},
+                  "ip_info": {"3.3.3.3": {"provider": "AWS"}}}
+    result = internetdb.lookup(enrichment)
+    ip = result["ips"]["3.3.3.3"]
+    assert ip["shared_edge"] is True
+    assert ip["edge_reason"] == "hostname's CNAME points to Okta (example.customdomains.okta.com)"
+    assert result["unique_cves"] == []  # Okta's CVE isn't blamed on the target

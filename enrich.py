@@ -23,16 +23,26 @@ from takeover import _resolvers
 CYMRU_HOST = ("whois.cymru.com", 43)
 
 
-def _resolve_one(host: str) -> list[str]:
+def _resolve_one(host: str) -> dict:
+    """IPv4 addresses for one host, plus where its CNAME chain ends.
+
+    gethostbyname_ex returns (canonical_name, aliases, ips). The canonical
+    name is the last name in the CNAME chain, e.g. 'd3rx...cloudfront.net'
+    for gslink.hackerone.com. If the host has no CNAME, it's the host itself,
+    so we store None.
+    """
     try:
-        _, _, ips = socket.gethostbyname_ex(host)
-        return sorted(set(ips))
+        canonical, _, ips = socket.gethostbyname_ex(host)
     except (socket.gaierror, socket.herror, UnicodeError, OSError):
-        return []
+        return {"ips": [], "canonical": None}
+    canonical = canonical.rstrip(".").lower()
+    if canonical == host.rstrip(".").lower():
+        canonical = None
+    return {"ips": sorted(set(ips)), "canonical": canonical}
 
-
-def resolve(hosts: list[str], workers: int = 32) -> dict[str, list[str]]:
-    """Resolve many hostnames in parallel. Unresolvable hosts map to []."""
+def resolve(hosts: list[str], workers: int = 32) -> dict[str, dict]:
+    """Resolve many hostnames in parallel: {host: {"ips": [...], "canonical": ...}}.
+    Unresolvable hosts get "ips": []."""
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return dict(zip(hosts, pool.map(_resolve_one, hosts)))
 
@@ -145,11 +155,11 @@ def parse_cymru(text: str) -> dict[str, dict]:
 def enrich(hosts: list[str]) -> dict:
     """Resolve + ASN-enrich hosts. Returns per-host data, per-IP data and a provider summary."""
     resolved = resolve(hosts)
-    unresolved = [h for h in hosts if not resolved.get(h)]
+    unresolved = [h for h in hosts if not resolved[h]["ips"]]
     with ThreadPoolExecutor(max_workers=16) as pool:
         status = dict(zip(unresolved, pool.map(dns_status, unresolved)))
 
-    all_ips = sorted({ip for ips in resolved.values() for ip in ips})
+    all_ips = sorted({ip for r in resolved.values() for ip in r["ips"]})
     public_ips = [ip for ip in all_ips if ipaddress.ip_address(ip).is_global]
     asn_error = None
     try:
@@ -185,8 +195,9 @@ def enrich(hosts: list[str]) -> dict:
 
     per_host = {}
     for host in hosts:
-        ips = resolved.get(host, [])
-        entry = {"ips": ips, "dns": status.get(host, "live")}
+        ips = resolved[host]["ips"]
+        entry = {"ips": ips, "canonical": resolved[host]["canonical"],
+                 "dns": status.get(host, "live")}
         if not ips:
             entry["provider"] = None  # in CT logs, but no IPv4 address now
             entry["providers"] = []

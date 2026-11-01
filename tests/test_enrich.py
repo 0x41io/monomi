@@ -50,7 +50,7 @@ def test_all_resolvers_down_is_lookup_failed(monkeypatch):
 
 
 def test_enrich_groups_hosts_that_dont_resolve(monkeypatch):
-    monkeypatch.setattr(enrich, "resolve", lambda hosts: {h: [] for h in hosts})
+    monkeypatch.setattr(enrich, "resolve", lambda hosts: {h: {"ips": [], "canonical": None} for h in hosts})
     statuses = {"old.example.com": "gone", "v6.example.com": "ipv6_only"}
     monkeypatch.setattr(enrich, "dns_status", lambda h: statuses[h])
 
@@ -60,3 +60,17 @@ def test_enrich_groups_hosts_that_dont_resolve(monkeypatch):
     assert data["not_resolving"] == {"gone": ["old.example.com"], "ipv6_only": ["v6.example.com"]}
     assert data["providers"] == {"no DNS record": 1, "IPv6 only": 1}
     assert data["resolved"] == 0
+
+
+
+
+def test_resolve_one_keeps_where_the_cname_ends(monkeypatch):
+    monkeypatch.setattr(enrich.socket, "gethostbyname_ex",
+                        lambda h: ("D3RX.cloudfront.net.", [h], ["18.154.101.92", "18.154.101.35"]))
+    assert enrich._resolve_one("gslink.example.com") == {
+        "ips": ["18.154.101.35", "18.154.101.92"], "canonical": "d3rx.cloudfront.net"}
+
+
+def test_resolve_one_without_cname_has_no_canonical(monkeypatch):
+    monkeypatch.setattr(enrich.socket, "gethostbyname_ex", lambda h: (h, [], ["1.2.3.4"]))
+    assert enrich._resolve_one("www.example.com")["canonical"] is None

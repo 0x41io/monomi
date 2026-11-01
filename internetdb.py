@@ -61,7 +61,37 @@ def edge_from_cpes(cpes: list[str]) -> tuple[str, str] | None:
     return None
 
 
-def edge_reason(provider: str | None, cpes: list[str]) -> str | None:
+# CNAME endings that mean "this hostname is served by a shared edge
+# network", even when the network owner and Shodan don't say so, e.g.
+# Okta's login servers on plain AWS IPs. Each entry: (ending, vendor).
+EDGE_CNAMES = [
+    (".cloudfront.net", "AWS CloudFront"),
+    (".okta.com", "Okta"),
+    (".fastly.net", "Fastly"),
+    (".fastlylb.net", "Fastly"),
+    (".akamaiedge.net", "Akamai"),
+    (".edgekey.net", "Akamai"),
+    (".edgesuite.net", "Akamai"),
+    (".cdn.cloudflare.net", "Cloudflare"),
+    (".incapdns.net", "Imperva"),
+    (".azurefd.net", "Azure Front Door"),
+    (".azureedge.net", "Azure CDN"),
+]
+
+
+def edge_from_cname(names) -> tuple[str, str] | None:
+    """Which shared-edge vendor a hostname's CNAME points to, if any.
+
+    'meli.customdomains.okta.com' -> ('Okta', 'meli.customdomains.okta.com')
+    Endings start with a dot, so 'evilcloudfront.net' doesn't count.
+    """
+    for name in sorted(names):  # sorted: same answer every run
+        for ending, vendor in EDGE_CNAMES:
+            if name.endswith(ending):
+                return vendor, name
+    return None
+
+def edge_reason(provider: str | None, cpes: list[str], cnames=()) -> str | None:
     """Why an IP counts as a shared edge server, or None if it doesn't."""
     if provider in SHARED_EDGE:
         return f"network owner is {provider}"
@@ -69,6 +99,10 @@ def edge_reason(provider: str | None, cpes: list[str]) -> str | None:
     if found:
         vendor, cpe = found
         return f"Shodan identifies the service as {vendor} ({cpe})"
+    found = edge_from_cname(cnames)
+    if found:
+        vendor, name = found
+        return f"hostname's CNAME points to {vendor} ({name})"
     return None
 
 
@@ -108,9 +142,10 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
             if not ipaddress.ip_address(ip).is_global:
                 continue  # private/internal: Shodan can't see it
             provider = ip_info.get(ip, {}).get("provider", e.get("provider"))
-            entry = by_ip.setdefault(ip, {"hosts": [], "provider": provider})
+            entry = by_ip.setdefault(ip, {"hosts": [], "provider": provider, "canonicals": set()})
             entry["hosts"].append(host)
-
+            if e.get("canonical"):
+                entry["canonicals"].add(e["canonical"])
     ips = sorted(by_ip)
     skipped = max(0, len(ips) - MAX_IPS)
     ips = ips[:MAX_IPS]
@@ -126,7 +161,7 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
             meta = by_ip[ip]
             data["hosts"] = sorted(meta["hosts"])
             data["provider"] = meta["provider"]
-            data["edge_reason"] = edge_reason(meta["provider"], data["cpes"])
+            data["edge_reason"] = edge_reason(meta["provider"], data["cpes"], meta["canonicals"])
             data["shared_edge"] = data["edge_reason"] is not None
             data["risky"] = [f"{p}/{RISKY_PORTS[p]}" for p in data["ports"] if p in RISKY_PORTS]
             found[ip] = data
