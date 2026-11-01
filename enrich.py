@@ -14,8 +14,11 @@ import ipaddress
 import socket
 
 import aws_ranges
+import dns.exception
+import dns.resolver
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from takeover import _resolvers
 
 CYMRU_HOST = ("whois.cymru.com", 43)
 
@@ -50,6 +53,40 @@ def asn_lookup(ips: list[str], timeout: int = 20) -> dict[str, dict]:
     return parse_cymru("".join(c.decode(errors="replace") for c in chunks))
 
 
+# Why a host has no IPv4 address. socket can't tell these apart, so hosts
+# with no IPs get a second look with dnspython (dns_status below).
+DNS_LABELS = {
+    "gone": "no DNS record",          # NXDOMAIN: the name doesn't exist anymore
+    "ipv6_only": "IPv6 only",         # live, just no IPv4 address
+    "no_address": "no IP address",    # no A or AAAA record (may still be gone: Cloudflare never says NXDOMAIN)
+    "lookup_failed": "DNS lookup failed",  # no DNS server answered: unknown
+}
+
+
+def _has_record(resolver, host: str, rtype: str) -> bool:
+    """True if DNS returns rtype for host, False if the name exists without it.
+    Lets NXDOMAIN and timeouts through for dns_status to handle."""
+    try:
+        resolver.resolve(host, rtype, lifetime=5)
+        return True
+    except dns.resolver.NoAnswer:
+        return False
+
+
+def dns_status(host: str) -> str:
+    """Second look at a host that got no IPv4 address: why not?"""
+    for resolver in _resolvers():
+        try:
+            if _has_record(resolver, host, "A"):
+                # It has an IPv4 address after all, but the first lookup didn't
+                # get it, so we have no IPs to report: count it as failed.
+                return "lookup_failed"
+            return "ipv6_only" if _has_record(resolver, host, "AAAA") else "no_address"
+        except dns.resolver.NXDOMAIN:
+            return "gone"
+        except dns.exception.DNSException:
+            continue  # this DNS server failed, try the next one
+    return "lookup_failed"
 # Raw ASN names are noisy ("AMAZON-02, US", "FASTLY - Fastly, Inc., US").
 # Map the big providers to names people recognize.
 KNOWN_PROVIDERS = [
@@ -108,6 +145,9 @@ def parse_cymru(text: str) -> dict[str, dict]:
 def enrich(hosts: list[str]) -> dict:
     """Resolve + ASN-enrich hosts. Returns per-host data, per-IP data and a provider summary."""
     resolved = resolve(hosts)
+    unresolved = [h for h in hosts if not resolved.get(h)]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        status = dict(zip(unresolved, pool.map(dns_status, unresolved)))
 
     all_ips = sorted({ip for ips in resolved.values() for ip in ips})
     public_ips = [ip for ip in all_ips if ipaddress.ip_address(ip).is_global]
@@ -146,9 +186,9 @@ def enrich(hosts: list[str]) -> dict:
     per_host = {}
     for host in hosts:
         ips = resolved.get(host, [])
-        entry = {"ips": ips}
+        entry = {"ips": ips, "dns": status.get(host, "live")}
         if not ips:
-            entry["provider"] = None  # in CT logs but no DNS record now
+            entry["provider"] = None  # in CT logs, but no IPv4 address now
             entry["providers"] = []
             per_host[host] = entry
             continue
@@ -168,12 +208,18 @@ def enrich(hosts: list[str]) -> dict:
             entry["provider"] = main
         per_host[host] = entry
 
-    providers = Counter(e["provider"] or "no DNS record" for e in per_host.values())
+    providers = Counter(e["provider"] or DNS_LABELS.get(e["dns"], "no IPv4 address")
+                        for e in per_host.values())
+    not_resolving = {}
+    for host, e in per_host.items():
+        if not e["ips"]:
+            not_resolving.setdefault(e["dns"], []).append(host)
     return {
         "hosts": per_host,
         "ip_info": ip_info,
         "providers": dict(providers.most_common()),
         "resolved": sum(1 for e in per_host.values() if e["ips"]),
+        "not_resolving": not_resolving,
         "unique_ips": len({ip for e in per_host.values() for ip in e["ips"]}),
         # Any internal IP counts, even if the host also has public ones
         "private_ip_hosts": [h for h, e in per_host.items() if e.get("private_ips")],

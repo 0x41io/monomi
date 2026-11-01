@@ -1,4 +1,4 @@
-from evidence import check_citations, cited_ids
+from evidence import build_evidence, check_citations, cited_ids
 from history import compare
 
 
@@ -18,3 +18,21 @@ def test_history_compare_spots_new_and_gone_hosts():
     changes = compare(previous, ["a.example.com", "new.example.com"])
     assert changes["added"] == ["new.example.com"]
     assert changes["removed"] == ["old.example.com"]
+
+def test_evidence_says_why_a_host_has_no_ip():
+    hosts = ["old.example.com", "x.example.com"]
+    results = {
+        "subdomains": hosts,
+        "sources": {"crt.sh": {"source": "crt.sh", "subdomains": hosts}},
+        "enrichment": {
+            "hosts": {
+                "old.example.com": {"ips": [], "provider": None, "dns": "gone"},
+                "x.example.com": {"ips": [], "provider": None, "dns": "lookup_failed"},
+            },
+            "private_ip_hosts": [],
+        },
+    }
+    facts = [e["fact"] for e in build_evidence(results)]
+    assert any("old.example.com had no DNS record" in f and "NXDOMAIN" in f for f in facts)
+    assert any("x.example.com could not be looked up" in f and "unknown" in f for f in facts)
+    assert not any("x.example.com had no DNS record" in f for f in facts)

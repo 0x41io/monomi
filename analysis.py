@@ -8,6 +8,8 @@ Requires an Anthropic API key in the ANTHROPIC_API_KEY environment variable.
 import json
 import os
 
+from enrich import DNS_LABELS
+
 MAX_HOSTS = 400  # keep requests small and cheap on very large domains
 MAX_EVIDENCE = 600  # same idea for the evidence list
 
@@ -45,8 +47,12 @@ provider than the rest, or self-hosted ranges next to cloud/CDN. A host whose \
 all_providers lists a CDN plus another provider may expose its origin server \
 directly; point that out.
 - In section 3, treat hosts resolving to private/internal IPs as worth \
-reviewing (internal addresses published in public DNS reveal network layout), \
-and note that CT-listed hosts with no DNS record are likely retired or stale.
+reviewing (internal addresses published in public DNS reveal network layout). \
+"not_resolving" groups hosts with no IPv4 address by DNS status: "gone" \
+(NXDOMAIN) are likely retired; "no_address" have no address and may be \
+retired too (some DNS providers, e.g. Cloudflare, never say a name is gone); \
+"ipv6_only" are live over IPv6 and weren't checked further; \
+"lookup_failed" are unknown, never call them retired or dead.
 - In Limitations, note that DNS reflects one point in time from one resolver.
 
 If the data includes "exposure" (Shodan InternetDB: open ports and CVEs per IP):
@@ -189,7 +195,8 @@ def summarize(results: dict) -> tuple[str, str]:
             {
                 "host": h,
                 "ips": enr["hosts"][h]["ips"],
-                "provider": enr["hosts"][h]["provider"] or "no DNS record",
+                "provider": enr["hosts"][h]["provider"]
+                            or DNS_LABELS.get(enr["hosts"][h].get("dns"), "no IPv4 address"),
                 "all_providers": enr["hosts"][h].get("providers", []),
                 "asn": enr["hosts"][h].get("asn"),
                 "country": enr["hosts"][h].get("country"),
@@ -201,6 +208,7 @@ def summarize(results: dict) -> tuple[str, str]:
             "unique_ips": enr["unique_ips"],
             "providers": enr["providers"],
             "private_ip_hosts": enr["private_ip_hosts"],
+            "not_resolving": enr.get("not_resolving", {}),
         }
     exp = results.get("exposure")
     if exp:

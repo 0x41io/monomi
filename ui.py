@@ -11,6 +11,7 @@ import shutil
 import sys
 
 from common import VERSION
+from enrich import DNS_LABELS
 
 ENABLED = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 
@@ -139,9 +140,11 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
     if dead:
         print()
         shown = dead if len(dead) <= show_dead + 1 else dead[:show_dead]
-        print(indent + paint(f"{len(dead)} host(s) in CT logs have no DNS record (likely retired):", GREY))
+        print(indent + paint(f"{len(dead)} host(s) in CT logs have no IPv4 address:", GREY))
         for h in shown:
-            print(indent + "  " + paint(h, GREY))
+            label = DNS_LABELS.get(hosts[h].get("dns"), "no IPv4 address")
+            color = YELLOW if hosts[h].get("dns") == "ipv6_only" else GREY  # still live
+            print(indent + "  " + paint(h, color) + paint(f"  ({label})", GREY))
         if len(shown) < len(dead):
             print(indent + "  " + paint(f"... and {len(dead) - len(shown)} more (full list with --json)", GREY))
 
@@ -156,7 +159,7 @@ def provider_bars(providers: dict, total: int, width: int = 24, top: int = 8, in
     biggest = max(n for _, n in items)
     for name, n in items:
         bar = "█" * max(1, round(n / biggest * width))
-        color = GREY if name == "no DNS record" else YELLOW if name == "PRIVATE IP" else RED
+        color = GREY if name in DNS_LABELS.values() else YELLOW if name == "PRIVATE IP" else RED
         pct = f"{n / total:4.0%}" if total else ""
         print(f"{indent}{_cell(name, name_w)}  {paint(bar.ljust(width), color)}  {n:>3}  {paint(pct, GREY)}")
 

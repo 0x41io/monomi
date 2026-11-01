@@ -9,6 +9,16 @@ import re
 
 from common import now_utc
 
+# What we can honestly say about a host with no IPv4 address, per enrich's "dns" status
+DNS_FACTS = {
+    "gone": "had no DNS record when checked (NXDOMAIN: the name doesn't exist)",
+    "no_address": "had no IP address in DNS when checked (no A or AAAA record); DNS didn't "
+                  "say the name is gone, but some DNS providers (e.g. Cloudflare) answer this "
+                  "way for names that don't exist, so it may be retired",
+    "ipv6_only": "had an IPv6 address but no IPv4 address when checked (not looked up further)",
+    "lookup_failed": "could not be looked up (no DNS server answered), so whether it resolves is unknown",
+}
+
 def build_evidence(results: dict) -> list[dict]:
     """Turn raw recon results into a numbered list of evidence items."""
     evidence = []
@@ -45,7 +55,8 @@ def build_evidence(results: dict) -> list[dict]:
                     where += f", {h['country']}"
                 add(f"{host} resolves to {', '.join(h['ips'])} ({where})", dns_source)
             else:
-                add(f"{host} had no DNS record when checked", dns_source)
+                fact = DNS_FACTS.get(h.get("dns"), "had no IPv4 address when checked")
+                add(f"{host} {fact}", dns_source)
         for host in enr["private_ip_hosts"]:
             private = ", ".join(enr["hosts"][host].get("private_ips", []))
             add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source)
