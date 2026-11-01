@@ -58,6 +58,24 @@ def test_check_ports_renames_ip_counts(monkeypatch):
     for old in ("checked", "errors", "skipped"):
         assert old not in result
 
+def test_check_ports_summary_counts(monkeypatch):
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {
+        "hosts": hosts, "resolved": 3,
+        "not_resolving": {"gone": ["x.example.com"],
+                          "no_address": ["y.example.com", "z.example.com"]}})
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
+        "ips": {"1.1.1.1": {"shared_edge": True}, "2.2.2.2": {"shared_edge": False}},
+        "checked": 4, "errors": 1, "skipped": 0,
+        "unique_cves": ["CVE-2024-0001"], "risky": [("2.2.2.2", ["22/ssh"])]})
+    result = mcp_server.check_ports(["a.example.com"])
+    assert list(result)[0] == "summary"  # agents read it first
+    assert result["summary"] == {
+        "hosts_resolved": 3, "hosts_not_resolving": 3,
+        "edge_ips": 1, "origin_ips": 1, "ips_nothing_seen": 1,
+        "origin_cves": 1, "origin_ips_with_risky_ports": 1,
+    }
+    assert result["not_resolving"]["no_address"] == ["y.example.com", "z.example.com"]
+
 
 def fake_investigate(ip):
     """A boring investigate() result, so no test touches the network."""

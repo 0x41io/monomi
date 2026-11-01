@@ -130,6 +130,21 @@ def enrich_hosts(hostnames: list[str]) -> dict:
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, **result}
 
 
+def ports_summary(enrichment: dict, exposure: dict) -> dict:
+    """Short counts for the top of check_ports' result, read before the per-IP details."""
+    found = exposure["ips"]
+    edge = sum(1 for d in found.values() if d["shared_edge"])
+    not_resolving = enrichment.get("not_resolving", {})
+    return {
+        "hosts_resolved": enrichment.get("resolved", 0),
+        "hosts_not_resolving": sum(len(hosts) for hosts in not_resolving.values()),
+        "edge_ips": edge,
+        "origin_ips": len(found) - edge,
+        "ips_nothing_seen": exposure["ips_checked"] - exposure["ip_errors"] - len(found),
+        "origin_cves": len(exposure.get("unique_cves", [])),
+        "origin_ips_with_risky_ports": len(exposure.get("risky", [])),
+    }
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def check_ports(hostnames: list[str]) -> dict:
     """Look up open ports, risky services and known CVEs for the IPs
@@ -139,7 +154,10 @@ def check_ports(hostnames: list[str]) -> dict:
     contacts the hosts themselves. CVEs are inferred from version
     banners, not confirmed: treat them as leads to verify. Ports on
     shared CDN edge IPs (e.g. Cloudflare) belong to the CDN, not the
-    target. Checks at most 100 hostnames per call."""
+    target. Starts with a "summary" of counts: CDN edge vs origin IPs,
+    CVEs and risky ports on origin IPs only, and hostnames that don't
+    resolve (listed by DNS status in "not_resolving").
+    Checks at most 100 hostnames per call."""
     checked, skipped = clean_hosts(hostnames, MAX_PORT_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
@@ -149,7 +167,9 @@ def check_ports(hostnames: list[str]) -> dict:
     exposure["ips_skipped"] = exposure.pop("skipped")
 
 
-    return {"hosts_checked": len(checked), "hosts_skipped": skipped, **exposure}
+    return {"summary": ports_summary(enrichment, exposure),
+            "hosts_checked": len(checked), "hosts_skipped": skipped,
+            "not_resolving": enrichment.get("not_resolving", {}), **exposure}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
