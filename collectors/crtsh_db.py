@@ -8,6 +8,7 @@ answers, so this gets crt.sh's full history without depending on the web
 front end. Still 100% passive: we only ask crt.sh, never the target itself.
 """
 
+import socket
 import time
 
 import psycopg
@@ -45,13 +46,18 @@ def fetch_raw(domain: str, budget: float = DEFAULT_BUDGET, retries: int = 2) -> 
             break  # too little time left for a useful try
         tries += 1
         try:
-            with psycopg.connect(**DB, connect_timeout=10, autocommit=True) as conn:
-                # Tell the server to stop the query itself if it runs past our time left
-                conn.execute(f"SET statement_timeout = {int(remaining * 1000)}")
+            # IPv4 only: crt.sh also has an IPv6 address, and networks without
+            # an IPv6 route (like WSL) fail on it with "Network is unreachable"
+            ipv4 = socket.gethostbyname(DB["host"])
+            with psycopg.connect(**DB, hostaddr=ipv4, connect_timeout=10, autocommit=True) as conn:
+                # Time left AFTER connecting (that can take up to 10s); never 0, which means no limit
+                remaining = deadline - time.monotonic()
+                conn.execute(f"SET statement_timeout = {max(1000, int(remaining * 1000))}")
                 return conn.execute(QUERY, params).fetchall()
         except psycopg.Error as e:
             last_error = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
-
+        except OSError as e:
+            last_error = f"couldn't look up {DB['host']}'s IPv4 address ({e})"
         if attempt < retries:
             warn(f"crt.sh database attempt {attempt} failed ({last_error}), retrying...")
 
