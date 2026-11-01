@@ -3,3 +3,4 @@ anthropic>=0.40
 rich>=13.0
 dnspython>=2.6
 mcp>=2.0
+psycopg[binary]>=3.2

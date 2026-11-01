@@ -16,7 +16,7 @@ import sys
 from datetime import datetime
 
 from concurrent.futures import ThreadPoolExecutor
-from collectors import certspotter, crtsh
+from collectors import certspotter, crtsh, crtsh_db
 from common import now_utc
 from importers import spiderfoot
 import emailauth
@@ -123,16 +123,19 @@ def add_import(results: dict, sf: dict, path: str) -> None:
         info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
              f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
 
+# Sources that keep every certificate ever logged (expired ones too)
+FULL_HISTORY_SOURCES = ("crt.sh", "crt.sh database")
+
 
 def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET,
                crtsh_light: bool = False) -> None:
-    """Query both Certificate Transparency sources at the same time and merge whatever succeeds."""
+    """Query all Certificate Transparency sources at the same time and merge whatever succeeds."""
     jobs = {
         "crt.sh": lambda: crtsh.collect(domain, budget=crtsh_budget, light=crtsh_light),
+        "crt.sh database": lambda: crtsh_db.collect(domain, budget=min(crtsh_budget, crtsh_db.DEFAULT_BUDGET)),
         "Cert Spotter": lambda: certspotter.collect(domain),
     }
-    info("Querying certificate transparency logs (crt.sh + Cert Spotter, in parallel)...")
-
+    info("Querying certificate transparency logs (crt.sh, crt.sh database, Cert Spotter, in parallel)...")
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
         futures = {name: pool.submit(job) for name, job in jobs.items()}
 
@@ -144,28 +147,33 @@ def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_B
         except RuntimeError as e:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
-            flag_silent_crtsh_failure(results)
+
+    flag_silent_crtsh_failure(results)
 
 def flag_silent_crtsh_failure(results: dict) -> None:
-    """Catch crt.sh failing without an error.
+    """Catch a crt.sh source failing without an error.
 
-    Cert Spotter only returns certificates that are still valid, while crt.sh
-    keeps every certificate ever logged, so crt.sh should always see at least
-    as many. If crt.sh saw 0 but Cert Spotter saw some, crt.sh broke silently
-    (it sometimes answers with an empty reply when it's overloaded). Treat that
-    as a failure, so change detection won't save an incomplete baseline and the
-    AI report won't say crt.sh found nothing.
+    crt.sh (website and database) keeps every certificate ever logged, so it
+    should always see at least as many as any other source. If one of them saw
+    0 while another source saw some, it broke silently (crt.sh sometimes answers
+    with an empty reply when it's overloaded). Treat that as a failure, so
+    change detection won't save an incomplete baseline and the AI report won't
+    say crt.sh found nothing.
     """
-    crt = results["sources"].get("crt.sh")
-    cs = results["sources"].get("certspotter")
-    if crt and cs and crt["certificates_seen"] == 0 and cs["certificates_seen"] > 0:
-        del results["sources"]["crt.sh"]
-        results["errors"]["crt.sh"] = (
-            f"returned no certificates while Cert Spotter found {cs['certificates_seen']}; "
-            "crt.sh likely failed silently (empty reply)"
+    for name in FULL_HISTORY_SOURCES:
+        r = results["sources"].get(name)
+        if not r or r["certificates_seen"] > 0:
+            continue  # didn't run, failed loudly, or found something: nothing to flag
+        others = {other: o["certificates_seen"] for other, o in results["sources"].items() if other != name}
+        best = max(others, key=others.get, default=None)
+        if best is None or others[best] == 0:
+            continue  # nobody found anything: a genuine empty result
+        del results["sources"][name]
+        results["errors"][name] = (
+            f"returned no certificates while {best} found {others[best]}; "
+            f"{name} likely failed silently (empty reply)"
         )
-        warn("crt.sh returned nothing but Cert Spotter found certificates, so crt.sh probably failed silently. Treating it as unavailable.")
-
+        warn(f"{name} returned nothing but {best} found certificates, so it probably failed silently. Treating it as unavailable.")
 
 def run_enrich(results: dict, ports_on: bool) -> dict:
     """--enrich: resolve every host, look up who hosts it, and print the table."""
