@@ -45,3 +45,37 @@ def test_check_skipped_when_certspotter_failed():
     results = {"sources": {"crt.sh": _ct("crt.sh", 0)}, "errors": {"Cert Spotter": "HTTP 500"}}
     flag_silent_crtsh_failure(results)
     assert "crt.sh" in results["sources"]
+
+
+def test_crtsh_flagged_when_database_found_certificates():
+    results = {"sources": {"crt.sh": _ct("crt.sh", 0), "crt.sh database": _ct("crt.sh database", 703),
+                           "certspotter": _ct("certspotter", 0)},
+               "errors": {}}
+    flag_silent_crtsh_failure(results)
+    assert "crt.sh" not in results["sources"]
+    assert "crt.sh database found 703" in results["errors"]["crt.sh"]
+
+
+def test_both_crtsh_sources_flagged_when_only_certspotter_found_some():
+    results = {"sources": {"crt.sh": _ct("crt.sh", 0), "crt.sh database": _ct("crt.sh database", 0),
+                           "certspotter": _ct("certspotter", 8)},
+               "errors": {}}
+    flag_silent_crtsh_failure(results)
+    assert list(results["sources"]) == ["certspotter"]
+    assert set(results["errors"]) == {"crt.sh", "crt.sh database"}
+
+
+def _source(source, certs):
+    return {**_ct(source, certs), "subdomain_count": 0}
+
+
+def test_collect_ct_runs_silent_check_when_every_source_succeeds(monkeypatch):
+    # The bug fixed in v1.7: the check used to run only when some source errored
+    import monomi
+    monkeypatch.setattr(monomi.crtsh, "collect", lambda domain, budget, light: _source("crt.sh", 0))
+    monkeypatch.setattr(monomi.crtsh_db, "collect", lambda domain, budget: _source("crt.sh database", 5))
+    monkeypatch.setattr(monomi.certspotter, "collect", lambda domain: _source("certspotter", 2))
+    results = {"sources": {}, "errors": {}}
+    monomi.collect_ct(results, "example.com")
+    assert "crt.sh" in results["errors"]
+    assert set(results["sources"]) == {"crt.sh database", "certspotter"}
