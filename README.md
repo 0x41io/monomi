@@ -9,7 +9,7 @@
  ╚═════╝ ╚═╝  ╚═╝     ╚═╝ ╚═╝   mønømi
 ```
 
-**monomi** by 0x41: **passive domain reconnaissance with AI-written analysis.**
+**mønømi: passive attack surface recon and IP threat-intel, with AI-written analysis and an MCP server, by 0x41.**
 
 Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, and what the owner can do about it.
 
