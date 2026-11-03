@@ -30,7 +30,6 @@ BOLD = "\033[1m"
 
 WHITE = rgb(240, 240, 240)
 RED = rgb(255, 40, 60)
-LOGO_RED = rgb(215, 25, 32)    # #D71920, the red in the 0x41 logo
 GREY = rgb(130, 130, 140)
 GREEN = rgb(80, 220, 120)
 YELLOW = rgb(255, 200, 60)
@@ -65,7 +64,7 @@ LOGO_WIDTH = max(len(row) for row in LOGO)
 
 
 def banner() -> str:
-    """The big red "monomi" with "by Øx41 · version" under its right edge.
+    """The big white "monomi" with "by Øx41 · version" under its right edge.
 
     Terminals narrower than the logo get a one-line version instead,
     so the big one never wraps into a mess.
@@ -75,9 +74,8 @@ def banner() -> str:
 
     cols = shutil.get_terminal_size((110, 24)).columns
     if cols <= LOGO_WIDTH:
-        return f"\n{paint('mønømi', BOLD, LOGO_RED)}  {tag}\n"
-
-    logo = "\n".join(paint(row, LOGO_RED) for row in LOGO)
+        return f"\n{paint('mønømi', BOLD, WHITE)}  {tag}\n"
+    logo = "\n".join(paint(row, WHITE) for row in LOGO)
     pad = " " * (LOGO_WIDTH - len(tag_text))
     return f"\n{logo}\n{pad}{tag}\n"
 
