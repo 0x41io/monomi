@@ -24,6 +24,10 @@ class DNSLookupError(Exception):
     """No DNS server answered at all (different from 'no record exists')."""
 
 
+class NoSuchHost(Exception):
+    """DNS answered NXDOMAIN: the hostname itself doesn't exist."""
+
+
 def _resolvers():
     """System DNS first, then public DNS (WSL's relay can time out)."""
     system = dns.resolver.Resolver()
@@ -36,14 +40,17 @@ def get_cname(name: str) -> str | None:
     """Where a hostname's CNAME points, e.g. 'myapp.herokuapp.com'.
 
     None means DNS answered and there's no CNAME (a normal A-record host).
+    Raises NoSuchHost if the name doesn't exist at all (NXDOMAIN).
     Raises DNSLookupError if no DNS server would answer.
     """
     for resolver in _resolvers():
         try:
             answers = resolver.resolve(name, "CNAME", lifetime=5)
             # str() gives 'myapp.herokuapp.com.' -- drop the trailing dot
-            return str(answers[0].target).rstrip(".").lower()
-        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        except dns.resolver.NXDOMAIN:
+            raise NoSuchHost(name)
+        except dns.resolver.NoAnswer:
+            return None
             return None
         except dns.exception.DNSException:
             continue
@@ -116,28 +123,52 @@ def match_service(target: str) -> str | None:
             return service
     return None
 
-def inspect_host(host: str) -> dict:
+def in_domain(name: str, domain: str) -> bool:
+    """Is this name the domain itself or under it?
+
+    in_domain('designdelivered.wolt.com', 'wolt.com') -> True
+    in_domain('evilwolt.com', 'wolt.com')             -> False
+    """
+    return name == domain or name.endswith("." + domain)
+
+def inspect_host(host: str, domain: str | None = None) -> dict:
     """Check one hostname and report what was found, clean or not.
 
+    domain: the domain being scanned. A dangling CNAME that points back
+    inside it is "stale", not a lead: only its owner can create that name.
+
     Returns {"status": ..., "cname": ..., "lead": ..., "stale": ...}:
-      "no_cname"  -> plain A-record host, nothing can dangle
+      "no_such_host" -> the hostname itself doesn't exist (NXDOMAIN)
+      "no_cname"  -> DNS answered with no CNAME record, so nothing can dangle.
+                     Doesn't prove the host is live: some DNS providers
+                     (e.g. Cloudflare) answer this way for missing names too
       "cname_ok"  -> CNAME points at a name that exists: fine
       "stale"     -> CNAME target is NXDOMAIN, but on a service whose names
                      can't be claimed again: old record, not a takeover risk
       "lead"      -> CNAME target is NXDOMAIN (dangling)
     "lead" / "stale" hold the full record for that status, else None.
     """
-    target = get_cname(host)
+    try:
+        target = get_cname(host)
+    except NoSuchHost:
+        return {"status": "no_such_host", "cname": None, "lead": None, "stale": None}
     if target is None:
         return {"status": "no_cname", "cname": None, "lead": None, "stale": None}
     if name_exists(target):
         return {"status": "cname_ok", "cname": target, "lead": None, "stale": None}
 
-    unclaimable = match_not_claimable(target)
-    if unclaimable:
-        stale = {"host": host, "cname": target, "service": unclaimable, "collected_at": now_utc()}
+    if domain and in_domain(target, domain):
+        stale = {"host": host, "cname": target, "service": "same domain",
+                 "reason": f"only the owner of {domain} can create names under it",
+                 "collected_at": now_utc()}
         return {"status": "stale", "cname": target, "lead": None, "stale": stale}
 
+    unclaimable = match_not_claimable(target)
+    if unclaimable:
+        stale = {"host": host, "cname": target, "service": unclaimable,
+                 "reason": "names on this service include a random ID and can't be claimed again",
+                 "collected_at": now_utc()}
+        return {"status": "stale", "cname": target, "lead": None, "stale": stale}
     service = match_service(target)
     lead = {
         "host": host,
@@ -152,22 +183,24 @@ def check_host(host: str) -> dict | None:
     """Check one hostname. Returns a lead if its CNAME dangles, else None."""
     return inspect_host(host)["lead"]
 
-def _safe_check(host: str):
+def _safe_check(host: str, domain: str | None = None):
     """check_host() that never crashes: returns (host, lead, error)."""
     try:
-        return host, inspect_host(host), None
+        return host, inspect_host(host, domain), None
     except DNSLookupError as e:
         return host, None, str(e)
 
-def check_hosts(hosts: list[str], workers: int = 16) -> dict:
+def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) -> dict:
     """Run the takeover check on every hostname.
+
+    domain: the domain being scanned (e.g. 'wolt.com'), if known.
 
     Returns {"leads": [...], "stale": [...], "results": {host: {"status", "cname"}},
              "checked": count, "errors": {host: reason}}.
     """
     leads, stale, errors, results = [], [], {}, {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, info, err in pool.map(_safe_check, hosts):
+        for host, info, err in pool.map(lambda h: _safe_check(h, domain), hosts):
             if err:
                 errors[host] = err
                 results[host] = {"status": "error", "cname": None}

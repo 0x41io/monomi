@@ -1,7 +1,6 @@
 import takeover
 from evidence import build_evidence
-from takeover import check_host, check_hosts, inspect_host, match_not_claimable, match_service
-
+from takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_service
 
 def fake_dns(monkeypatch, cnames, dead):
     """Replace the real DNS lookups with made-up answers.
@@ -34,6 +33,15 @@ def test_no_cname_is_not_a_lead(monkeypatch):
     assert check_host("www.example.com") is None
 
 
+def test_missing_host_is_no_such_host_not_no_cname(monkeypatch):
+    def gone(name):
+        raise takeover.NoSuchHost(name)
+    monkeypatch.setattr(takeover, "get_cname", gone)
+    result = inspect_host("old.example.com")
+    assert result["status"] == "no_such_host"
+    assert result["lead"] is None
+
+
 def test_cname_to_live_target_is_not_a_lead(monkeypatch):
     fake_dns(monkeypatch, cnames={"app.example.com": "myapp.azurewebsites.net"}, dead=set())
     assert check_host("app.example.com") is None
@@ -64,6 +72,20 @@ def test_dangling_cname_to_load_balancer_is_stale_not_a_lead(monkeypatch):
     assert info["lead"] is None
     assert info["stale"]["service"] == "AWS Elastic Load Balancing"
 
+
+def test_dangling_cname_inside_own_domain_is_stale_not_a_lead(monkeypatch):
+    fake_dns(monkeypatch, cnames={"www.designdelivered.wolt.com": "designdelivered.wolt.com"},
+             dead={"designdelivered.wolt.com"})
+    result = inspect_host("www.designdelivered.wolt.com", domain="wolt.com")
+    assert result["status"] == "stale"
+    assert result["lead"] is None
+    assert "wolt.com" in result["stale"]["reason"]
+
+
+def test_lookalike_domain_is_not_same_domain():
+    assert in_domain("designdelivered.wolt.com", "wolt.com")
+    assert in_domain("wolt.com", "wolt.com")
+    assert not in_domain("evilwolt.com", "wolt.com")
 
 def test_live_load_balancer_is_just_cname_ok(monkeypatch):
     target = "internal-lb-1553539328.sa-east-1.elb.amazonaws.com"

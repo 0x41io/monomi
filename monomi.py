@@ -336,7 +336,7 @@ def run_takeover(results: dict) -> None:
     hosts = results["subdomains"]
     print()
     info(f"Checking {len(hosts)} hosts for dangling CNAMEs / subdomain takeover (DNS lookups only)...")
-    report = takeover.check_hosts(hosts)
+    report = takeover.check_hosts(hosts, domain=results["target"])
     report["collected_at"] = now_utc()
     results["takeover"] = report
 
@@ -354,7 +354,7 @@ def run_takeover(results: dict) -> None:
         host = ui.safe(record["host"])
         cname = ui.safe(record["cname"])
         info(f"{ui.paint('STALE', ui.BOLD, ui.GREY)}  {host} -> {cname}  "
-             f"({record['service']}: target deleted, but its name can't be claimed again)")
+             f"({record['service']}: target deleted, {record['reason']})")
     if report["errors"]:
         warn(f"{len(report['errors'])} host(s) couldn't be checked (DNS didn't answer).")
     if not report["leads"]:

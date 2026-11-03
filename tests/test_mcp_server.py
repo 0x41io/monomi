@@ -26,13 +26,15 @@ def test_clean_hosts_caps_and_counts_skipped():
 def test_check_takeover_uses_cleaned_hosts(monkeypatch):
     seen = {}
 
-    def fake_check_hosts(hosts):
+    def fake_check_hosts(hosts, domain=None):
         seen["hosts"] = hosts
+        seen["domain"] = domain
         return {"leads": [], "checked": len(hosts), "errors": {}}
 
     monkeypatch.setattr(mcp_server, "check_hosts", fake_check_hosts)
-    result = mcp_server.check_takeover(["WWW.example.com", "www.example.com"])
+    result = mcp_server.check_takeover(["WWW.example.com", "www.example.com"], domain="Example.com.")
     assert seen["hosts"] == ["www.example.com"]
+    assert seen["domain"] == "example.com"
     assert result["hosts_checked"] == 1
     assert result["hosts_skipped"] == 0
     assert "checked" not in result  # the duplicate of hosts_checked is gone

@@ -98,21 +98,24 @@ def check_email_auth(domain: str) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def check_takeover(hostnames: list[str]) -> dict:
+def check_takeover(hostnames: list[str], domain: str | None = None) -> dict:
     """Check hostnames for dangling CNAMEs that could allow a subdomain
     takeover: a CNAME pointing at a cloud service (e.g. Azure, Elastic
     Beanstalk) whose target no longer exists and could be claimed by
     someone else. Pass the hostnames from find_subdomains.
     Passive: DNS lookups only, never contacts the hosts themselves.
     A flagged host is a lead to verify, not a confirmed takeover.
-    Every host gets a status in "results": no_cname, cname_ok, stale, lead
+    Every host gets a status in "results": no_such_host, no_cname, cname_ok, stale, lead
     or error. "stale" means the target was deleted but its name can't be
     claimed again (e.g. an AWS load balancer): an old DNS record, not a
     takeover risk, listed in "stale" instead of "leads".
+    Pass the scanned domain as "domain" (e.g. "example.com"): a CNAME that
+    points back inside it is also "stale", since only its owner can create
+    that name.
     Checks at most 200 hostnames per call."""
     checked, skipped = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
-        result = check_hosts(checked)
+        result = check_hosts(checked, domain=domain.strip().lower().rstrip(".") if domain else None)
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, **result}
 

@@ -161,9 +161,11 @@ def build_evidence(results: dict) -> list[dict]:
                     "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source)
         for record in tk.get("stale", []):
             stale_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": record["collected_at"]}]
+            # Scans saved before v1.7.1 have no "reason": those were all AWS records
+            reason = record.get("reason", "names on this service include a random ID and can't be claimed again")
             add(f"{record['host']} has a CNAME to {record['cname']} ({record['service']}), and that target "
-                f"does not exist (NXDOMAIN); {record['service']} names include a random ID and can't be "
-                "claimed again, so this is a stale DNS record, not a takeover risk", stale_source)
+                f"does not exist (NXDOMAIN); {reason}, so this is a stale DNS record, not a takeover risk",
+                stale_source)
         if not tk["leads"] and not tk.get("stale"):
             checked = tk["checked"] - len(tk["errors"])
             check_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": tk["collected_at"]}]
