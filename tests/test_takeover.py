@@ -141,3 +141,14 @@ def test_clean_result_still_becomes_evidence():
               "collected_at": "2026-10-25T16:00:00+00:00"}
     facts = [e["fact"] for e in build_evidence(base_results(report))]
     assert any(f.startswith("Takeover check: none of 4 hostnames") for f in facts)
+
+def test_get_cname_returns_the_target(monkeypatch):
+    class FakeAnswer:
+        target = "MyApp.AzureWebsites.net."
+
+    class FakeResolver:
+        def resolve(self, name, rtype, lifetime):
+            return [FakeAnswer()]
+
+    monkeypatch.setattr(takeover, "_resolvers", lambda: (FakeResolver(),))
+    assert takeover.get_cname("app.example.com") == "myapp.azurewebsites.net"

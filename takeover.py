@@ -47,10 +47,10 @@ def get_cname(name: str) -> str | None:
         try:
             answers = resolver.resolve(name, "CNAME", lifetime=5)
             # str() gives 'myapp.herokuapp.com.' -- drop the trailing dot
+            return str(answers[0].target).rstrip(".").lower()
         except dns.resolver.NXDOMAIN:
             raise NoSuchHost(name)
         except dns.resolver.NoAnswer:
-            return None
             return None
         except dns.exception.DNSException:
             continue
