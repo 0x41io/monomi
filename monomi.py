@@ -619,7 +619,7 @@ def main() -> int:
     all_subs = sorted({s for r in results["sources"].values() for s in r["subdomains"]})
     results["subdomains"] = all_subs
     print()
-    good(f"{ui.paint(str(len(all_subs)), ui.BOLD, ui.RED)} unique hostnames total:\n")
+    good(f"{ui.paint(str(len(all_subs)), ui.BOLD, ui.WHITE)} unique hostnames total:\n")
 
     # 2. Optional enrichment
     if args.enrich:

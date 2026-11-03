@@ -75,6 +75,7 @@ def banner() -> str:
     cols = shutil.get_terminal_size((110, 24)).columns
     if cols <= LOGO_WIDTH:
         return f"\n{paint('mønømi', BOLD, WHITE)}  {tag}\n"
+
     logo = "\n".join(paint(row, WHITE) for row in LOGO)
     pad = " " * (LOGO_WIDTH - len(tag_text))
     return f"\n{logo}\n{pad}{tag}\n"
