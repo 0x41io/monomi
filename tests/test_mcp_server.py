@@ -4,7 +4,7 @@ import mcp_server
 
 
 def test_clean_hosts_normalizes_and_dedupes():
-    hosts, skipped = mcp_server.clean_hosts(
+    hosts, skipped, _ = mcp_server.clean_hosts(
         [" WWW.Example.com ", "www.example.com.", "", "api.example.com"]
     )
     assert hosts == ["api.example.com", "www.example.com"]
@@ -12,13 +12,13 @@ def test_clean_hosts_normalizes_and_dedupes():
 
 
 def test_clean_hosts_keeps_www():
-    hosts, _ = mcp_server.clean_hosts(["example.com", "www.example.com"])
+    hosts, _, _ = mcp_server.clean_hosts(["example.com", "www.example.com"])
     assert hosts == ["example.com", "www.example.com"]
 
 
 def test_clean_hosts_caps_and_counts_skipped():
     names = [f"h{i}.example.com" for i in range(150)]
-    hosts, skipped = mcp_server.clean_hosts(names, limit=100)
+    hosts, skipped, _ = mcp_server.clean_hosts(names, limit=100)
     assert len(hosts) == 100
     assert skipped == 50
 
@@ -103,3 +103,27 @@ def test_investigate_ip_caps_and_counts_skipped(monkeypatch):
     result = mcp_server.investigate_ip(ips)
     assert result["ips_checked"] == mcp_server.MAX_IPS
     assert result["ips_skipped"] == 15 - mcp_server.MAX_IPS
+
+def test_clean_hosts_rejects_junk_with_reasons():
+    import mcp_server
+    link = "[dev.lab.test](https:" + "//dev.lab.test)"
+    url = "https:" + "//app.lab.test/login"
+    hosts, skipped, rejected = mcp_server.clean_hosts(
+        ["Dev.Lab.test.", "dev.lab.test", link, url, "*.lab.test",
+         "bad..lab.test", "-x.lab.test", "_dmarc.lab.test", "   "])
+
+    assert hosts == ["_dmarc.lab.test", "dev.lab.test"]   # cleaned, deduped, sorted
+    assert skipped == 0
+    reasons = {r["host"]: r["reason"] for r in rejected}
+    assert "Markdown link" in reasons[link]
+    assert "URL" in reasons[url]
+    assert "wildcard" in reasons["*.lab.test"]
+    assert "not a valid hostname" in reasons["bad..lab.test"]
+    assert "not a valid hostname" in reasons["-x.lab.test"]
+    assert len(rejected) == 5
+
+
+def test_clean_hosts_caps_rejected_list():
+    import mcp_server
+    _, _, rejected = mcp_server.clean_hosts([f"bad{i}..test" for i in range(50)])
+    assert len(rejected) == 20

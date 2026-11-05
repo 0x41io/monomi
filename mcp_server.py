@@ -6,6 +6,7 @@ Run it with:  python mcp_server.py
 It talks over stdin/stdout, so it prints nothing and waits for an agent.
 """
 import contextlib
+import re
 import sys
 
 from monomi import clean_domain, collect_ct
@@ -32,12 +33,42 @@ MAX_IPS = 10  # investigate_ip asks 4 sources per IP, one IP at a time
 MAX_PORT_HOSTS = 100  # check_ports also queries Shodan per IP, so it's slower
 
 
-def clean_hosts(hostnames: list[str], limit: int = MAX_HOSTS) -> tuple[list[str], int]:
-    """Normalize, dedupe and cap a hostname list sent by an agent.
-    Returns (hosts to check, how many were skipped over the cap)."""
-    hosts = sorted({h.strip().lower().rstrip(".") for h in hostnames if h.strip()})
-    return hosts[:limit], max(len(hosts) - limit, 0)
+# One DNS label (the parts between dots): letters, digits, hyphens (not at
+# either end) and underscores (used in names like _dmarc), 1-63 characters
+LABEL_RE = re.compile(r"[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?")
 
+
+def hostname_problem(host: str) -> str | None:
+    """Why this (already lowercased) input isn't a hostname, or None if it is."""
+    if any(c in host for c in "[]()"):
+        return "contains brackets: looks like a pasted Markdown link"
+    if "://" in host or "/" in host:
+        return "looks like a URL: pass just the hostname, without https:// or a path"
+    if "*" in host:
+        return "a wildcard name can't be looked up: pass real hostnames"
+    if len(host) > 253:
+        return "too long to be a hostname (253 characters max)"
+    if not all(LABEL_RE.fullmatch(label) for label in host.split(".")):
+        return "not a valid hostname (only letters, digits, hyphens and dots)"
+    return None
+
+
+def clean_hosts(hostnames: list[str], limit: int = MAX_HOSTS) -> tuple[list[str], int, list[dict]]:
+    """Normalize, dedupe, validate and cap a hostname list sent by an agent.
+    Returns (hosts to check, how many were skipped over the cap,
+    inputs that aren't hostnames, each with the reason, at most 20)."""
+    hosts, rejected = set(), []
+    for raw in hostnames:
+        h = raw.strip().lower().rstrip(".")
+        if not h:
+            continue
+        problem = hostname_problem(h)
+        if problem:
+            rejected.append({"host": raw[:100], "reason": problem})  # cut long junk short
+        else:
+            hosts.add(h)
+    hosts = sorted(hosts)
+    return hosts[:limit], max(len(hosts) - limit, 0), rejected[:20]
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 def ping(name: str = "world") -> str:
@@ -112,12 +143,12 @@ def check_takeover(hostnames: list[str], domain: str | None = None) -> dict:
     Pass the scanned domain as "domain" (e.g. "example.com"): a CNAME that
     points back inside it is also "stale", since only its owner can create
     that name.
-    Checks at most 200 hostnames per call."""
-    checked, skipped = clean_hosts(hostnames)
+    Checks at most 200 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
+    checked, skipped, rejected = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_hosts(checked, domain=domain.strip().lower().rstrip(".") if domain else None)
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
-    return {"hosts_checked": len(checked), "hosts_skipped": skipped, **result}
+    return {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected, **result}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
@@ -126,11 +157,11 @@ def enrich_hosts(hostnames: list[str]) -> dict:
     ASN, hosting provider and country, with private IPs flagged.
     Pass the hostnames from find_subdomains. Passive: DNS and public
     IP-to-ASN data only, never contacts the hosts themselves.
-    Checks at most 200 hostnames per call."""
-    checked, skipped = clean_hosts(hostnames)
+    Checks at most 200 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
+    checked, skipped, rejected = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
         result = enrich(checked)
-    return {"hosts_checked": len(checked), "hosts_skipped": skipped, **result}
+    return {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected, **result}
 
 
 def ports_summary(enrichment: dict, exposure: dict) -> dict:
@@ -160,8 +191,8 @@ def check_ports(hostnames: list[str]) -> dict:
     target. Starts with a "summary" of counts: CDN edge vs origin IPs,
     CVEs and risky ports on origin IPs only, and hostnames that don't
     resolve (listed by DNS status in "not_resolving").
-    Checks at most 100 hostnames per call."""
-    checked, skipped = clean_hosts(hostnames, MAX_PORT_HOSTS)
+    Checks at most 100 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
+    checked, skipped, rejected = clean_hosts(hostnames, MAX_PORT_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         exposure = internetdb.lookup(enrichment)
@@ -171,7 +202,7 @@ def check_ports(hostnames: list[str]) -> dict:
 
 
     return {"summary": ports_summary(enrichment, exposure),
-            "hosts_checked": len(checked), "hosts_skipped": skipped,
+            "hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "not_resolving": enrichment.get("not_resolving", {}), **exposure}
 
 
