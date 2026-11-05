@@ -106,7 +106,7 @@ def check_takeover(hostnames: list[str], domain: str | None = None) -> dict:
     Passive: DNS lookups only, never contacts the hosts themselves.
     A flagged host is a lead to verify, not a confirmed takeover.
     Every host gets a status in "results": no_such_host, no_cname, cname_ok, stale, lead
-    or error. "stale" means the target was deleted but its name can't be
+    conflicting or error ("conflicting": system DNS and DNS-over-HTTPS disagreed, so unknown). "stale" means the target was deleted but its name can't be
     claimed again (e.g. an AWS load balancer): an old DNS record, not a
     takeover risk, listed in "stale" instead of "leads".
     Pass the scanned domain as "domain" (e.g. "example.com"): a CNAME that

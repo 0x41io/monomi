@@ -124,7 +124,7 @@ def test_conflict_lands_in_errors(monkeypatch):
     use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
     use_doh(monkeypatch, ("ok", []))
     report = takeover.check_hosts(["dev.lab.test"])
-    assert report["results"]["dev.lab.test"]["status"] == "error"
+    assert report["results"]["dev.lab.test"]["status"] == "conflicting"
     assert "conflicting answers" in report["errors"]["dev.lab.test"]
     assert report["leads"] == []
 

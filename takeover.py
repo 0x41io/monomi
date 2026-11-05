@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 from common import now_utc
-from dnscheck import DNSLookupError, NoSuchHost, get_cname, name_exists
+from dnscheck import ConflictingAnswers, DNSLookupError, NoSuchHost, get_cname, name_exists
 
 # Services where a deleted resource's name goes NXDOMAIN AND can usually
 # be re-claimed by anyone who signs up. Each entry: (CNAME ending, name).
@@ -125,11 +125,19 @@ def check_host(host: str) -> dict | None:
     return inspect_host(host)["lead"]
 
 def _safe_check(host: str, domain: str | None = None):
-    """check_host() that never crashes: returns (host, lead, error)."""
+    """inspect_host() that never crashes: returns (host, info, error, status).
+
+    On a DNS problem, info is None, error is the reason, and status says
+    which kind: "conflicting" (system DNS and DNS-over-HTTPS disagree)
+    or "error" (no DNS server answered).
+    """
     try:
-        return host, inspect_host(host, domain), None
+        return host, inspect_host(host, domain), None, None
+    except ConflictingAnswers as e:
+        return host, None, str(e), "conflicting"
     except DNSLookupError as e:
-        return host, None, str(e)
+        return host, None, str(e), "error"
+
 
 def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) -> dict:
     """Run the takeover check on every hostname.
@@ -141,10 +149,10 @@ def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) 
     """
     leads, stale, errors, results = [], [], {}, {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, info, err in pool.map(lambda h: _safe_check(h, domain), hosts):
+        for host, info, err, err_status in pool.map(lambda h: _safe_check(h, domain), hosts):
             if err:
                 errors[host] = err
-                results[host] = {"status": "error", "cname": None}
+                results[host] = {"status": err_status, "cname": None}
             else:
                 results[host] = {"status": info["status"], "cname": info["cname"]}
                 if info["lead"]:
