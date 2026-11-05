@@ -14,11 +14,9 @@ import ipaddress
 import socket
 
 import aws_ranges
-import dns.exception
-import dns.resolver
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dnscheck import _resolvers
+from dnscheck import host_status
 
 CYMRU_HOST = ("whois.cymru.com", 43)
 
@@ -63,40 +61,21 @@ def asn_lookup(ips: list[str], timeout: int = 20) -> dict[str, dict]:
     return parse_cymru("".join(c.decode(errors="replace") for c in chunks))
 
 
-# Why a host has no IPv4 address. socket can't tell these apart, so hosts
-# with no IPs get a second look with dnspython (dns_status below).
+
+
+# Why a host has no IPv4 address, as short labels for the provider summary.
+# The status words come from dnscheck.host_status(), shared by every check.
 DNS_LABELS = {
-    "gone": "no DNS record",          # NXDOMAIN: the name doesn't exist anymore
-    "ipv6_only": "IPv6 only",         # live, just no IPv4 address
-    "no_address": "no IP address",    # no A or AAAA record (may still be gone: Cloudflare never says NXDOMAIN)
-    "lookup_failed": "DNS lookup failed",  # no DNS server answered: unknown
+    "no_such_host": "no DNS record",            # NXDOMAIN, double-checked over HTTPS
+    "dangling_cname": "CNAME to a deleted name",  # host exists, its CNAME target doesn't
+    "ipv6_only": "IPv6 only",                   # live, just no IPv4 address
+    "no_address": "no IP address",              # no A or AAAA record (may still be retired: Cloudflare never says NXDOMAIN)
+    "conflicting": "conflicting DNS answers",   # system DNS and DNS-over-HTTPS disagree: unknown
+    "lookup_failed": "DNS lookup failed",       # no DNS server answered: unknown
+    "gone": "no DNS record",                    # pre-v1.8 name for no_such_host (old saved scans)
 }
 
 
-def _has_record(resolver, host: str, rtype: str) -> bool:
-    """True if DNS returns rtype for host, False if the name exists without it.
-    Lets NXDOMAIN and timeouts through for dns_status to handle."""
-    try:
-        resolver.resolve(host, rtype, lifetime=5)
-        return True
-    except dns.resolver.NoAnswer:
-        return False
-
-
-def dns_status(host: str) -> str:
-    """Second look at a host that got no IPv4 address: why not?"""
-    for resolver in _resolvers():
-        try:
-            if _has_record(resolver, host, "A"):
-                # It has an IPv4 address after all, but the first lookup didn't
-                # get it, so we have no IPs to report: count it as failed.
-                return "lookup_failed"
-            return "ipv6_only" if _has_record(resolver, host, "AAAA") else "no_address"
-        except dns.resolver.NXDOMAIN:
-            return "gone"
-        except dns.exception.DNSException:
-            continue  # this DNS server failed, try the next one
-    return "lookup_failed"
 # Raw ASN names are noisy ("AMAZON-02, US", "FASTLY - Fastly, Inc., US").
 # Map the big providers to names people recognize.
 KNOWN_PROVIDERS = [
@@ -156,9 +135,17 @@ def enrich(hosts: list[str]) -> dict:
     """Resolve + ASN-enrich hosts. Returns per-host data, per-IP data and a provider summary."""
     resolved = resolve(hosts)
     unresolved = [h for h in hosts if not resolved[h]["ips"]]
+    # Second look at hosts the fast lookup couldn't resolve. The shared DNS
+    # helper says why, and finds the IPs if the fast lookup just failed
+    # (e.g. WSL's DNS cache replaying a stale "no such name").
     with ThreadPoolExecutor(max_workers=16) as pool:
-        status = dict(zip(unresolved, pool.map(dns_status, unresolved)))
-
+        second = dict(zip(unresolved, pool.map(host_status, unresolved)))
+    status = {}
+    for host, (word, ips) in second.items():
+        if ips:
+            resolved[host]["ips"] = ips   # live after all: keep the IPs
+        else:
+            status[host] = word
     all_ips = sorted({ip for r in resolved.values() for ip in r["ips"]})
     public_ips = [ip for ip in all_ips if ipaddress.ip_address(ip).is_global]
     asn_error = None
