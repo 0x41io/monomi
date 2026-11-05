@@ -2,8 +2,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/monomi-dark.png">
-    <img src="assets/monomi-light.png" alt="mønømi by 0x41" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/0x41io/monomi/main/assets/monomi-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/0x41io/monomi/main/assets/monomi-light.png">
+    <img src="https://raw.githubusercontent.com/0x41io/monomi/main/assets/monomi-banner.png" alt="mønømi by 0x41" width="420">
   </picture>
 </p>
 
