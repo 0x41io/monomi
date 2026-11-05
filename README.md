@@ -1,13 +1,11 @@
 # mønømi
 
-```
- ██████╗ ██╗  ██╗██╗  ██╗ ██╗
-██╔═████╗╚██╗██╔╝██║  ██║███║
-██║██╔██║ ╚███╔╝ ███████║╚██║
-████╔╝██║ ██╔██╗ ╚════██║ ██║
-╚██████╔╝██╔╝ ██╗     ██║ ██║
- ╚═════╝ ╚═╝  ╚═╝     ╚═╝ ╚═╝   mønømi
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/monomi-dark.png">
+    <img src="assets/monomi-light.png" alt="mønømi by 0x41" width="420">
+  </picture>
+</p>
 
 **mønømi: passive attack surface recon and IP threat-intel, with AI-written analysis and an MCP server, by 0x41.**
 
