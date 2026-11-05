@@ -36,3 +36,13 @@ def test_evidence_says_why_a_host_has_no_ip():
     assert any("old.example.com had no DNS record" in f and "NXDOMAIN" in f for f in facts)
     assert any("x.example.com could not be looked up" in f and "unknown" in f for f in facts)
     assert not any("x.example.com had no DNS record" in f for f in facts)
+
+def test_every_dns_status_has_wording():
+    # A host_status() word without wording would fall back to a vague
+    # "had no IPv4 address" in the report, or show blank in the summary
+    import enrich
+    import evidence
+    for word in ["no_such_host", "dangling_cname", "no_address",
+                 "ipv6_only", "conflicting", "lookup_failed"]:
+        assert word in evidence.DNS_FACTS, word
+        assert word in enrich.DNS_LABELS, word

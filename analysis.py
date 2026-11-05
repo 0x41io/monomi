@@ -48,11 +48,14 @@ all_providers lists a CDN plus another provider may expose its origin server \
 directly; point that out.
 - In section 3, treat hosts resolving to private/internal IPs as worth \
 reviewing (internal addresses published in public DNS reveal network layout). \
-"not_resolving" groups hosts with no IPv4 address by DNS status: "gone" \
-(NXDOMAIN) are likely retired; "no_address" have no address and may be \
-retired too (some DNS providers, e.g. Cloudflare, never say a name is gone); \
-"ipv6_only" are live over IPv6 and weren't checked further; \
-"lookup_failed" are unknown, never call them retired or dead.
+"not_resolving" groups hosts with no IPv4 address by DNS status: "no_such_host" \
+(NXDOMAIN, double-checked) are likely retired; "dangling_cname" exist but their \
+CNAME points to a deleted name (old DNS to clean up; only the takeover check \
+decides whether it's claimable, never call it a takeover yourself); "no_address" \
+have no address and may be retired too (some DNS providers, e.g. Cloudflare, \
+never say a name is gone); "ipv6_only" are live over IPv6 and weren't checked \
+further; "conflicting" and "lookup_failed" are unknown, never call them retired \
+or dead. In scans saved before v1.8, "gone" means the same as "no_such_host".
 - In Limitations, note that DNS reflects one point in time from one resolver.
 
 If the data includes "exposure" (Shodan InternetDB: open ports and CVEs per IP):

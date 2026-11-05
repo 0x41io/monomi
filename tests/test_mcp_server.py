@@ -63,7 +63,7 @@ def test_check_ports_renames_ip_counts(monkeypatch):
 def test_check_ports_summary_counts(monkeypatch):
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {
         "hosts": hosts, "resolved": 3,
-        "not_resolving": {"gone": ["x.example.com"],
+        "not_resolving": {"no_such_host": ["x.example.com"],
                           "no_address": ["y.example.com", "z.example.com"]}})
     monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
         "ips": {"1.1.1.1": {"shared_edge": True}, "2.2.2.2": {"shared_edge": False}},

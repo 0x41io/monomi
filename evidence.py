@@ -9,15 +9,24 @@ import re
 
 from common import now_utc
 
-# What we can honestly say about a host with no IPv4 address, per enrich's "dns" status
+# What we can honestly say about a host with no IPv4 address, per its DNS
+# status from dnscheck.host_status()
 DNS_FACTS = {
-    "gone": "had no DNS record when checked (NXDOMAIN: the name doesn't exist)",
+    "no_such_host": "does not exist in DNS when checked (NXDOMAIN, double-checked over "
+                    "DNS-over-HTTPS when reachable)",
+    "dangling_cname": "exists in DNS, but its CNAME points to a name that does not exist "
+                      "(NXDOMAIN), so it has no IP address",
     "no_address": "had no IP address in DNS when checked (no A or AAAA record); DNS didn't "
                   "say the name is gone, but some DNS providers (e.g. Cloudflare) answer this "
                   "way for names that don't exist, so it may be retired",
     "ipv6_only": "had an IPv6 address but no IPv4 address when checked (not looked up further)",
+    "conflicting": "got conflicting DNS answers when checked (system DNS said it doesn't exist, "
+                   "DNS-over-HTTPS said it does), so whether it exists is unknown",
     "lookup_failed": "could not be looked up (no DNS server answered), so whether it resolves is unknown",
+    # Scans saved before v1.8 used "gone" for no_such_host
+    "gone": "had no DNS record when checked (NXDOMAIN: the name doesn't exist)",
 }
+
 
 def build_evidence(results: dict) -> list[dict]:
     """Turn raw recon results into a numbered list of evidence items."""
