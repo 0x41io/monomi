@@ -16,7 +16,7 @@ import socket
 import aws_ranges
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dnscheck import host_status
+from dnscheck import DNSLookupError, NoSuchHost, get_cname, host_status
 
 CYMRU_HOST = ("whois.cymru.com", 43)
 
@@ -131,6 +131,14 @@ def parse_cymru(text: str) -> dict[str, dict]:
     return out
 
 
+def _cname_target(host: str) -> str | None:
+    """Where a dangling host's CNAME points, or None if DNS won't say now."""
+    try:
+        return get_cname(host)
+    except (NoSuchHost, DNSLookupError):
+        return None
+
+
 def enrich(hosts: list[str]) -> dict:
     """Resolve + ASN-enrich hosts. Returns per-host data, per-IP data and a provider summary."""
     resolved = resolve(hosts)
@@ -146,6 +154,8 @@ def enrich(hosts: list[str]) -> dict:
             resolved[host]["ips"] = ips   # live after all: keep the IPs
         else:
             status[host] = word
+            if word == "dangling_cname":
+                resolved[host]["cname"] = _cname_target(host)
     all_ips = sorted({ip for r in resolved.values() for ip in r["ips"]})
     public_ips = [ip for ip in all_ips if ipaddress.ip_address(ip).is_global]
     asn_error = None
@@ -188,6 +198,8 @@ def enrich(hosts: list[str]) -> dict:
         if not ips:
             entry["provider"] = None  # in CT logs, but no IPv4 address now
             entry["providers"] = []
+            if "cname" in resolved[host]:
+                entry["cname"] = resolved[host]["cname"]   # where the dangling CNAME points
             per_host[host] = entry
             continue
 
