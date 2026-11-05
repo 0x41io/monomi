@@ -1,3 +1,4 @@
+import dnscheck
 import takeover
 from evidence import build_evidence
 from takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_service
@@ -150,5 +151,5 @@ def test_get_cname_returns_the_target(monkeypatch):
         def resolve(self, name, rtype, lifetime):
             return [FakeAnswer()]
 
-    monkeypatch.setattr(takeover, "_resolvers", lambda: (FakeResolver(),))
+    monkeypatch.setattr(dnscheck, "_resolvers", lambda: (FakeResolver(),))
     assert takeover.get_cname("app.example.com") == "myapp.azurewebsites.net"

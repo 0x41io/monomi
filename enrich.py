@@ -18,7 +18,7 @@ import dns.exception
 import dns.resolver
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from takeover import _resolvers
+from dnscheck import _resolvers
 
 CYMRU_HOST = ("whois.cymru.com", 43)
 
