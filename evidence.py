@@ -27,16 +27,30 @@ DNS_FACTS = {
     "gone": "had no DNS record when checked (NXDOMAIN: the name doesn't exist)",
 }
 
+# Who would fix a finding: roles, never people. A fact can have more than
+# one owner (a DMARC record is published by the DNS admin, but only the
+# email admin knows which services send mail). Facts nobody needs to act
+# on, like which source found a hostname, get no owner.
+OWNERS = {
+    "dns": "DNS admin",
+    "server": "server / infrastructure admin",
+    "web": "web app team",
+    "cdn": "CDN / proxy admin",
+    "email": "email admin",
+    "cloud": "cloud / service account owner",
+}
+
 
 def build_evidence(results: dict) -> list[dict]:
     """Turn raw recon results into a numbered list of evidence items."""
     evidence = []
 
-    def add(fact, sources):
+    def add(fact, sources, owners=()):
         evidence.append({
             "id": f"E{len(evidence) + 1}",
             "fact": fact,
             "sources": sources,
+            "owners": [OWNERS[o] for o in owners],
         })
 
     # 1. Which sources found each hostname
@@ -65,10 +79,10 @@ def build_evidence(results: dict) -> list[dict]:
                 add(f"{host} resolves to {', '.join(h['ips'])} ({where})", dns_source)
             else:
                 fact = DNS_FACTS.get(h.get("dns"), "had no IPv4 address when checked")
-                add(f"{host} {fact}", dns_source)
+                add(f"{host} {fact}", dns_source, ("dns",) if h.get("dns") == "dangling_cname" else ())
         for host in enr["private_ip_hosts"]:
             private = ", ".join(enr["hosts"][host].get("private_ips", []))
-            add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source)
+            add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source, ("dns",))
 
     # 3. Open ports, risky services and CVEs (from --ports)
     exp = results.get("exposure")
@@ -84,15 +98,15 @@ def build_evidence(results: dict) -> list[dict]:
             fact = f"{ip} ({hosts}) has open ports: {ports}"
             if d["tags"]:
                 fact += f"; Shodan tags: {', '.join(d['tags'])}"
-            add(fact, shodan_source)
+            add(fact, shodan_source, ("server",))
             if d["risky"]:
                 add(f"{ip} ({hosts}) runs services that usually shouldn't face the internet: "
-                    f"{', '.join(d['risky'])}", shodan_source)
+                    f"{', '.join(d['risky'])}", shodan_source, ("server",))
             if d["vulns"]:
                 cves = ", ".join(d["vulns"][:15])
                 more = f" (+{len(d['vulns']) - 15} more)" if len(d["vulns"]) > 15 else ""
                 add(f"Shodan InternetDB lists {len(d['vulns'])} CVE(s) for {ip} ({hosts}), "
-                    f"matched from software version banners: {cves}{more}", shodan_source)
+                    f"matched from software version banners: {cves}{more}", shodan_source, ("server",))
 
     # 4. SpiderFoot findings (from --import)
     sf = results.get("spiderfoot")
@@ -114,7 +128,7 @@ def build_evidence(results: dict) -> list[dict]:
                 fact = f"{host} (HTTP {r['status']}) shows {t['tech']} in its response ({t['evidence']})"
                 if t["version"]:
                     fact += f"; exact version {t['version']} is exposed"
-                add(fact, fp_source)
+                add(fact, fp_source, ("server",) if t["version"] else ())
 
     # 6. Security headers missing or weak (from the same --fingerprint request)
     if fp:
@@ -123,7 +137,7 @@ def build_evidence(results: dict) -> list[dict]:
                 continue
             hdr_source = [{"name": "HTTP security headers (same fingerprint request)", "collected_at": r["collected_at"]}]
             problems = "; ".join(f"{i['header']} {i['problem']} ({i['detail']})" for i in r["header_issues"])
-            add(f"{host} (HTTP {r['status']}) security headers: {problems}", hdr_source)
+            add(f"{host} (HTTP {r['status']}) security headers: {problems}", hdr_source, ("web", "cdn"))
 
     # 7. Email spoofing protection (from --email, DNS lookups only)
     em = results.get("email")
@@ -138,25 +152,25 @@ def build_evidence(results: dict) -> list[dict]:
             return fact
 
         if spf["record"]:
-            add(with_issues(f"{target} SPF record: {spf['record']}", spf), mail_source)
+            add(with_issues(f"{target} SPF record: {spf['record']}", spf), mail_source, ("dns", "email"))
         else:
-            add(f"{target} has no SPF record", mail_source)
+            add(f"{target} has no SPF record", mail_source, ("dns", "email"))
 
         if dmarc["record"]:
-            add(with_issues(f"_dmarc.{target} DMARC record: {dmarc['record']}", dmarc), mail_source)
+            add(with_issues(f"_dmarc.{target} DMARC record: {dmarc['record']}", dmarc), mail_source, ("dns", "email"))
         else:
-            add(f"{target} has no DMARC record (nothing at _dmarc.{target})", mail_source)
+            add(f"{target} has no DMARC record (nothing at _dmarc.{target})", mail_source, ("dns", "email"))
 
         if dkim["selectors"]:
-            add(f"{target} has DKIM keys under selector(s): {', '.join(dkim['selectors'])}", mail_source)
+            add(f"{target} has DKIM keys under selector(s): {', '.join(dkim['selectors'])}", mail_source, ("dns", "email"))
         else:
             add(f"No DKIM key found for {target} under common selector names; "
-                "a custom selector can't be ruled out", mail_source)
+                "a custom selector can't be ruled out", mail_source, ("dns", "email"))
 
         fact = f"Email spoofing verdict for {target} (worked out by code from the DMARC policy): {v['verdict']}, {v['summary']}"
         if v["notes"]:
             fact += "; notes: " + "; ".join(v["notes"])
-        add(fact, mail_source)
+        add(fact, mail_source, ("dns", "email"))
     # 8. Dangling CNAMEs / subdomain takeover (from --takeover, DNS lookups only)
     tk = results.get("takeover")
     if tk:
@@ -164,17 +178,17 @@ def build_evidence(results: dict) -> list[dict]:
             lead_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": lead["collected_at"]}]
             if lead["claimable"]:
                 add(f"{lead['host']} has a CNAME to {lead['cname']} ({lead['service']}), and that target "
-                    "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source)
+                    "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source, ("dns", "cloud"))
             else:
                 add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
-                    "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source)
+                    "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source, ("dns",))
         for record in tk.get("stale", []):
             stale_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": record["collected_at"]}]
             # Scans saved before v1.7.1 have no "reason": those were all AWS records
             reason = record.get("reason", "names on this service include a random ID and can't be claimed again")
             add(f"{record['host']} has a CNAME to {record['cname']} ({record['service']}), and that target "
                 f"does not exist (NXDOMAIN); {reason}, so this is a stale DNS record, not a takeover risk",
-                stale_source)
+                stale_source, ("dns",))
         if not tk["leads"] and not tk.get("stale"):
             checked = tk["checked"] - len(tk["errors"])
             check_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": tk["collected_at"]}]
@@ -226,6 +240,8 @@ def evidence_appendix(report: str, evidence: list[dict]) -> str:
         sources = "; ".join(describe_source(s) for s in e["sources"])
         lines.append(f"- **{e['id']}**: {e['fact']}")
         lines.append(f"  - Source: {sources}")
+        if e.get("owners"):
+            lines.append(f"  - Owner: {', '.join(e['owners'])}")
     if len(lines) == 4:
         lines.append("*The report cites no evidence.*")
     return "\n".join(lines) + "\n"

@@ -46,3 +46,81 @@ def test_every_dns_status_has_wording():
                  "ipv6_only", "conflicting", "lookup_failed"]:
         assert word in evidence.DNS_FACTS, word
         assert word in enrich.DNS_LABELS, word
+
+
+def owner_results():
+    # Hostnames without dots on purpose: the chat app turns dotted names
+    # into Markdown links when code is copied. build_evidence() doesn't care.
+    hosts = ["app", "old", "nope"]
+    return {
+        "subdomains": hosts,
+        "sources": {"certlog": {"source": "certlog", "subdomains": hosts}},
+        "enrichment": {
+            "hosts": {
+                "app": {"ips": ["198.51.100.7"], "provider": "DigitalOcean"},
+                "old": {"ips": [], "provider": None, "dns": "dangling_cname"},
+                "nope": {"ips": [], "provider": None, "dns": "no_such_host"},
+            },
+            "private_ip_hosts": [],
+        },
+        "exposure": {
+            "ips": {
+                "198.51.100.7": {"shared_edge": False, "hosts": ["app"], "ports": [22, 80],
+                                 "tags": [], "risky": [], "vulns": ["CVE-2024-0001"]},
+            },
+        },
+        "fingerprint": {
+            "hosts": {
+                "app": {"collected_at": None, "status": 200,
+                        "techs": [{"tech": "nginx", "version": "1.24.0", "evidence": "Server header"},
+                                  {"tech": "React", "version": None, "evidence": "page script"}],
+                        "header_issues": [{"header": "Content-Security-Policy",
+                                           "problem": "missing", "detail": "not sent"}]},
+            },
+        },
+        "takeover": {
+            "leads": [{"host": "shop", "cname": "gone-shop", "service": "Azure App Service",
+                       "claimable": True, "collected_at": None}],
+            "stale": [{"host": "lb", "cname": "gone-lb", "service": "AWS ELB",
+                       "reason": "random ID", "collected_at": None}],
+            "checked": 5, "errors": [], "collected_at": None,
+        },
+    }
+
+
+def owners_of(evidence, text):
+    """Owners of the one fact that contains text."""
+    found = [e["owners"] for e in evidence if text in e["fact"]]
+    assert len(found) == 1, f"expected one fact with {text!r}, got {len(found)}"
+    return found[0]
+
+
+def test_owners_follow_the_rules():
+    ev = build_evidence(owner_results())
+    assert owners_of(ev, "app was found by") == []
+    assert owners_of(ev, "app resolves to") == []
+    assert owners_of(ev, "old exists in DNS") == ["DNS admin"]
+    assert owners_of(ev, "nope does not exist") == []
+    assert owners_of(ev, "has open ports") == ["server / infrastructure admin"]
+    assert owners_of(ev, "CVE(s)") == ["server / infrastructure admin"]
+    assert owners_of(ev, "exact version 1.24.0") == ["server / infrastructure admin"]
+    assert owners_of(ev, "shows React") == []
+    assert owners_of(ev, "security headers") == ["web app team", "CDN / proxy admin"]
+    assert owners_of(ev, "shop has a CNAME") == ["DNS admin", "cloud / service account owner"]
+    assert owners_of(ev, "lb has a CNAME") == ["DNS admin"]
+
+
+def test_every_fact_has_a_list_of_known_owners():
+    import evidence
+    for e in build_evidence(owner_results()):
+        assert isinstance(e["owners"], list), e["id"]
+        for owner in e["owners"]:
+            assert owner in evidence.OWNERS.values(), owner
+
+
+def test_appendix_shows_owners():
+    from evidence import evidence_appendix
+    ev = build_evidence(owner_results())
+    lead = next(e for e in ev if "shop has a CNAME" in e["fact"])
+    text = evidence_appendix(f"See [{lead['id']}]", ev)
+    assert "Owner: DNS admin, cloud / service account owner" in text

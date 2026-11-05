@@ -145,6 +145,11 @@ the cited evidence, e.g. what a hostname suggests), or **Lead** (worth \
 checking, but the evidence is weak or indirect, like a reputation-list hit).
 - Do not write a finding you cannot cite. Sections 1, 2 and 4 may summarize \
 without citations, but cite evidence whenever you name a specific host or IP.
+- Each evidence item has "owners": the roles that would fix it (e.g. DNS \
+admin, web app team), worked out by code. In section 4, start each \
+recommendation with who owns it, e.g. "**Owner: DNS admin**", using only \
+the owners on the evidence it rests on. If that evidence has no owners, \
+write "**Owner: unknown**". Never name a person and never invent a role.
 
 Formatting rules (the report is rendered in a terminal):
 - Start directly with "## 1. Overview". No title line above it.
@@ -244,7 +249,7 @@ def summarize(results: dict) -> tuple[str, str]:
         }
     ev = results.get("evidence", [])
     payload["evidence"] = [
-        {"id": e["id"], "fact": e["fact"], "source": ", ".join(s["name"] for s in e["sources"])}
+        {"id": e["id"], "fact": e["fact"], "source": ", ".join(s["name"] for s in e["sources"]), "owners": e.get("owners", [])}
         for e in ev[:MAX_EVIDENCE]
     ]
     payload["evidence_truncated"] = len(ev) > MAX_EVIDENCE
