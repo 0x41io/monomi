@@ -15,10 +15,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 import dns.exception
 import dns.resolver
+import requests
 
 from common import now_utc
 
 FALLBACK_NAMESERVERS = ["1.1.1.1", "8.8.8.8"]
+
+# DNS-over-HTTPS: the same DNS question sent over HTTPS (port 443), so a
+# local DNS relay (like WSL's) can't intercept it or replay a stale answer.
+DOH_URL = "https://cloudflare-dns.com/dns-query"
+DOH_TYPE_CODES = {"A": 1, "CNAME": 5}   # DoH JSON gives record types as numbers
 
 class DNSLookupError(Exception):
     """No DNS server answered at all (different from 'no record exists')."""
@@ -28,12 +34,65 @@ class NoSuchHost(Exception):
     """DNS answered NXDOMAIN: the hostname itself doesn't exist."""
 
 
+class ConflictingAnswers(DNSLookupError):
+    """System DNS and DNS-over-HTTPS disagree about whether a name exists."""
+
+
 def _resolvers():
     """System DNS first, then public DNS (WSL's relay can time out)."""
     system = dns.resolver.Resolver()
     public = dns.resolver.Resolver(configure=False)
     public.nameservers = FALLBACK_NAMESERVERS
     return (system, public)
+
+
+def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
+    """Ask Cloudflare's DNS-over-HTTPS service one DNS question.
+
+    Returns ("nxdomain", []) if the name doesn't exist, otherwise
+    ("ok", [records of that type]), e.g. ("ok", ["myapp.herokuapp.com"]).
+    Raises DNSLookupError if it can't get a clear answer.
+    """
+    try:
+        resp = requests.get(
+            DOH_URL,
+            params={"name": name, "type": rtype},
+            headers={"accept": "application/dns-json"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        raise DNSLookupError(f"DNS-over-HTTPS lookup failed for {name}: {e}")
+
+    status = data.get("Status")
+    if status == 3:                      # 3 = NXDOMAIN, "no such name"
+        return "nxdomain", []
+    if status != 0:                      # 0 = NOERROR; anything else is a failure
+        raise DNSLookupError(f"DNS-over-HTTPS returned status {status} for {name}")
+    wanted = DOH_TYPE_CODES[rtype]
+    records = [a["data"].rstrip(".").lower()
+               for a in data.get("Answer", []) if a.get("type") == wanted]
+    return "ok", records
+
+
+def _confirm_nxdomain(name: str, rtype: str) -> None:
+    """Double-check a "no such name" answer over HTTPS before believing it.
+
+    A local DNS cache (e.g. WSL's) can replay an old NXDOMAIN for a host
+    that's live now. If DoH says the name exists, raise ConflictingAnswers
+    instead of reporting it gone. If DoH can't be reached, keep the system
+    answer (same as before this check existed).
+    """
+    try:
+        result, _ = doh_lookup(name, rtype)
+    except DNSLookupError:
+        return
+    if result != "nxdomain":
+        raise ConflictingAnswers(
+            f"conflicting answers for {name}: system DNS says it doesn't exist, "
+            f"DNS-over-HTTPS says it does (often a stale local DNS cache)"
+        )
 
 
 def get_cname(name: str) -> str | None:
@@ -49,13 +108,17 @@ def get_cname(name: str) -> str | None:
             # str() gives 'myapp.herokuapp.com.' -- drop the trailing dot
             return str(answers[0].target).rstrip(".").lower()
         except dns.resolver.NXDOMAIN:
+            _confirm_nxdomain(name, "CNAME")
             raise NoSuchHost(name)
         except dns.resolver.NoAnswer:
             return None
         except dns.exception.DNSException:
             continue
-    raise DNSLookupError(f"no DNS server answered a CNAME lookup for {name}")
-
+    # no DNS server answered on port 53 (common in WSL): ask over HTTPS instead
+    result, records = doh_lookup(name, "CNAME")
+    if result == "nxdomain":
+        raise NoSuchHost(name)
+    return records[0] if records else None
 
 def name_exists(name: str) -> bool:
     """Does this DNS name exist at all?
@@ -70,11 +133,13 @@ def name_exists(name: str) -> bool:
         except dns.resolver.NoAnswer:
             return True   # the name exists, it just has no IPv4 address
         except dns.resolver.NXDOMAIN:
+            _confirm_nxdomain(name, "A")   # raises ConflictingAnswers if DoH disagrees
             return False
         except dns.exception.DNSException:
             continue
-    raise DNSLookupError(f"no DNS server answered a lookup for {name}")
-
+    # no DNS server answered on port 53 (common in WSL): ask over HTTPS instead
+    result, _ = doh_lookup(name, "A")
+    return result != "nxdomain"
 
 # Services where a deleted resource's name goes NXDOMAIN AND can usually
 # be re-claimed by anyone who signs up. Each entry: (CNAME ending, name).
