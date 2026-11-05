@@ -150,15 +150,20 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
     skipped = max(0, len(ips) - MAX_IPS)
     ips = ips[:MAX_IPS]
 
-    found, errors = {}, 0
+    found, quiet, errors = {}, {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for ip, data, err in pool.map(_safe_lookup, ips):
             if err:
                 errors += 1
                 continue
-            if not data or not (data["ports"] or data["vulns"]):
-                continue  # nothing exposed that Shodan knows of
             meta = by_ip[ip]
+            if not data or not (data["ports"] or data["vulns"]):
+                # Shodan has nothing on this IP (yet). Still list it, so a
+                # report can't mistake "no data" for "no server here".
+                reason = edge_reason(meta["provider"], [], meta["canonicals"])
+                quiet[ip] = {"hosts": sorted(meta["hosts"]), "provider": meta["provider"],
+                             "shared_edge": reason is not None}
+                continue
             data["hosts"] = sorted(meta["hosts"])
             data["provider"] = meta["provider"]
             data["edge_reason"] = edge_reason(meta["provider"], data["cpes"], meta["canonicals"])
@@ -169,6 +174,7 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
     own = [d for d in found.values() if not d["shared_edge"]]
     return {
         "ips": found,
+        "nothing_seen": quiet,
         "checked": len(ips),
         "unique_cves": sorted({c for d in own for c in d["vulns"]}),
         "risky": [(ip, d["risky"]) for ip, d in found.items() if d["risky"] and not d["shared_edge"]],

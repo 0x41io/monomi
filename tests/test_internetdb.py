@@ -70,3 +70,14 @@ def test_cname_edge_ports_are_not_blamed_on_target(monkeypatch):
     assert ip["shared_edge"] is True
     assert ip["edge_reason"] == "hostname's CNAME points to Okta (example.customdomains.okta.com)"
     assert result["unique_cves"] == []  # Okta's CVE isn't blamed on the target
+
+def test_ips_shodan_has_nothing_on_are_still_listed(monkeypatch):
+    # The lab Droplet: an origin server Shodan hasn't crawled yet. It must
+    # show up as "nothing seen", not vanish from the result.
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
+    enrichment = {"hosts": {"dev.example.com": {"ips": ["64.227.89.72"], "provider": "DigitalOcean"}},
+                  "ip_info": {"64.227.89.72": {"provider": "DigitalOcean"}}}
+    result = internetdb.lookup(enrichment)
+    assert result["ips"] == {}
+    assert result["nothing_seen"] == {"64.227.89.72": {
+        "hosts": ["dev.example.com"], "provider": "DigitalOcean", "shared_edge": False}}

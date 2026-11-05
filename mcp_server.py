@@ -167,13 +167,14 @@ def enrich_hosts(hostnames: list[str]) -> dict:
 def ports_summary(enrichment: dict, exposure: dict) -> dict:
     """Short counts for the top of check_ports' result, read before the per-IP details."""
     found = exposure["ips"]
-    edge = sum(1 for d in found.values() if d["shared_edge"])
+    every = list(found.values()) + list(exposure.get("nothing_seen", {}).values())
+    edge = sum(1 for d in every if d["shared_edge"])
     not_resolving = enrichment.get("not_resolving", {})
     return {
         "hosts_resolved": enrichment.get("resolved", 0),
         "hosts_not_resolving": sum(len(hosts) for hosts in not_resolving.values()),
         "edge_ips": edge,
-        "origin_ips": len(found) - edge,
+        "origin_ips": len(every) - edge,
         "ips_nothing_seen": exposure["ips_checked"] - exposure["ip_errors"] - len(found),
         "origin_cves": len(exposure.get("unique_cves", [])),
         "origin_ips_with_risky_ports": len(exposure.get("risky", [])),
@@ -190,7 +191,9 @@ def check_ports(hostnames: list[str]) -> dict:
     shared CDN edge IPs (e.g. Cloudflare) belong to the CDN, not the
     target. Starts with a "summary" of counts: CDN edge vs origin IPs,
     CVEs and risky ports on origin IPs only, and hostnames that don't
-    resolve (listed by DNS status in "not_resolving").
+    resolve (listed by DNS status in "not_resolving"). IPs Shodan has
+    no data on are listed in "nothing_seen": no data is not proof that
+    nothing is running there.
     Checks at most 100 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
     checked, skipped, rejected = clean_hosts(hostnames, MAX_PORT_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
