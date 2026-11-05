@@ -20,7 +20,7 @@ FALLBACK_NAMESERVERS = ["1.1.1.1", "8.8.8.8"]
 # DNS-over-HTTPS: the same DNS question sent over HTTPS (port 443), so a
 # local DNS relay (like WSL's) can't intercept it or replay a stale answer.
 DOH_URL = "https://cloudflare-dns.com/dns-query"
-DOH_TYPE_CODES = {"A": 1, "CNAME": 5}   # DoH JSON gives record types as numbers
+DOH_TYPE_CODES = {"A": 1, "AAAA": 28, "CNAME": 5}   # DoH JSON gives record types as numbers
 
 
 class DNSLookupError(Exception):
@@ -138,3 +138,65 @@ def name_exists(name: str) -> bool:
     # no DNS server answered on port 53 (common in WSL): ask over HTTPS instead
     result, _ = doh_lookup(name, "A")
     return result != "nxdomain"
+
+def _query(name: str, rtype: str) -> tuple[str, list[str]]:
+    """Ask DNS one question, with the same fallbacks as everything else here.
+
+    Returns ("ok", [records]) or ("nxdomain", []), the same shape as
+    doh_lookup(). An empty list means the name exists but has no record of
+    that type. Raises ConflictingAnswers / DNSLookupError like get_cname().
+    """
+    for resolver in _resolvers():
+        try:
+            answers = resolver.resolve(name, rtype, lifetime=5)
+            return "ok", sorted({r.to_text().rstrip(".").lower() for r in answers})
+        except dns.resolver.NoAnswer:
+            return "ok", []
+        except dns.resolver.NXDOMAIN:
+            _confirm_nxdomain(name, rtype)   # raises ConflictingAnswers if DoH disagrees
+            return "nxdomain", []
+        except dns.exception.DNSException:
+            continue
+    # no DNS server answered on port 53 (common in WSL): ask over HTTPS instead
+    return doh_lookup(name, rtype)
+
+
+def _why_nxdomain(host: str) -> str:
+    """The A lookup said NXDOMAIN: is the host missing, or only its CNAME's target?
+
+    An A lookup follows CNAMEs, so a host whose CNAME points at a deleted
+    name also comes back NXDOMAIN, even though the host's own record exists.
+    """
+    try:
+        target = get_cname(host)
+    except NoSuchHost:
+        return "no_such_host"
+    return "dangling_cname" if target else "no_such_host"
+
+
+def host_status(host: str) -> tuple[str, list[str]]:
+    """What DNS says about one hostname, plus any IPv4 addresses found.
+
+    Returns (status, ips). Status is one of:
+      "live"            has IPv4 address(es), listed in ips
+      "ipv6_only"       exists, IPv6 address only
+      "no_address"      exists, no A or AAAA record
+      "dangling_cname"  exists, but its CNAME points to a name that doesn't
+      "no_such_host"    the name doesn't exist (NXDOMAIN, double-checked
+                        over DNS-over-HTTPS when reachable)
+      "conflicting"     system DNS and DNS-over-HTTPS disagree: unknown
+      "lookup_failed"   no DNS server answered: unknown
+    Never raises: every outcome is a status, so callers can't crash on one host.
+    """
+    try:
+        result, ips = _query(host, "A")
+        if result == "nxdomain":
+            return _why_nxdomain(host), []
+        if ips:
+            return "live", ips
+        _, ipv6 = _query(host, "AAAA")
+        return ("ipv6_only" if ipv6 else "no_address"), []
+    except ConflictingAnswers:
+        return "conflicting", []
+    except DNSLookupError:
+        return "lookup_failed", []

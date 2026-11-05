@@ -127,3 +127,80 @@ def test_conflict_lands_in_errors(monkeypatch):
     assert report["results"]["dev.lab.test"]["status"] == "error"
     assert "conflicting answers" in report["errors"]["dev.lab.test"]
     assert report["leads"] == []
+
+# --- host_status(): one answer per host (the shared helper) ---
+
+class Rec:
+    """A fake DNS record: to_text() for _query(), target for get_cname()."""
+    def __init__(self, text):
+        self.text = text
+        self.target = text
+
+    def to_text(self):
+        return self.text
+
+
+class MapResolver:
+    """Fake resolver answering from a dict: {(name, rtype): [records] or an error}.
+    Anything not in the dict gets NoAnswer (name exists, no such record)."""
+    def __init__(self, answers):
+        self.answers = answers
+
+    def resolve(self, name, rtype, lifetime=None):
+        a = self.answers.get((name, rtype), dns.resolver.NoAnswer())
+        if isinstance(a, Exception):
+            raise a
+        return [Rec(t) for t in a]
+
+
+def use_map(monkeypatch, answers):
+    monkeypatch.setattr(dnscheck, "_resolvers", lambda: (MapResolver(answers),))
+
+
+def test_host_status_live(monkeypatch):
+    use_map(monkeypatch, {("www.lab.test", "A"): ["203.0.113.7"]})
+    assert dnscheck.host_status("www.lab.test") == ("live", ["203.0.113.7"])
+
+
+def test_host_status_ipv6_only(monkeypatch):
+    use_map(monkeypatch, {("v6.lab.test", "AAAA"): ["2001:db8::1"]})
+    assert dnscheck.host_status("v6.lab.test") == ("ipv6_only", [])
+
+
+def test_host_status_no_address(monkeypatch):
+    use_map(monkeypatch, {})   # NoAnswer for A and AAAA
+    assert dnscheck.host_status("mx.lab.test") == ("no_address", [])
+
+
+def test_host_status_no_such_host(monkeypatch):
+    use_map(monkeypatch, {("nope.lab.test", "A"): dns.resolver.NXDOMAIN(),
+                          ("nope.lab.test", "CNAME"): dns.resolver.NXDOMAIN()})
+    use_doh(monkeypatch, ("nxdomain", []))
+    assert dnscheck.host_status("nope.lab.test") == ("no_such_host", [])
+
+
+def test_host_status_dangling_cname(monkeypatch):
+    # The lab's "legacy" host: it exists, but its CNAME target was deleted
+    use_map(monkeypatch, {("legacy.lab.test", "A"): dns.resolver.NXDOMAIN(),
+                          ("legacy.lab.test", "CNAME"): ["gone.lab.test."]})
+    use_doh(monkeypatch, ("nxdomain", []))
+    assert dnscheck.host_status("legacy.lab.test") == ("dangling_cname", [])
+
+
+def test_host_status_conflicting(monkeypatch):
+    use_map(monkeypatch, {("dev.lab.test", "A"): dns.resolver.NXDOMAIN()})
+    use_doh(monkeypatch, ("ok", ["203.0.113.7"]))
+    assert dnscheck.host_status("dev.lab.test") == ("conflicting", [])
+
+
+def test_host_status_timeouts_then_doh_finds_ips(monkeypatch):
+    # The lab's dev/www in WSL: port 53 dead, HTTPS gets the real answer
+    use_resolvers(monkeypatch, dns.exception.Timeout(), dns.exception.Timeout())
+    use_doh(monkeypatch, ("ok", ["203.0.113.7"]))
+    assert dnscheck.host_status("dev.lab.test") == ("live", ["203.0.113.7"])
+
+
+def test_host_status_nobody_answers(monkeypatch):
+    use_resolvers(monkeypatch, dns.exception.Timeout(), dns.exception.Timeout())
+    use_doh(monkeypatch, dnscheck.DNSLookupError("blocked"))
+    assert dnscheck.host_status("x.lab.test") == ("lookup_failed", [])
