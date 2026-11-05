@@ -11,7 +11,7 @@ def test_enrich_groups_hosts_that_dont_resolve(monkeypatch):
     statuses = {"old.example.com": ("no_such_host", []),
                 "legacy.example.com": ("dangling_cname", []),
                 "v6.example.com": ("ipv6_only", [])}
-    monkeypatch.setattr(enrich, "host_status", lambda h: statuses[h])    
+    monkeypatch.setattr(enrich, "host_status", lambda h: statuses[h])
     monkeypatch.setattr(enrich, "get_cname", lambda h: "gone.example.com")
 
     data = enrich.enrich(list(statuses))
