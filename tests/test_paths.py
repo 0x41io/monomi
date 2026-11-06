@@ -150,3 +150,24 @@ def test_appendix_says_when_no_path_was_found():
     text = paths_appendix({"paths": [], "fix_first": None, "more": 0})
     assert "No attack path found" in text
     assert "Fix this first" not in text
+
+
+def test_terminal_shows_paths_without_ai(capsys):
+    from monomi import show_paths
+    results = lab_results()
+    out, ev = run(results)
+    results["paths"] = out
+    show_paths(results)
+    text = capsys.readouterr().out
+    assert "P1  HIGH  Send email as lab" in text
+    assert "4. Lead: The server shows software versions" in text
+    assert "Fix this first (DNS admin, email admin)" in text
+
+
+def test_terminal_says_no_path_only_when_a_check_ran(capsys):
+    from monomi import show_paths
+    empty = {"paths": [], "fix_first": None, "more": 0}
+    show_paths({"paths": empty})  # discovery only: nothing to chain, say nothing
+    assert capsys.readouterr().out == ""
+    show_paths({"paths": empty, "email": {}})
+    assert "No attack path found" in capsys.readouterr().out

@@ -424,6 +424,33 @@ def show_changes(results: dict) -> None:
         print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
 
 
+def show_paths(results: dict) -> None:
+    """Attack paths built by code: shown on every scan that ran a check, no AI needed."""
+    if not any(k in results for k in ("enrichment", "email", "takeover", "exposure", "fingerprint")):
+        return  # discovery only: too little to chain, so "no path found" would mislead
+    built = results["paths"]
+    print()
+    info("Attack paths (worked out by code: how an attack would most likely go, not proof):")
+    print()
+    if not built["paths"]:
+        good("No attack path found: none of the findings chain into a way in.")
+        return
+    colors = {"High": ui.RED, "Medium": ui.YELLOW, "Low": ui.GREY}
+    for p in built["paths"]:
+        badge = ui.paint(p["severity"].upper(), ui.BOLD, colors[p["severity"]])
+        print(f"    {p['id']}  {badge}  {ui.safe(p['title'])}  (weakest step: {p['strength']})")
+        for n, s in enumerate(p["steps"], 1):
+            print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
+        print(f"        => {ui.safe(p['outcome'])}")
+        print()
+    if built["more"]:
+        info(f"{built['more']} lower-ranked path(s) not shown.")
+    fix = built["fix_first"]
+    if fix:
+        owners = ", ".join(fix["owners"]) or "unknown"
+        warn(f"Fix this first ({owners}): {ui.safe(fix['fact'])} -> closes {', '.join(fix['closes'])}")
+
+
 def write_ai_report(results: dict) -> None:
     """--ai: have Claude write the report, save it to reports/, and show it in the terminal."""
     print()
@@ -661,6 +688,7 @@ def main() -> int:
     # 4. Evidence, AI report, JSON
     results["evidence"] = evidence.build_evidence(results)
     results["paths"] = paths.build_paths(results, results["evidence"])
+    show_paths(results)
     if args.ai:
         write_ai_report(results)
     if args.json:
