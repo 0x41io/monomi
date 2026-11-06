@@ -103,15 +103,18 @@ def test_exposed_service_ranks_right_after_email():
     assert titles[:2] == ["Send email as lab", "Attack the exposed services on 198.51.100.20"]
 
 
-def test_one_side_door_per_server_and_its_fix_has_an_owner():
-    # staging and dev both sit on the production server: one path, not two
+def test_one_side_door_per_server_names_every_host_and_has_an_owner():
+    # staging and dev both sit on the production server: one path that names both
     results = lab_results()
     results["subdomains"].append("dev")
     results["enrichment"]["hosts"]["dev"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
     results["email"]["verdict"]["verdict"] = "protected"
     out, ev = run(results)
     # Only one side door per IP, so the leaks stay in one path: closes P1
-    assert [p["title"] for p in out["paths"]] == ["Use staging as a side door into 198.51.100.7"]
+    assert [p["title"] for p in out["paths"]] == ["Use dev and staging as a side door into 198.51.100.7"]
+    side = out["paths"][0]
+    assert side["steps"][0]["text"].startswith("dev and staging are live")
+    assert len(side["steps"][0]["evidence"]) == 2  # both risky-name facts
     fix = out["fix_first"]
     assert fix["closes"] == ["P1"]
     assert fix["owners"] == ["server / infrastructure admin"]
@@ -171,3 +174,11 @@ def test_terminal_says_no_path_only_when_a_check_ran(capsys):
     assert capsys.readouterr().out == ""
     show_paths({"paths": empty, "email": {}})
     assert "No attack path found" in capsys.readouterr().out
+
+
+def test_names_reads_like_a_sentence():
+    from paths import _names
+    assert _names(["a"]) == "a"
+    assert _names(["a", "b"]) == "a and b"
+    assert _names(["a", "b", "c"]) == "a, b and c"
+    assert _names(["a", "b", "c", "d", "e"]) == "a, b, c and 2 more"

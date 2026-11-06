@@ -171,3 +171,17 @@ def test_email_verdict_kind_names_the_verdict():
         "verdict": {"verdict": "spoofable", "summary": "no DMARC", "notes": []},
     }
     assert kinds_of(build_evidence(results))["email_spoofable"] == ["example"]
+
+
+def test_citations_count_in_brackets_with_other_text():
+    # The AI sometimes mixes path IDs or words into a bracket: those
+    # citations must still be found, so a made-up ID can't slip past
+    report = "Fix it [E26, closes P1]. Lock down [E15, E16, P2]. Fake [E99, P3]. Range [E3-E5, P1]."
+    assert cited_ids(report) == {"E26", "E15", "E16", "E99", "E3", "E4", "E5"}
+    evidence = [{"id": f"E{n}"} for n in range(1, 30)]
+    assert check_citations(report, evidence) == ["E99"]
+
+
+def test_citations_ignore_lookalikes():
+    # CVE IDs and words that merely contain an E and digits aren't citations
+    assert cited_ids("[CVE-2024-1234] [see E2E tests] [TE5]") == set()

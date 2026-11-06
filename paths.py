@@ -44,6 +44,15 @@ def _path(title, severity, steps, outcome, fix):
     }
 
 
+def _names(hosts, most=3):
+    """"a", "a and b", "a, b and c", or "a, b, c and 2 more"."""
+    if len(hosts) == 1:
+        return hosts[0]
+    if len(hosts) > most:
+        return f"{', '.join(hosts[:most])} and {len(hosts) - most} more"
+    return f"{', '.join(hosts[:-1])} and {hosts[-1]}"
+
+
 def _edge_ips(results):
     """IPs that are shared CDN edge servers: sharing one proves nothing."""
     edge = set()
@@ -122,33 +131,39 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     ips_of = {h: d.get("ips", []) for h, d in enr.get("hosts", {}).items()}
     edge = _edge_ips(results)
 
-    # E. Side door: a non-production host on the same server as production
-    side_door_ips = set()
+    # E. Side door: non-production hosts on the same server as production
+    risky_on = {}  # IP -> the risky-name facts of every live host on it
     for r in kinds.get("risky_name", []):
-        host = r["host"]
-        for ip in ips_of.get(host, []):
-            if ip in edge or ip in side_door_ips:
-                continue
-            shared = [h for h, ips in ips_of.items()
-                      if h != host and ip in ips
-                      and categorize(h, target)["category"] in ("apex", "content", "app-api", "uncategorized")]
-            if not shared:
-                continue
-            resolves = [e for e in kinds.get("resolves", []) if e["host"] in [host] + shared]
-            steps = [
-                _step(f"{host} is live and named like a non-production or internal host", [r], "Observed"),
-                _step(f"It is on the same IP ({ip}) as {', '.join(shared[:3])}", resolves, "Observed"),
-                _step(f"Non-production sites are often less protected, so {host} is a likely "
-                      "first target, and getting in there may mean getting into the same server", [r], "Inference"),
-            ]
-            leaks = [e for e in kinds.get("version_leak", []) if ip in ips_of.get(e["host"], [])]
-            leaks += [e for e in kinds.get("cves", []) if e["host"] == ip]
-            if leaks:
-                steps.append(_step("The server shows software versions an attacker can match "
-                                   "to public exploits (versions must be verified)", leaks, "Lead"))
-            side_door_ips.add(ip)
-            paths.append(_path(f"Use {host} as a side door into {ip}", "Medium", steps,
-                               f"Access to the server that also runs {shared[0]}", [r] + leaks))
+        for ip in ips_of.get(r["host"], []):
+            if ip not in edge:
+                risky_on.setdefault(ip, []).append(r)
+    side_door_ips = set()
+    for ip, names in risky_on.items():
+        names = sorted(names, key=lambda r: r["host"])
+        hosts = [r["host"] for r in names]
+        shared = [h for h, ips in ips_of.items()
+                  if h not in hosts and ip in ips
+                  and categorize(h, target)["category"] in ("apex", "content", "app-api", "uncategorized")]
+        if not shared:
+            continue
+        who, one = _names(hosts), len(hosts) == 1
+        resolves = [e for e in kinds.get("resolves", []) if e["host"] in hosts + shared]
+        steps = [
+            _step(f"{who} {'is' if one else 'are'} live and named like "
+                  f"{'a non-production or internal host' if one else 'non-production or internal hosts'}",
+                  names, "Observed"),
+            _step(f"{'It is' if one else 'They are'} on the same IP ({ip}) as {_names(shared)}", resolves, "Observed"),
+            _step(f"Non-production sites are often less protected, so {who} {'is a likely first target' if one else 'are likely first targets'}, "
+                  "and getting in there may mean getting into the same server", names, "Inference"),
+        ]
+        leaks = [e for e in kinds.get("version_leak", []) if ip in ips_of.get(e["host"], [])]
+        leaks += [e for e in kinds.get("cves", []) if e["host"] == ip]
+        if leaks:
+            steps.append(_step("The server shows software versions an attacker can match "
+                               "to public exploits (versions must be verified)", leaks, "Lead"))
+        side_door_ips.add(ip)
+        paths.append(_path(f"Use {who} as a side door into {ip}", "Medium", steps,
+                           f"Access to the server that also runs {shared[0]}", names + leaks))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped)
     for ip in sorted({e["host"] for e in kinds.get("cves", [])}

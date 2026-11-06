@@ -139,7 +139,7 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
     if dead:
         print()
         shown = dead if len(dead) <= show_dead + 1 else dead[:show_dead]
-        print(indent + paint(f"{len(dead)} host(s) in CT logs have no IPv4 address:", GREY))
+        print(indent + paint(f"{len(dead)} host(s) have no IPv4 address:", GREY))
         for h in shown:
             label = DNS_LABELS.get(hosts[h].get("dns"), "no IPv4 address")
             color = YELLOW if hosts[h].get("dns") == "ipv6_only" else GREY  # still live

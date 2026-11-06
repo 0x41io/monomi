@@ -216,13 +216,14 @@ def build_evidence(results: dict) -> list[dict]:
 def cited_ids(report: str) -> set[str]:
     """Every evidence ID cited in brackets, e.g. [E1, E2] or a range [E5-E9]."""
     cited = set()
-    for group in re.findall(r"\[(E\d+(?:\s*[,-]\s*E\d+)*)\]", report):
-        for part in re.split(r"\s*,\s*", group):
-            nums = [int(n) for n in re.findall(r"\d+", part)]
-            if len(nums) == 2 and 0 <= nums[1] - nums[0] <= 1000:
-                cited.update(f"E{n}" for n in range(nums[0], nums[1] + 1))  # a range: E5-E9
+    # Any bracket counts, even one mixing in other text like [E26, closes P1]
+    for group in re.findall(r"\[([^\[\]]*)\]", report):
+        for start, end in re.findall(r"\bE(\d+)(?:\s*-\s*E(\d+))?\b", group):
+            first, last = int(start), int(end or start)
+            if 0 <= last - first <= 1000:
+                cited.update(f"E{n}" for n in range(first, last + 1))  # a range: E5-E9
             else:
-                cited.update(f"E{n}" for n in nums)
+                cited.update({f"E{first}", f"E{last}"})
     return cited
 
 def check_citations(report: str, evidence: list[dict]) -> list[str]:

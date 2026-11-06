@@ -38,6 +38,8 @@ show which hosts serve web pages or what software they run.
 "sources_used" shows how many hostnames each source returned. Only credit \
 sources that returned at least one; if a source returned zero, you may note \
 it in Limitations but never say it found anything.
+A source named "hosts file" holds hostnames the user listed themselves \
+(--hosts), not hosts any scan discovered: say so in section 1.
 "sources_failed" lists sources that couldn't be reached during this scan. \
 Say each one was unavailable, never that it returned zero or found nothing, \
 and note in Limitations that the hostname list may be incomplete because of it.
@@ -149,6 +151,8 @@ its evidence IDs in square brackets, then one line "Result: <outcome>".
 never add, drop, merge or reorder paths or steps. Never write a path of your \
 own: if the data doesn't chain into one, it isn't a path.
 - If "more" is above 0, say how many lower-ranked paths were left out.
+- When a path covers a section 3 finding, keep that finding to one line \
+ending with "(see P2)" instead of repeating the path's reasoning.
 - If "paths" is empty, section 4 is exactly: "No attack path found: none of \
 the findings in this scan chain into a way in." Then one sentence on which \
 checks ran. Never invent a path to fill the section.
@@ -165,13 +169,19 @@ only IDs that appear in the evidence list.
 cited evidence directly shows it), **Inference** (your interpretation of \
 the cited evidence, e.g. what a hostname suggests), or **Lead** (worth \
 checking, but the evidence is weak or indirect, like a reputation-list hit).
-- Do not write a finding you cannot cite. Sections 1, 2 and 5 may summarize \
-without citations, but cite evidence whenever you name a specific host or IP.
+- Do not write a finding you cannot cite. Sections 1 and 5 may summarize \
+without citations. In section 2, cite evidence on every bullet that states \
+a fact about the target (a host, IP, provider, version, record or check \
+result); only a bullet that just sums up, like a naming pattern, may go \
+without. Always cite evidence when you name a specific host or IP.
 - Each evidence item has "owners": the roles that would fix it (e.g. DNS \
 admin, web app team), worked out by code. In section 5, start each \
-recommendation with who owns it, e.g. "**Owner: DNS admin**", using only \
-the owners on the evidence it rests on. If that evidence has no owners, \
-write "**Owner: unknown**". Never name a person and never invent a role.
+recommendation with who owns it, using only the owners on the evidence it \
+rests on, copied exactly and joined with commas, e.g. "**Owner: DNS admin, \
+email admin**". Every recommendation must cite the evidence or attack path \
+it rests on; leave out advice that rests on neither. If that evidence has \
+no owners, write "**Owner: unknown**". Never name a person and never invent \
+a role.
 
 Formatting rules (the report is rendered in a terminal):
 - Start directly with "## 1. Overview". No title line above it.
