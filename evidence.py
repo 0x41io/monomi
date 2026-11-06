@@ -98,7 +98,7 @@ def build_evidence(results: dict) -> list[dict]:
             cat = categorize(host, results.get("target", ""))
             if cat["category"] in RISKY_CATEGORIES:
                 add(f"{host} is live and its name puts it in the '{cat['category']}' category ({cat['reason']})",
-                    rules_source, kind="risky_name", host=host)
+                    rules_source, ("server",), kind="risky_name", host=host)
 
     # 3. Open ports, risky services and CVEs (from --ports)
     exp = results.get("exposure")
