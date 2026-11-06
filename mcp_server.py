@@ -14,6 +14,7 @@ from categorize import categorize_all
 from emailauth import check_email
 from takeover import check_hosts
 from enrich import enrich
+from evidence import OWNERS
 import internetdb
 import threatintel
 from mcp.server.mcpserver import MCPServer
@@ -31,6 +32,12 @@ TOTAL_BUDGET = 45  # whole find_subdomains call; leaves room under the Claude ap
 MAX_HOSTS = 200
 MAX_IPS = 10  # investigate_ip asks 4 sources per IP, one IP at a time
 MAX_PORT_HOSTS = 100  # check_ports also queries Shodan per IP, so it's slower
+
+
+def owners(*keys: str) -> list[str]:
+    """Owner role names from evidence.py's OWNERS table, so the MCP tools
+    and the CLI report always name the same roles."""
+    return [OWNERS[k] for k in keys]
 
 
 # One DNS label (the parts between dots): letters, digits, hyphens (not at
@@ -121,12 +128,12 @@ def check_email_auth(domain: str) -> dict:
     records: SPF, DMARC and DKIM (common selectors only), plus an overall
     verdict. Passive: only reads DNS, never contacts the domain's servers.
     A missing DKIM result can mean the domain uses a selector Monomi
-    didn't try, not that DKIM is absent."""
+    didn't try, not that DKIM is absent.
+    "owners" names the roles that would fix email findings, never people."""
     domain = clean_domain(domain)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_email(domain)
-    return {"domain": domain, **result}
-
+    return {"domain": domain, "owners": owners("dns", "email"), **result}
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def check_takeover(hostnames: list[str], domain: str | None = None) -> dict:
@@ -143,10 +150,15 @@ def check_takeover(hostnames: list[str], domain: str | None = None) -> dict:
     Pass the scanned domain as "domain" (e.g. "example.com"): a CNAME that
     points back inside it is also "stale", since only its owner can create
     that name.
+    Each lead and stale record has "owners": the roles that would fix it, never people.
     Checks at most 200 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
     checked, skipped, rejected = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_hosts(checked, domain=domain.strip().lower().rstrip(".") if domain else None)
+    for lead in result["leads"]:
+        lead["owners"] = owners("dns", "cloud") if lead["claimable"] else owners("dns")
+    for record in result.get("stale", []):
+        record["owners"] = owners("dns")
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected, **result}
 
@@ -157,10 +169,15 @@ def enrich_hosts(hostnames: list[str]) -> dict:
     ASN, hosting provider and country, with private IPs flagged.
     Pass the hostnames from find_subdomains. Passive: DNS and public
     IP-to-ASN data only, never contacts the hosts themselves.
+    Hosts with something to fix (a dangling CNAME, or a private IP in
+    public DNS) have "owners": the roles that would fix it, never people.
     Checks at most 200 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
     checked, skipped, rejected = clean_hosts(hostnames)
     with contextlib.redirect_stdout(sys.stderr):
         result = enrich(checked)
+    for entry in result["hosts"].values():
+        if entry.get("dns") == "dangling_cname" or entry.get("private_ips"):
+            entry["owners"] = owners("dns")
     return {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected, **result}
 
 
@@ -194,6 +211,7 @@ def check_ports(hostnames: list[str]) -> dict:
     resolve (listed by DNS status in "not_resolving"). IPs Shodan has
     no data on are listed in "nothing_seen": no data is not proof that
     nothing is running there.
+    Origin (non-edge) IPs in "ips" have "owners": the roles that would fix them, never people.
     Checks at most 100 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason."""
     checked, skipped, rejected = clean_hosts(hostnames, MAX_PORT_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
@@ -202,6 +220,9 @@ def check_ports(hostnames: list[str]) -> dict:
     exposure["ips_checked"] = exposure.pop("checked")
     exposure["ip_errors"] = exposure.pop("errors")
     exposure["ips_skipped"] = exposure.pop("skipped")
+    for d in exposure["ips"].values():
+        if not d["shared_edge"]:
+            d["owners"] = owners("server")  # CDN edge ports belong to the CDN, not the target
 
 
     return {"summary": ports_summary(enrichment, exposure),

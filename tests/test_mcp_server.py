@@ -128,3 +128,40 @@ def test_clean_hosts_caps_rejected_list():
     import mcp_server
     _, _, rejected = mcp_server.clean_hosts([f"bad{i}..test" for i in range(50)])
     assert len(rejected) == 20
+
+def test_check_takeover_adds_owners(monkeypatch):
+    monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
+        "leads": [{"host": "a", "claimable": True}, {"host": "b", "claimable": False}],
+        "stale": [{"host": "c"}], "results": {}, "checked": 3, "errors": {}})
+    result = mcp_server.check_takeover(["a", "b", "c"])
+    assert result["leads"][0]["owners"] == ["DNS admin", "cloud / service account owner"]
+    assert result["leads"][1]["owners"] == ["DNS admin"]
+    assert result["stale"][0]["owners"] == ["DNS admin"]
+
+
+def test_enrich_hosts_owners_only_on_problems(monkeypatch):
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {
+        "dangle": {"ips": [], "dns": "dangling_cname"},
+        "inside": {"ips": ["10.0.0.5"], "dns": "live", "private_ips": ["10.0.0.5"]},
+        "fine": {"ips": ["8.8.8.8"], "dns": "live", "private_ips": []}}})
+    hosts = mcp_server.enrich_hosts(["dangle", "inside", "fine"])["hosts"]
+    assert hosts["dangle"]["owners"] == ["DNS admin"]
+    assert hosts["inside"]["owners"] == ["DNS admin"]
+    assert "owners" not in hosts["fine"]
+
+
+def test_check_ports_owners_skip_edge_ips(monkeypatch):
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {}})
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
+        "ips": {"1.1.1.1": {"shared_edge": True}, "8.8.8.8": {"shared_edge": False}},
+        "checked": 2, "errors": 0, "skipped": 0})
+    ips = mcp_server.check_ports(["a"])["ips"]
+    assert ips["8.8.8.8"]["owners"] == ["server / infrastructure admin"]
+    assert "owners" not in ips["1.1.1.1"]
+
+
+def test_check_email_auth_adds_owners(monkeypatch):
+    monkeypatch.setattr(mcp_server, "clean_domain", lambda d: d)
+    monkeypatch.setattr(mcp_server, "check_email", lambda domain: {"verdict": {}})
+    result = mcp_server.check_email_auth("examplecom")
+    assert result["owners"] == ["DNS admin", "email admin"]
