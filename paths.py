@@ -11,6 +11,7 @@ English, so the same scan always gives the same paths, whatever the model.
 No path is ever made up: if nothing chains, the answer is "no path found".
 """
 
+import re
 from categorize import categorize
 from internetdb import SHARED_EDGE
 
@@ -181,3 +182,37 @@ def _fix_first(paths, evidence):
     best = max(counts, key=lambda eid: len(counts[eid]))  # first one wins a tie
     fact = next(e for e in evidence if e["id"] == best)
     return {"evidence": best, "fact": fact["fact"], "owners": fact["owners"], "closes": counts[best]}
+
+
+def check_paths(report: str, built: dict) -> tuple[list[str], list[str]]:
+    """Path IDs the report left out, and IDs it made up (each sorted)."""
+    ids = {p["id"] for p in built["paths"]}
+    named = set(re.findall(r"\bP\d+\b", report))
+    order = lambda i: int(i[1:])
+    return sorted(ids - named, key=order), sorted(named - ids, key=order)
+
+
+def paths_appendix(built: dict) -> str:
+    """Markdown list of the paths exactly as code built them."""
+    lines = [
+        "## Attack paths (built by code)",
+        "",
+        "Worked out by monomi's code from the evidence above, not by the AI. "
+        "A path shows how an attack would most likely go, not proof that it works.",
+        "",
+    ]
+    if not built["paths"]:
+        lines.append("*No attack path found in this scan's evidence.*")
+    for p in built["paths"]:
+        lines.append(f"- **{p['id']}: {p['title']}** ({p['severity']}, weakest step: {p['strength']})")
+        for n, s in enumerate(p["steps"], 1):
+            lines.append(f"  {n}. {s['label']}: {s['text']} [{', '.join(s['evidence'])}]")
+        lines.append(f"  - Result: {p['outcome']}")
+    if built.get("more"):
+        lines.append(f"- {built['more']} lower-ranked path(s) left out")
+    fix = built.get("fix_first")
+    if fix:
+        owners = ", ".join(fix["owners"]) or "unknown"
+        lines += ["", f"**Fix this first** ({fix['evidence']}, owner: {owners}, "
+                      f"closes {', '.join(fix['closes'])}): {fix['fact']}"]
+    return "\n".join(lines) + "\n"

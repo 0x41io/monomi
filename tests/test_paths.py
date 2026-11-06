@@ -124,3 +124,29 @@ def test_paths_are_capped():
     out, _ = run(results)
     assert len(out["paths"]) == 10
     assert out["more"] == 4  # 12 takeovers + email + side door = 14
+
+
+def test_check_paths_finds_left_out_and_made_up_paths():
+    from paths import check_paths
+    out, _ = run(lab_results())  # P1 and P2
+    assert check_paths("### P1: email\n### P2: side door", out) == ([], [])
+    assert check_paths("### P1: email only", out) == (["P2"], [])
+    assert check_paths("### P1 ### P2 ### P3", out) == ([], ["P3"])
+    # Words like HTTP2 or SP1 aren't path IDs
+    assert check_paths("P1 P2 over HTTP2, SP1", out) == ([], [])
+
+
+def test_appendix_lists_paths_and_fix_first():
+    from paths import paths_appendix
+    out, _ = run(lab_results())
+    text = paths_appendix(out)
+    assert "**P1: Send email as lab** (High, weakest step: Inference)" in text
+    assert "4. Lead: The server shows software versions" in text
+    assert "**Fix this first**" in text and "owner: DNS admin, email admin" in text
+
+
+def test_appendix_says_when_no_path_was_found():
+    from paths import paths_appendix
+    text = paths_appendix({"paths": [], "fix_first": None, "more": 0})
+    assert "No attack path found" in text
+    assert "Fix this first" not in text

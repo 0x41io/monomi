@@ -22,6 +22,7 @@ from importers import spiderfoot
 import emailauth
 import enrich
 import evidence
+import paths
 import fingerprint
 import history
 import internetdb
@@ -446,8 +447,11 @@ def write_ai_report(results: dict) -> None:
         f"{' · enriched' if 'enrichment' in results else ''}"
         f"{' · Shodan InternetDB' if 'exposure' in results else ''} · model: {model}*\n\n"
     )
+    path_list = paths.paths_appendix(results["paths"])
     with open(path, "w") as f:
-        f.write(header + summary + "\n\n" + evidence.evidence_appendix(summary, results["evidence"]))
+        # The evidence list also covers facts cited only by the code-built paths
+        f.write(header + summary + "\n\n" + evidence.evidence_appendix(summary + path_list, results["evidence"])
+                + "\n" + path_list)
     print()
     ui.render_report(summary)
     print()
@@ -458,6 +462,13 @@ def write_ai_report(results: dict) -> None:
              "Treat those findings with caution.")
     else:
         good("Every evidence ID the AI cited exists.")
+    missing, made_up = paths.check_paths(summary, results["paths"])
+    if missing:
+        warn(f"The AI left out attack path(s) {', '.join(missing)}. See the list at the end of the report.")
+    if made_up:
+        warn(f"The AI named attack path(s) that don't exist: {', '.join(made_up)}. Treat them with caution.")
+    if not missing and not made_up:
+        good("The report covers every attack path and adds none.")
 
 
 def save_json(results: dict, path: str) -> None:
@@ -649,6 +660,7 @@ def main() -> int:
 
     # 4. Evidence, AI report, JSON
     results["evidence"] = evidence.build_evidence(results)
+    results["paths"] = paths.build_paths(results, results["evidence"])
     if args.ai:
         write_ai_report(results)
     if args.json:

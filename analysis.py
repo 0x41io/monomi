@@ -26,8 +26,10 @@ regional clusters, etc.) and note naming patterns.
 3. **Worth reviewing**: hostnames whose names suggest they may not need to be \
 publicly listed (internal tools, staging, admin, cost/billing, legacy). Explain \
 why each matters in one line. Prioritize: High / Medium / Low.
-4. **Recommendations**: concrete defensive steps for the owner.
-5. **Limitations**: list only limits that apply to the data provided. \
+4. **Attack paths**: how an attacker would most likely try to get in, \
+written up from "attack_paths" (see the rules below).
+5. **Recommendations**: concrete defensive steps for the owner.
+6. **Limitations**: list only limits that apply to the data provided. \
 Always: names alone don't prove a problem, and certificate logs miss hosts \
 that never had a certificate. Without "enrichment", say the data doesn't show \
 which hosts still resolve. Without HTTP fingerprint evidence, say it doesn't \
@@ -65,7 +67,7 @@ Mention the CVE count per IP and the most notable CVE IDs, but say they are \
 matched from software version banners and must be verified.
 - Ignore open ports on IPs marked shared_edge (CDN edge servers such as \
 Cloudflare); they belong to the CDN, not the target. Say so once.
-- In section 4, suggest triaging the CVE list with kaidoku and closing or \
+- In section 5, suggest triaging the CVE list with kaidoku and closing or \
 firewalling services that don't need to be public.
 - In Limitations, note that Shodan's data can be days or weeks old.
 
@@ -75,7 +77,7 @@ A header naming a CDN (Cloudflare, Vercel, Fastly, CloudFront) describes the \
 CDN in front of the site, not the origin server; say so once.
 - Any exposed exact version is worth reviewing: name the host and version, \
 and say it can be matched to CVEs but the version banner must be verified.
-- In section 4, suggest hiding version details in Server/X-Powered-By headers.
+- In section 5, suggest hiding version details in Server/X-Powered-By headers.
 - In Limitations, note this was the only active check and saw one page per host.
 If the evidence includes "HTTP security headers" items (read from the same request):
 - In section 3, list hosts missing protective headers. Rank missing HSTS on \
@@ -84,7 +86,7 @@ on pages that handle logins or user input as Medium, and everything else as \
 Low. Don't call missing headers a vulnerability on their own; they are \
 missing defenses.
 - If many hosts share the same gaps, say so once instead of repeating each host.
-- In section 4, name the exact headers to add, and note that a CDN like \
+- In section 5, name the exact headers to add, and note that a CDN like \
 Cloudflare can usually add them in one place.
 - In Limitations, note headers were checked on each host's homepage only, \
 and hosts that redirected were not judged.
@@ -97,7 +99,7 @@ a section 3 finding; mention it briefly in section 2 instead.
 DMARC enforcement covers it.
 - A DKIM key that wasn't found is a Lead at most. Selectors can't be \
 listed, so never say DKIM is missing.
-- In section 4, for spoofable or partial domains, give the exact DMARC \
+- In section 5, for spoofable or partial domains, give the exact DMARC \
 record to publish (p=quarantine if the domain sends mail, p=reject if it \
 doesn't).
 - In Limitations, note DKIM was checked only under common selector names.
@@ -115,7 +117,7 @@ claimed again, such as an AWS load balancer) is not a takeover risk: never \
 call it a Lead. At most mention it in section 2 as housekeeping (delete the \
 old record).
 - If the check found nothing, mention it briefly in section 2, not section 3.
-- In section 4, for each lead, say to delete the stale CNAME record (or \
+- In section 5, for each lead, say to delete the stale CNAME record (or \
 reclaim the resource) as soon as possible.
 - In Limitations, note this check only catches services where deleted names \
 stop resolving; services that answer for every name (GitHub Pages, S3, \
@@ -133,6 +135,26 @@ signals (shared IPs get flagged for other tenants); say so rather than \
 calling them malicious. Cloud storage buckets are worth reviewing for public \
 access, without assuming they are open.
 
+Attack paths (section 4):
+- "attack_paths" holds paths worked out by code from the evidence. Each has \
+an id (P1, P2...), a title, a severity, steps with a label and evidence IDs, \
+an outcome and its strength (the label of its weakest step).
+- Open section 4 with one sentence: these are the ways an attacker scanning \
+from the internet would most likely try first, not proof that an attack works.
+- Then, for each path in the order given, write "### P1: <title> (<severity>)", \
+then its steps as a numbered list in the order given, each starting with \
+its label in bold (**Observed**, **Inference** or **Lead**) and ending with \
+its evidence IDs in square brackets, then one line "Result: <outcome>".
+- You may reword a step into plain English, but never change its label, and \
+never add, drop, merge or reorder paths or steps. Never write a path of your \
+own: if the data doesn't chain into one, it isn't a path.
+- If "more" is above 0, say how many lower-ranked paths were left out.
+- If "paths" is empty, section 4 is exactly: "No attack path found: none of \
+the findings in this scan chain into a way in." Then one sentence on which \
+checks ran. Never invent a path to fill the section.
+- If "fix_first" is set, start section 5 with it as "**Fix this first**", \
+with its owners, citing its evidence ID, and say which paths it closes.
+
 Evidence and labels (the most important rules):
 - The data includes "evidence": numbered facts (E1, E2, ...) collected by \
 code, each with its source. Every finding in section 3 must cite the \
@@ -143,17 +165,17 @@ only IDs that appear in the evidence list.
 cited evidence directly shows it), **Inference** (your interpretation of \
 the cited evidence, e.g. what a hostname suggests), or **Lead** (worth \
 checking, but the evidence is weak or indirect, like a reputation-list hit).
-- Do not write a finding you cannot cite. Sections 1, 2 and 4 may summarize \
+- Do not write a finding you cannot cite. Sections 1, 2 and 5 may summarize \
 without citations, but cite evidence whenever you name a specific host or IP.
 - Each evidence item has "owners": the roles that would fix it (e.g. DNS \
-admin, web app team), worked out by code. In section 4, start each \
+admin, web app team), worked out by code. In section 5, start each \
 recommendation with who owns it, e.g. "**Owner: DNS admin**", using only \
 the owners on the evidence it rests on. If that evidence has no owners, \
 write "**Owner: unknown**". Never name a person and never invent a role.
 
 Formatting rules (the report is rendered in a terminal):
 - Start directly with "## 1. Overview". No title line above it.
-- Use "## " for the five section headings.
+- Use "## " for the six section headings.
 - In section 3, group findings under these exact sub-headings, each on its \
 own line: "### High", "### Medium", "### Low". Leave out a level if it has \
 no findings.
@@ -253,6 +275,7 @@ def summarize(results: dict) -> tuple[str, str]:
         for e in ev[:MAX_EVIDENCE]
     ]
     payload["evidence_truncated"] = len(ev) > MAX_EVIDENCE
+    payload["attack_paths"] = results.get("paths", {"paths": [], "fix_first": None, "more": 0})
     msg = client.messages.create(
         model=model,
         max_tokens=8000,
