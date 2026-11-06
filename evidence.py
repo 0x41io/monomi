@@ -7,6 +7,7 @@ Built by code, not by the AI, so the evidence itself can't be made up.
 """
 import re
 
+from categorize import categorize
 from common import now_utc
 
 # What we can honestly say about a host with no IPv4 address, per its DNS
@@ -40,17 +41,23 @@ OWNERS = {
     "cloud": "cloud / service account owner",
 }
 
+# Hostname categories (from categorize.py) that make a live host worth a
+# fact of its own: attack paths treat these as softer ways in
+RISKY_CATEGORIES = ("non-production", "legacy", "access", "internal-tools", "iot-ot")
+
 
 def build_evidence(results: dict) -> list[dict]:
     """Turn raw recon results into a numbered list of evidence items."""
     evidence = []
 
-    def add(fact, sources, owners=()):
+    def add(fact, sources, owners=(), kind=None, host=None):
         evidence.append({
             "id": f"E{len(evidence) + 1}",
             "fact": fact,
             "sources": sources,
             "owners": [OWNERS[o] for o in owners],
+            "kind": kind,
+            "host": host,
         })
 
     # 1. Which sources found each hostname
@@ -76,13 +83,22 @@ def build_evidence(results: dict) -> list[dict]:
                 where = h["provider"] or "unknown provider"
                 if h.get("country"):
                     where += f", {h['country']}"
-                add(f"{host} resolves to {', '.join(h['ips'])} ({where})", dns_source)
+                add(f"{host} resolves to {', '.join(h['ips'])} ({where})", dns_source, kind="resolves", host=host)
             else:
                 fact = DNS_FACTS.get(h.get("dns"), "had no IPv4 address when checked")
                 add(f"{host} {fact}", dns_source, ("dns",) if h.get("dns") == "dangling_cname" else ())
         for host in enr["private_ip_hosts"]:
             private = ", ".join(enr["hosts"][host].get("private_ips", []))
             add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source, ("dns",))
+        rules_source = [{"name": "hostname rules", "collected_at": now_utc()}]
+        for host in results["subdomains"]:
+            h = enr["hosts"].get(host)
+            if not h or not h["ips"]:
+                continue
+            cat = categorize(host, results.get("target", ""))
+            if cat["category"] in RISKY_CATEGORIES:
+                add(f"{host} is live and its name puts it in the '{cat['category']}' category ({cat['reason']})",
+                    rules_source, kind="risky_name", host=host)
 
     # 3. Open ports, risky services and CVEs (from --ports)
     exp = results.get("exposure")
@@ -101,12 +117,12 @@ def build_evidence(results: dict) -> list[dict]:
             add(fact, shodan_source, ("server",))
             if d["risky"]:
                 add(f"{ip} ({hosts}) runs services that usually shouldn't face the internet: "
-                    f"{', '.join(d['risky'])}", shodan_source, ("server",))
+                    f"{', '.join(d['risky'])}", shodan_source, ("server",), kind="risky_service", host=ip)
             if d["vulns"]:
                 cves = ", ".join(d["vulns"][:15])
                 more = f" (+{len(d['vulns']) - 15} more)" if len(d["vulns"]) > 15 else ""
                 add(f"Shodan InternetDB lists {len(d['vulns'])} CVE(s) for {ip} ({hosts}), "
-                    f"matched from software version banners: {cves}{more}", shodan_source, ("server",))
+                    f"matched from software version banners: {cves}{more}", shodan_source, ("server",), kind="cves", host=ip)
 
     # 4. SpiderFoot findings (from --import)
     sf = results.get("spiderfoot")
@@ -128,7 +144,7 @@ def build_evidence(results: dict) -> list[dict]:
                 fact = f"{host} (HTTP {r['status']}) shows {t['tech']} in its response ({t['evidence']})"
                 if t["version"]:
                     fact += f"; exact version {t['version']} is exposed"
-                add(fact, fp_source, ("server",) if t["version"] else ())
+                add(fact, fp_source, ("server",) if t["version"] else (), kind="version_leak" if t["version"] else None, host=host)
 
     # 6. Security headers missing or weak (from the same --fingerprint request)
     if fp:
@@ -170,7 +186,7 @@ def build_evidence(results: dict) -> list[dict]:
         fact = f"Email spoofing verdict for {target} (worked out by code from the DMARC policy): {v['verdict']}, {v['summary']}"
         if v["notes"]:
             fact += "; notes: " + "; ".join(v["notes"])
-        add(fact, mail_source, ("dns", "email"))
+        add(fact, mail_source, ("dns", "email"), kind="email_" + v["verdict"], host=target)
     # 8. Dangling CNAMEs / subdomain takeover (from --takeover, DNS lookups only)
     tk = results.get("takeover")
     if tk:
@@ -178,10 +194,10 @@ def build_evidence(results: dict) -> list[dict]:
             lead_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": lead["collected_at"]}]
             if lead["claimable"]:
                 add(f"{lead['host']} has a CNAME to {lead['cname']} ({lead['service']}), and that target "
-                    "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source, ("dns", "cloud"))
+                    "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source, ("dns", "cloud"), kind="takeover_lead", host=lead["host"])
             else:
                 add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
-                    "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source, ("dns",))
+                    "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source, ("dns",), kind="dangling_unknown", host=lead["host"])
         for record in tk.get("stale", []):
             stale_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": record["collected_at"]}]
             # Scans saved before v1.7.1 have no "reason": those were all AWS records

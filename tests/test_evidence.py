@@ -124,3 +124,50 @@ def test_appendix_shows_owners():
     lead = next(e for e in ev if "shop has a CNAME" in e["fact"])
     text = evidence_appendix(f"See [{lead['id']}]", ev)
     assert "Owner: DNS admin, cloud / service account owner" in text
+
+
+def kinds_of(evidence):
+    """{kind: [hosts]} for every fact that has a kind."""
+    found = {}
+    for e in evidence:
+        if e["kind"]:
+            found.setdefault(e["kind"], []).append(e["host"])
+    return found
+
+
+def test_facts_that_attack_paths_use_have_a_kind():
+    results = owner_results()
+    results["subdomains"].append("staging")
+    results["enrichment"]["hosts"]["staging"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
+    results["exposure"]["ips"]["198.51.100.7"]["risky"] = ["3389 (RDP)"]
+    results["takeover"]["leads"].append({"host": "blog", "cname": "gone-blog", "service": "unknown",
+                                         "claimable": False, "collected_at": None})
+    kinds = kinds_of(build_evidence(results))
+    assert kinds["resolves"] == ["app", "staging"]
+    assert kinds["risky_name"] == ["staging"]
+    assert kinds["risky_service"] == ["198.51.100.7"]
+    assert kinds["cves"] == ["198.51.100.7"]
+    assert kinds["version_leak"] == ["app"]
+    assert kinds["takeover_lead"] == ["shop"]
+    assert kinds["dangling_unknown"] == ["blog"]
+
+
+def test_risky_name_needs_a_live_host():
+    # "old" and "nope" have names that could look risky, but no IP: no fact
+    results = owner_results()
+    results["subdomains"].append("dev")
+    results["enrichment"]["hosts"]["dev"] = {"ips": [], "provider": None, "dns": "no_such_host"}
+    assert "risky_name" not in kinds_of(build_evidence(results))
+
+
+def test_email_verdict_kind_names_the_verdict():
+    results = owner_results()
+    results["target"] = "example"
+    results["email"] = {
+        "collected_at": None,
+        "spf": {"record": None, "issues": []},
+        "dmarc": {"record": None, "issues": []},
+        "dkim": {"selectors": [], "issues": []},
+        "verdict": {"verdict": "spoofable", "summary": "no DMARC", "notes": []},
+    }
+    assert kinds_of(build_evidence(results))["email_spoofable"] == ["example"]
