@@ -97,3 +97,24 @@ def test_cert_spotter_failing_is_still_a_gap():
     results = {"sources": {"crt.sh": {}, "crt.sh database": {}},
                "errors": {"certspotter": "rate limited"}}
     assert baseline_gaps(results) == ["certspotter"]
+
+
+def test_hosts_file_keeps_only_the_targets_hostnames(tmp_path):
+    from monomi import read_hosts_file
+    f = tmp_path / "hosts.txt"
+    # "lab" stands in for the domain: dotless, so the chat app doesn't link it
+    f.write_text("# known hosts\nOLDAPP.lab\n\nlab\nvpn.lab.   # trailing dot is fine\n"
+                 "other\nevil.otherlab\nbad host.lab\nvpn.lab\n")
+    hosts, skipped = read_hosts_file(str(f), "lab")
+    assert hosts == ["lab", "oldapp.lab", "vpn.lab"]
+    assert skipped == ["other: not part of lab", "evil.otherlab: not part of lab",
+                       "bad host.lab: not a hostname"]
+
+
+def test_hosts_file_is_capped(tmp_path):
+    from monomi import MAX_HOSTS_FILE, read_hosts_file
+    f = tmp_path / "hosts.txt"
+    f.write_text("\n".join(f"h{i}.lab" for i in range(MAX_HOSTS_FILE + 5)))
+    hosts, skipped = read_hosts_file(str(f), "lab")
+    assert len(hosts) == MAX_HOSTS_FILE
+    assert skipped == [f"5 more hostnames: over the {MAX_HOSTS_FILE} limit"]

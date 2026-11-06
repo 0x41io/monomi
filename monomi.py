@@ -17,7 +17,7 @@ from datetime import datetime
 
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from collectors import certspotter, crtsh, crtsh_db
-from common import now_utc
+from common import is_hostname, now_utc
 from importers import spiderfoot
 import emailauth
 import enrich
@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")           
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
+    parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
     parser.add_argument("--investigate-ip", nargs="+", metavar="IP",
                 help="look into suspicious IP(s): Tor/VPN/hosting signs, network owner, Shodan (asks public sources, never the IP)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
@@ -104,6 +105,52 @@ def import_matches(sf: dict, domain: str, path: str) -> bool:
     fail(f"This export is a scan of {sf['target']}, but you asked for {domain}.")
     info(f"Run it without a domain to analyze {sf['target']}: python monomi.py --import {path}")
     return False
+
+
+MAX_HOSTS_FILE = 500
+HOSTS_FILE = "hosts file"
+
+
+def read_hosts_file(path: str, domain: str) -> tuple[list[str], list[str]]:
+    """Hostnames from a file, one per line ("#" starts a comment).
+
+    Returns (hosts to check, lines that were skipped, each with the reason).
+    Only the target domain and its subdomains are kept, so a file can't
+    point monomi at anything outside the scan.
+    """
+    hosts, skipped = set(), []
+    with open(path) as f:
+        for line in f:
+            name = line.split("#")[0].strip().lower().rstrip(".")
+            if not name:
+                continue
+            if not is_hostname(name):
+                skipped.append(f"{name[:60]}: not a hostname")
+            elif name != domain and not name.endswith("." + domain):
+                skipped.append(f"{name[:60]}: not part of {domain}")
+            else:
+                hosts.add(name)
+    hosts = sorted(hosts)
+    if len(hosts) > MAX_HOSTS_FILE:
+        skipped.append(f"{len(hosts) - MAX_HOSTS_FILE} more hostnames: over the {MAX_HOSTS_FILE} limit")
+    return hosts[:MAX_HOSTS_FILE], skipped
+
+
+def add_hosts_file(results: dict, path: str, domain: str) -> bool:
+    """--hosts: add the file's hostnames as their own source. False if unreadable."""
+    try:
+        hosts, skipped = read_hosts_file(path, domain)
+    except OSError as e:
+        fail(f"Can't read the hosts file: {e}")
+        return False
+    results["sources"][HOSTS_FILE] = {"source": HOSTS_FILE, "file": path,
+                                      "subdomains": hosts, "collected_at": now_utc()}
+    good(f"{HOSTS_FILE}: {len(hosts)} hostnames from {short_path(path)}")
+    for line in skipped[:10]:
+        warn(f"Skipped {ui.safe(line)}")
+    if len(skipped) > 10:
+        warn(f"...and {len(skipped) - 10} more skipped lines")
+    return True
 
 
 def add_import(results: dict, sf: dict, path: str) -> None:
@@ -390,7 +437,10 @@ def show_changes(results: dict) -> None:
     Only saves when every source worked: a partial list would make the next
     full scan report lots of fake [NEW] hosts.
     """
-    domain, all_subs = results["target"], results["subdomains"]
+    domain = results["target"]
+    # History tracks what certificate logs show; a hosts file would add fake [NEW] hosts
+    all_subs = sorted({s for name, r in results["sources"].items() if name != HOSTS_FILE
+                       for s in r["subdomains"]})
     previous = history.load_last(domain)
 
     gaps = baseline_gaps(results)
@@ -644,6 +694,8 @@ def main() -> int:
         add_import(results, sf, args.import_file)
     else:
         collect_ct(results, domain)
+    if args.hosts and not add_hosts_file(results, args.hosts, domain):
+        return 1
 
     if not any(r["subdomains"] for r in results["sources"].values()):
         if sf:
