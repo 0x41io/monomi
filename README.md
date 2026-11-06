@@ -8,7 +8,7 @@
 
 **mønømi: passive attack surface recon and IP threat-intel, with AI-written analysis and an MCP server, by 0x41.**
 
-Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, and what the owner can do about it.
+Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, how an attacker would most likely get in, and who should fix what first.
 
 > ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups, and `--fingerprint` is the one active check: a single homepage request per host. Only assess domains you own or have permission to review.
 ---
@@ -20,7 +20,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
   - [Cert Spotter](https://sslmate.com/certspotter/) (currently valid certificates, more reliable; waits and retries when rate-limited)
 - **Automatic fallback:** if a source is down, the scan continues with the others. A scan is only left out of history when both crt.sh sources fail, since crt.sh is the only one with full certificate history
 - **Merged, de-duplicated results**
-- **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS. Hosts with no IPv4 address get a second DNS look that says why: **gone** (the name doesn't exist), **ipv6_only**, **no_address** (the name exists but has no address, often a retired host) or **lookup_failed**
+- **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS. Hosts with no IPv4 address get a second DNS look that says why: **no_such_host** (the name doesn't exist, double-checked over DNS-over-HTTPS), **dangling_cname** (a CNAME pointing to a deleted name), **ipv6_only**, **no_address** (the name exists but has no address, often a retired host), **conflicting** (system DNS and DNS-over-HTTPS disagree, so it's unknown) or **lookup_failed**. Every check uses the same DNS helper and the same status words
 - **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs (Cloudflare, Fastly, Akamai, Imperva, and AWS CloudFront, detected from [Amazon's published IP ranges](https://ip-ranges.amazonaws.com/ip-ranges.json)) so their ports aren't blamed on the target. Edge IPs are also caught from Shodan's service fingerprints (CPEs), which finds Cloudflare and Okta on IP ranges they don't own, and each one says why it was flagged (`edge_reason`). A hostname whose CNAME points to an edge service (CloudFront, Okta, Fastly, Akamai, Cloudflare, Imperva, Azure Front Door) also marks its IPs as edge. Only IPs that matter get a row
 - **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
 - **Web tech + security headers (`--fingerprint`, active):** one homepage request per live host reads headers like Server and X-Powered-By to spot web servers, frameworks and exposed versions, and checks the same response for missing or weak security headers (HSTS, CSP, X-Frame-Options / frame-ancestors, X-Content-Type-Options, Referrer-Policy). Hosts that redirect aren't judged, and the header check makes no extra requests
@@ -31,10 +31,13 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Change detection:** every scan is saved and compared with the last one, flagging new and removed hostnames
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
 - **Evidence-backed findings:** before the AI step, Monomi's code turns the collected data into a numbered evidence list (E1, E2, ...), each item a plain fact with its source and UTC collection time. Every finding in the AI report cites the evidence it rests on (e.g. `[E12, E194]`) and is labeled **Observed**, **Inference** or **Lead**. After the report is written, Monomi checks every citation and warns if the AI cited evidence that doesn't exist. Saved reports end with an **Evidence** section listing each cited item, written by code, not by the AI
+- **Attack paths:** Monomi's code chains findings into the ways an attacker would most likely try to get in: a claimable subdomain takeover (made worse when the domain's email is spoofable), email impersonation, services that shouldn't face the internet, known-vulnerable versions, and non-production hosts sharing a server with production. Every step cites evidence and is labeled Observed / Inference / Lead by code, and a path is only as strong as its weakest step. The paths print at the end of every scan that ran a check, with no AI needed. With `--ai`, Claude writes them up in a report section of their own, but can't add, drop or reorder a path or change a label, and Monomi checks the report afterwards. If nothing chains, the answer is "no attack path found", never an invented one
+- **Owners and "fix this first":** every finding carries the roles that would fix it (DNS admin, email admin, web app team, CDN / proxy admin, server / infrastructure admin, cloud / service account owner), worked out by code and never naming people. Recommendations start with their owner, and the report leads with the one fix that closes the most attack paths
+- **Known hostnames (`--hosts FILE`):** check hostnames you already know alongside the ones from certificate logs, one per line. Only the target domain and its subdomains are kept, so a file can't point Monomi outside the scan, and the file's hosts stay out of scan history
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
 - **JSON export** for use in other tools
-- **MCP server mode (passive-only):** run Monomi as an MCP server so AI agents can call its checks directly. Seven tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, and hostnames that don't resolve.
+- **MCP server mode (passive-only):** run Monomi as an MCP server so AI agents can call its checks directly. Seven tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason.
 
 ## Installation
 
@@ -88,6 +91,9 @@ python monomi.py example.com --email
 # Check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)
 python monomi.py example.com --takeover
 
+# Also check hostnames you already know (one per line), e.g. ones certificate logs miss
+python monomi.py example.com --takeover --hosts known-hosts.txt
+
 # Investigate suspicious IPs: Tor exit, VPN/proxy, hosting, CDN edge (asks public sources, never the IP)
 python monomi.py --investigate-ip 171.25.193.25 8.8.8.8
 
@@ -131,10 +137,12 @@ A report includes:
 
 1. **Overview** of the public footprint
 2. **Infrastructure layout:** hosts grouped by apparent purpose, plus naming patterns
-3. **Worth reviewing:** prioritized hosts whose names suggest they may not need to be public
-4. **Recommendations:** concrete defensive steps
-5. **Limitations:** what passive data can and can't tell you
-6. **Evidence:** every cited fact with its source and collection time, written by Monomi's code (not the AI)
+3. **Worth reviewing:** prioritized findings (High / Medium / Low), each labeled and cited
+4. **Attack paths:** how an attacker would most likely get in, step by step
+5. **Recommendations:** "fix this first", then concrete defensive steps, each with its owner
+6. **Limitations:** what passive data can and can't tell you
+7. **Evidence:** every cited fact with its source, collection time and owner, written by Monomi's code (not the AI)
+8. **Attack paths (built by code):** the paths exactly as the code built them, so the report can be checked against them
 
 ### Example finding
 
@@ -153,7 +161,7 @@ A report includes:
 
 Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI, and **passive-only**: no active scanning is exposed over MCP.
 
-Tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hosts`, `check_ports`, `check_email_auth`, `check_takeover`, `investigate_ip` (suspicious IPs, up to 10 per call).
+Tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hosts`, `check_ports`, `check_email_auth`, `check_takeover`, `investigate_ip` (suspicious IPs, up to 10 per call). Results with something to fix carry `owners`: the roles that would fix them.
 
 Every call is built to fit the Claude app's 60-second tool limit: `find_subdomains` gives its sources 45 seconds in total, returns whatever finished, and lists skipped sources in `errors`.
 
@@ -177,7 +185,9 @@ domain ──► crt.sh database ──┼──► merge + de-duplicate ──�
 domain ──► Cert Spotter ─────┘   (or SpiderFoot CSV    │
                                   via --import)        ├──► DNS + ASN (--enrich)
                                                        ├──► Shodan InternetDB (--ports)
-                                                       └──► Claude (--ai) ──► Markdown report
+                                                       ├──► email / takeover / fingerprint checks
+                                                       └──► evidence ──► attack paths (code)
+                                                                              └──► Claude (--ai) ──► Markdown report
 ```
 
 Certificate Transparency (CT) is a public log of every TLS certificate issued by trusted authorities. Certificates list the hostnames they cover, so CT logs reveal subdomains an organization has requested certificates for, without touching the organization's servers.
@@ -198,14 +208,17 @@ monomi/
 ├── takeover.py           # dangling CNAME / subdomain takeover check (--takeover)
 ├── threatintel.py        # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
-├── evidence.py           # evidence list, citation check, Evidence section
+├── evidence.py           # evidence list, owners, citation check, Evidence section
+├── paths.py              # attack paths built from the evidence, "fix this first"
+├── dnscheck.py           # shared DNS helper: status words, DNS-over-HTTPS double-check
 ├── history.py            # scan history + change detection
 ├── ui.py                 # colored banner + terminal output
 ├── common.py             # shared helpers: version, hostname checks, timestamps
 ├── collectors/
 │   ├── crtsh.py          # crt.sh collector (with retries)
 │   ├── crtsh_db.py       # crt.sh database collector (PostgreSQL)
-│   └── certspotter.py    # Cert Spotter collector (pagination, rate-limit retry)├── importers/
+│   └── certspotter.py    # Cert Spotter collector (pagination, rate-limit retry)
+├── importers/
 │   └── spiderfoot.py     # SpiderFoot CSV export parser
 ├── scans/                # saved scans per domain (git-ignored)
 ├── reports/              # generated reports (git-ignored)
@@ -228,7 +241,9 @@ monomi/
 - A takeover `no_cname` status only means DNS returned no CNAME record. Some DNS providers (e.g. Cloudflare) answer the same way for names that don't exist, so it doesn't prove a host is live.
 - `--investigate-ip` only uses free public sources. The Tor exit list is authoritative, but VPN and proxy labels come from reverse DNS names and Shodan tags, so many commercial VPNs won't be caught; "no anonymizer found" doesn't prove there isn't one. A country is where the network is registered, never where the person using the IP is.
 - crt.sh (website and database) and Cert Spotter are free services and are sometimes slow or rate-limited. Over MCP, sources still running after 45 seconds are skipped so the call fits the Claude app's tool limit.
-- Some DNS providers (Cloudflare among them) never say a name doesn't exist, so a retired hostname on those zones shows as **no_address**, not **gone**.
+- Some DNS providers (Cloudflare among them) never say a name doesn't exist, so a retired hostname on those zones shows as **no_address**, not **no_such_host**.
+- DNS answers are cached. Right after a DNS change, a name that was looked up before it existed can still read as **no_such_host** until the zone's negative-cache time runs out (often up to 30 minutes), and a deleted record can keep resolving until its TTL runs out.
+- Attack paths come from fixed rules applied to what the scan saw. A path shows how an attack would most likely go, not proof that it works, and "no attack path found" means no rule matched, not that the target is safe. Paths are only as complete as the checks that ran.
 
 ## Development
 
@@ -239,7 +254,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records) and the IP threat-intel labels
+The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners and the attack-path rules.
 
 ## Roadmap
 
@@ -261,10 +276,11 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.7: third subdomain source (crt.sh database) + Cert Spotter rate-limit retry, 45s MCP deadline, DNS status for hosts with no IPv4, CNAME-based edge detection, `iot-ot` and `partner-portal` categories, `check_ports` summary
 - [x] v1.7.1: takeover fixes from field testing: dangling CNAMEs inside the scanned domain marked `stale` (not leads), new `no_such_host` status, optional `domain` argument for the `check_takeover` MCP tool
 
+- [x] v1.8: attack paths built by code (every step evidence-cited and labeled), `owner` roles on every finding and "fix this first", `--hosts FILE`, DNS reliability (shared DNS helper, DNS-over-HTTPS double-check, one set of status words), MCP input cleanup
+
 **Next**
-- [ ] v1.8: attack-path stories (the AI chains findings into how an attacker would get in, every step evidence-cited)
+- [ ] v1.9: report exports (Markdown, HTML, findings CSV), `monomi doctor`, next-check suggestions, a second DNS-over-HTTPS resolver, a "go around the CDN" attack path, crt.sh rate-limit handling
 - [ ] Rule-based checks before the AI step
-- [ ] HTML report
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
 
