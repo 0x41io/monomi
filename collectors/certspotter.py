@@ -11,6 +11,7 @@ import time
 
 import requests
 
+from collectors.pacing import CERTSPOTTER as PACER, Paced
 from common import USER_AGENT, now_utc, subdomains_in, wildcards_in
 from ui import warn
 
@@ -18,6 +19,8 @@ API_URL = "https://api.certspotter.com/v1/issuances"
 MAX_PAGES = 5  # be gentle with the free tier (no API key)
 MAX_RATE_WAIT = 10  # most seconds we'll wait on a rate limit (the MCP call has 60s in total)
 RATE_RETRIES = 2    # how many times we'll wait and try again after a rate limit
+DEFAULT_COOLDOWN = 900  # seconds to skip Cert Spotter after a 429 that doesn't say how long
+MAX_COOLDOWN = 3600     # the free quota is per hour, so never skip longer than that
 
 
 def rate_limit_wait(resp) -> float | None:
@@ -33,6 +36,19 @@ def rate_limit_wait(resp) -> float | None:
     return wait if 0 <= wait <= MAX_RATE_WAIT else None
 
 
+def cooldown_seconds(resp) -> float:
+    """How long every later scan should skip Cert Spotter after we give up on a 429.
+
+    Uses its Retry-After header when that's a plain number of seconds,
+    otherwise DEFAULT_COOLDOWN; never more than MAX_COOLDOWN.
+    """
+    try:
+        wait = float(resp.headers.get("Retry-After", ""))
+    except ValueError:
+        return DEFAULT_COOLDOWN
+    return min(wait, MAX_COOLDOWN) if wait > 0 else DEFAULT_COOLDOWN
+
+
 def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
     """Fetch issuances for domain + subdomains, following pagination."""
     params = {"domain": domain, "include_subdomains": "true", "expand": "dns_names"}
@@ -42,6 +58,13 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
     rate_waits = 0
 
     while pages < MAX_PAGES:
+        try:
+            # Every page is one query against the shared free-tier quota
+            PACER.acquire(max_wait=MAX_RATE_WAIT)
+        except Paced:
+            if records:
+                break  # out of quota mid-way: keep what we already have
+            raise
         try:
             resp = requests.get(API_URL, params=params, headers=headers, timeout=timeout)
         except requests.RequestException as e:
@@ -54,6 +77,8 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
                 warn(f"Cert Spotter rate limit hit, waiting {wait:.0f}s and trying again...")
                 time.sleep(wait)
                 continue  # ask for the same page again
+            # Giving up: tell later scans to skip Cert Spotter instead of hitting the limit again
+            PACER.cool_down(cooldown_seconds(resp))
             if records:
                 break  # rate limited mid-way: keep what we already have
             raise RuntimeError("Cert Spotter rate limit hit (free tier). Try again later.")

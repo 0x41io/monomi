@@ -12,6 +12,7 @@ import time
 
 import requests
 
+from collectors.pacing import CRTSH as PACER, Paced
 from common import USER_AGENT, now_utc, subdomains_in, wildcards_in
 from ui import warn
 
@@ -42,6 +43,15 @@ def fetch_raw(domain: str, budget: float = DEFAULT_BUDGET, retries: int = 3, tim
         remaining = deadline - time.monotonic()
         if remaining < 5:
             break  # too little time left for a useful try
+        try:
+            # Wait our turn: crt.sh is shared by every Monomi run (keep 5s to send the request)
+            PACER.acquire(max_wait=remaining - 5)
+        except Paced as e:
+            if not tries:
+                raise  # skipped before trying at all: the pacing message says why
+            last_error = f"{last_error}; {e}"
+            break
+        remaining = deadline - time.monotonic()  # the wait used some of it
         tries += 1
         try:
             resp = requests.get(CRTSH_URL, params=params, headers=headers,
