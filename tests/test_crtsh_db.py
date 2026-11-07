@@ -34,6 +34,7 @@ def test_fetch_raw_retries_once_then_gives_up(monkeypatch):
         tries.append(kwargs)
         raise psycopg.OperationalError("server closed the connection unexpectedly\nmore detail")
 
+    monkeypatch.setattr(crtsh_db.socket, "gethostbyname", lambda host: "203.0.113.7")
     monkeypatch.setattr(crtsh_db.psycopg, "connect", broken_connect)
     with pytest.raises(RuntimeError, match="gave up after 2 tries.*server closed the connection unexpectedly$"):
         crtsh_db.fetch_raw("example.com", budget=60)
