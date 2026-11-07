@@ -19,6 +19,26 @@ LABEL_RANK = {"Observed": 0, "Inference": 1, "Lead": 2}
 SEVERITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
 MAX_PATHS = 10
 
+# More hosts than this on the same IPs = a shared load balancer or ingress,
+# not one server, so rule E builds no side door through it
+SHARED_INGRESS = 10
+
+# Rule E wording per hostname category: (one host, several hosts, why it's a soft target)
+SIDE_DOOR_WORDS = {
+    "non-production": ("a non-production host", "non-production hosts",
+                       "Non-production sites are often less protected"),
+    "legacy": ("an old or legacy host", "old or legacy hosts",
+               "Old sites are often left unpatched"),
+    "access": ("a login or remote-access host", "login or remote-access hosts",
+               "Login and remote-access pages are where attackers try guessed or stolen passwords"),
+    "internal-tools": ("an internal tool", "internal tools",
+                       "Internal tools are often left with weak or default logins"),
+    "iot-ot": ("a device or control system", "devices or control systems",
+               "Devices and control systems are often left on default settings"),
+    None: ("a non-production or internal host", "non-production or internal hosts",
+           "Hosts like these are often less protected"),
+}
+
 
 def _by_kind(evidence):
     """{kind: [facts]} for every fact that has a kind."""
@@ -131,38 +151,48 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     ips_of = {h: d.get("ips", []) for h, d in enr.get("hosts", {}).items()}
     edge = _edge_ips(results)
 
-    # E. Side door: non-production hosts on the same server as production
-    risky_on = {}  # IP -> the risky-name facts of every live host on it
+    # E. Side door: risky-named hosts on the same server as production.
+    # Private IPs are skipped (nobody on the internet can reach them), hosts
+    # are grouped by their set of IPs (one path per server, not one per IP),
+    # and IPs that carry many hosts are a shared load balancer, not one server.
+    private = {h: d.get("private_ips", []) for h, d in enr.get("hosts", {}).items()}
+    groups = {}  # set of IPs -> the risky-name facts of every host on exactly those IPs
     for r in kinds.get("risky_name", []):
-        for ip in ips_of.get(r["host"], []):
-            if ip not in edge:
-                risky_on.setdefault(ip, []).append(r)
+        ips = frozenset(ip for ip in ips_of.get(r["host"], [])
+                        if ip not in edge and ip not in private.get(r["host"], []))
+        if ips:
+            groups.setdefault(ips, []).append(r)
     side_door_ips = set()
-    for ip, names in risky_on.items():
+    for ips, names in groups.items():
         names = sorted(names, key=lambda r: r["host"])
         hosts = [r["host"] for r in names]
-        shared = [h for h, ips in ips_of.items()
-                  if h not in hosts and ip in ips
+        on_ips = [h for h, h_ips in ips_of.items() if ips & set(h_ips)]
+        if len(on_ips) > SHARED_INGRESS:
+            continue  # a shared front door, so "same server" can't be claimed
+        shared = [h for h in on_ips if h not in hosts
                   and categorize(h, target)["category"] in ("apex", "content", "app-api", "uncategorized")]
         if not shared:
             continue
+        where = _names(sorted(ips))
+        cats = {categorize(h, target)["category"] for h in hosts}
+        cat = cats.pop() if len(cats) == 1 else None
+        like_one, like_many, why = SIDE_DOOR_WORDS.get(cat, SIDE_DOOR_WORDS[None])
         who, one = _names(hosts), len(hosts) == 1
         resolves = [e for e in kinds.get("resolves", []) if e["host"] in hosts + shared]
         steps = [
-            _step(f"{who} {'is' if one else 'are'} live and named like "
-                  f"{'a non-production or internal host' if one else 'non-production or internal hosts'}",
+            _step(f"{who} {'is' if one else 'are'} live and named like {like_one if one else like_many}",
                   names, "Observed"),
-            _step(f"{'It is' if one else 'They are'} on the same IP ({ip}) as {_names(shared)}", resolves, "Observed"),
-            _step(f"Non-production sites are often less protected, so {who} {'is a likely first target' if one else 'are likely first targets'}, "
+            _step(f"{'It is' if one else 'They are'} on the same IP ({where}) as {_names(shared)}", resolves, "Observed"),
+            _step(f"{why}, so {who} {'is a likely first target' if one else 'are likely first targets'}, "
                   "and getting in there may mean getting into the same server", names, "Inference"),
         ]
-        leaks = [e for e in kinds.get("version_leak", []) if ip in ips_of.get(e["host"], [])]
-        leaks += [e for e in kinds.get("cves", []) if e["host"] == ip]
+        leaks = [e for e in kinds.get("version_leak", []) if ips & set(ips_of.get(e["host"], []))]
+        leaks += [e for e in kinds.get("cves", []) if e["host"] in ips]
         if leaks:
             steps.append(_step("The server shows software versions an attacker can match "
                                "to public exploits (versions must be verified)", leaks, "Lead"))
-        side_door_ips.add(ip)
-        paths.append(_path(f"Use {who} as a side door into {ip}", "Medium", steps,
+        side_door_ips.update(ips)
+        paths.append(_path(f"Use {who} as a side door into {where}", "Medium", steps,
                            f"Access to the server that also runs {shared[0]}", names + leaks))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped)

@@ -193,3 +193,52 @@ def test_dangling_cname_under_cloud_provider_builds_no_path():
     assert fact["kind"] == "dangling_provider"
     assert "can-i-take-over-xyz" in fact["fact"]
     assert not any("oldapi" in p["title"] for p in out["paths"])
+
+
+def side_doors(out):
+    return [p for p in out["paths"] if "side door" in p["title"]]
+
+
+def test_private_ip_is_never_a_side_door():
+    # Internal addresses in public DNS can't be reached from the internet
+    results = lab_results()
+    for h in ("lab", "staging"):
+        results["enrichment"]["hosts"][h] = {"ips": ["10.1.2.3"], "private_ips": ["10.1.2.3"],
+                                             "provider": "PRIVATE IP"}
+    out, ev = run(results)
+    assert side_doors(out) == []
+
+
+def test_host_with_several_ips_gets_one_side_door():
+    # A load-balanced host has several IPs: still one path, naming all of them
+    results = lab_results()
+    three = ["198.51.100.7", "198.51.100.8", "198.51.100.9"]
+    for h in ("lab", "staging"):
+        results["enrichment"]["hosts"][h]["ips"] = three
+    out, ev = run(results)
+    doors = side_doors(out)
+    assert len(doors) == 1
+    assert doors[0]["title"] == "Use staging as a side door into 198.51.100.7, 198.51.100.8 and 198.51.100.9"
+
+
+def test_many_hosts_on_one_ip_is_a_shared_front_door():
+    # 11 more hosts on the same IP = shared load balancer, not one server
+    results = lab_results()
+    for i in range(11):
+        results["subdomains"].append(f"app{i}")
+        results["enrichment"]["hosts"][f"app{i}"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
+    out, ev = run(results)
+    assert side_doors(out) == []
+
+
+def test_side_door_wording_follows_the_category():
+    # An admin host is a way in through its login page, not "non-production"
+    results = lab_results()
+    results["subdomains"] = ["lab", "admin", "www"]
+    results["sources"]["certlog"]["subdomains"] = results["subdomains"]
+    hosts = results["enrichment"]["hosts"]
+    hosts["admin"] = hosts.pop("staging")
+    out, ev = run(results)
+    door = side_doors(out)[0]
+    assert door["steps"][0]["text"] == "admin is live and named like a login or remote-access host"
+    assert door["steps"][2]["text"].startswith("Login and remote-access pages are where attackers try")
