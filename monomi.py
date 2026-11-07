@@ -16,7 +16,7 @@ import sys
 from datetime import datetime
 
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for
-from collectors import certspotter, crtsh, crtsh_db
+from collectors import certspotter, crtsh, crtsh_db, saved
 from common import is_hostname, now_utc
 from importers import spiderfoot
 import emailauth
@@ -174,6 +174,9 @@ def add_import(results: dict, sf: dict, path: str) -> None:
 # Sources that keep every certificate ever logged (expired ones too)
 FULL_HISTORY_SOURCES = ("crt.sh", "crt.sh database")
 
+# Job name in collect_ct() -> the "source" name its result is stored under
+SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert Spotter": "certspotter"}
+
 
 def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET,
                crtsh_light: bool = False, total_budget: float | None = None) -> None:
@@ -204,6 +207,44 @@ def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_B
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
     flag_silent_crtsh_failure(results)
+    use_saved_copies(results, domain)
+
+
+def use_saved_copies(results: dict, domain: str) -> None:
+    """Save each source that worked, and fill in for each one that failed from its saved copy.
+
+    The crt.sh website and database hold the same data, so a saved crt.sh
+    copy is only used when both failed, and then only the newer of the two.
+    The error stays in results["errors"], so the scan still counts as
+    incomplete and isn't saved to history as a baseline.
+    """
+    for name, source in SOURCE_NAMES.items():
+        r = results["sources"].get(source)
+        if r and r["certificates_seen"] > 0:  # an empty result is no use as a fallback
+            try:
+                saved.save(domain, r)
+            except (OSError, ValueError) as e:
+                warn(f"Couldn't save {name}'s result for later: {e}")
+
+    copies = {}
+    for name, source in SOURCE_NAMES.items():
+        copy = saved.load(domain, source) if name in results["errors"] else None
+        if copy:
+            copies[name] = copy
+    crtsh_copies = [name for name in FULL_HISTORY_SOURCES if name in copies]
+    if any(name in results["sources"] for name in FULL_HISTORY_SOURCES):
+        for name in crtsh_copies:
+            del copies[name]  # the other crt.sh source worked, so nothing is missing
+    elif len(crtsh_copies) == 2:
+        older = min(crtsh_copies, key=lambda name: copies[name]["collected_at"])
+        del copies[older]
+
+    for name, copy in copies.items():
+        results["sources"][copy["source"]] = copy
+        results["errors"][name] += f"; using the saved copy from {copy['collected_at']}"
+        warn(f"{name}: using the saved copy from {copy['collected_at']} "
+             f"({copy['subdomain_count']} hostnames, may be out of date)")
+
 
 def flag_silent_crtsh_failure(results: dict) -> None:
     """Catch a crt.sh source failing without an error.
@@ -426,7 +467,9 @@ def baseline_gaps(results: dict) -> list[str]:
     The crt.sh website and database hold the same data, so one of them
     failing while the other worked loses nothing.
     """
-    crtsh_ok = any(name in results["sources"] for name in FULL_HISTORY_SOURCES)
+    # A saved copy doesn't count: it's old data standing in for a failed source
+    crtsh_ok = any(name in results["sources"] and not results["sources"][name].get("from_saved")
+                   for name in FULL_HISTORY_SOURCES)
     return [name for name in results["errors"]
             if not (name in FULL_HISTORY_SOURCES and crtsh_ok)]
 

@@ -66,7 +66,8 @@ def build_evidence(results: dict) -> list[dict]:
     for r in results["sources"].values():
         for host in r["subdomains"]:
             seen_by.setdefault(host, []).append(
-                {"name": r["source"], "collected_at": r.get("collected_at")}
+                {"name": r["source"] + (" (saved copy)" if r.get("from_saved") else ""),
+                 "collected_at": r.get("collected_at")}
             )
     for host in results["subdomains"]:
         names = ", ".join(s["name"] for s in seen_by[host])

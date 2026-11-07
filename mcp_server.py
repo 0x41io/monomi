@@ -206,6 +206,7 @@ def find_subdomains(domain: str, detail: str = "summary") -> dict:
                 "found": r["subdomain_count"],
                 "certificates_seen": r.get("certificates_seen"),
                 "collected_at": r["collected_at"],
+                "from_saved": r.get("from_saved", False),
             }
             for name, r in results["sources"].items()
         },
