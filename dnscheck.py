@@ -5,11 +5,13 @@ One place for how Monomi asks DNS questions, so every tool gets the same
 answer for the same host. Order of trust:
   1. the system resolver (normal DNS, port 53)
   2. public DNS servers (1.1.1.1, 8.8.8.8) if the system one doesn't answer
-  3. DNS-over-HTTPS to Cloudflare if neither answers, and to double-check
-     any "no such name" (NXDOMAIN) before believing it
+  3. DNS-over-HTTPS (Cloudflare, then Google) if neither answers, and to
+     double-check any "no such name" (NXDOMAIN) before believing it
 
 Only asks DNS servers, never the target itself, so it stays passive.
 """
+
+import time
 
 import dns.exception
 import dns.resolver
@@ -19,8 +21,13 @@ FALLBACK_NAMESERVERS = ["1.1.1.1", "8.8.8.8"]
 
 # DNS-over-HTTPS: the same DNS question sent over HTTPS (port 443), so a
 # local DNS relay (like WSL's) can't intercept it or replay a stale answer.
-DOH_URL = "https://cloudflare-dns.com/dns-query"
+# Two providers, so one provider's rate limit or stale cache isn't the last word.
+DOH_SERVERS = {
+    "Cloudflare": "https://cloudflare-dns.com/dns-query",
+    "Google": "https://dns.google/resolve",
+}
 DOH_TYPE_CODES = {"A": 1, "AAAA": 28, "CNAME": 5}   # DoH JSON gives record types as numbers
+RETRY_PAUSE = 2   # seconds to wait before one last try when every DoH server failed
 
 
 class DNSLookupError(Exception):
@@ -35,6 +42,11 @@ class ConflictingAnswers(DNSLookupError):
     """System DNS and DNS-over-HTTPS disagree about whether a name exists."""
 
 
+class ServerFailure(DNSLookupError):
+    """A DNS server answered SERVFAIL: it tried, but couldn't get an answer
+    (a broken zone, or a provider refusing under load). Still unknown."""
+
+
 def _resolvers():
     """System DNS first, then public DNS (WSL's relay can time out)."""
     system = dns.resolver.Resolver()
@@ -43,16 +55,16 @@ def _resolvers():
     return (system, public)
 
 
-def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
-    """Ask Cloudflare's DNS-over-HTTPS service one DNS question.
+def _ask_doh(url: str, name: str, rtype: str) -> tuple[str, list[str]]:
+    """Ask one DNS-over-HTTPS server one DNS question.
 
     Returns ("nxdomain", []) if the name doesn't exist, otherwise
     ("ok", [records of that type]), e.g. ("ok", ["app.cloud.test"]).
-    Raises DNSLookupError if it can't get a clear answer.
+    Raises ServerFailure on SERVFAIL, DNSLookupError on any other failure.
     """
     try:
         resp = requests.get(
-            DOH_URL,
+            url,
             params={"name": name, "type": rtype},
             headers={"accept": "application/dns-json"},
             timeout=5,
@@ -65,6 +77,8 @@ def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
     status = data.get("Status")
     if status == 3:                      # 3 = NXDOMAIN, "no such name"
         return "nxdomain", []
+    if status == 2:                      # 2 = SERVFAIL, the server couldn't get an answer
+        raise ServerFailure(f"DNS-over-HTTPS returned SERVFAIL for {name}")
     if status != 0:                      # 0 = NOERROR; anything else is a failure
         raise DNSLookupError(f"DNS-over-HTTPS returned status {status} for {name}")
     wanted = DOH_TYPE_CODES[rtype]
@@ -73,23 +87,47 @@ def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
     return "ok", records
 
 
+def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
+    """Ask DNS-over-HTTPS one question: Cloudflare, then Google, then one retry.
+
+    Returns the first clear answer, same shape as _ask_doh(). If every server
+    fails, waits RETRY_PAUSE and asks the first one once more (a busy
+    server often answers a moment later). Raises ServerFailure if any server
+    said SERVFAIL, otherwise DNSLookupError.
+    """
+    urls = list(DOH_SERVERS.values())
+    failures = []
+    for attempt, url in enumerate(urls + urls[:1]):
+        if attempt == len(urls):         # every server failed once: pause, then retry
+            time.sleep(RETRY_PAUSE)
+        try:
+            return _ask_doh(url, name, rtype)
+        except DNSLookupError as e:
+            failures.append(e)
+    if any(isinstance(e, ServerFailure) for e in failures):
+        raise ServerFailure(f"DNS-over-HTTPS servers returned SERVFAIL for {name}")
+    raise failures[-1]
+
+
 def _confirm_nxdomain(name: str, rtype: str) -> None:
     """Double-check a "no such name" answer over HTTPS before believing it.
 
     A local DNS cache (e.g. WSL's) can replay an old NXDOMAIN for a host
-    that's live now. If DoH says the name exists, raise ConflictingAnswers
-    instead of reporting it gone. If DoH can't be reached, keep the system
-    answer (same as before this check existed).
+    that's live now, and one DoH provider can have cached it too (the 41xlab
+    lab). So ask every DoH server: if any says the name exists, raise
+    ConflictingAnswers instead of reporting it gone. Servers that can't be
+    reached are skipped; if none can, keep the system answer.
     """
-    try:
-        result, _ = doh_lookup(name, rtype)
-    except DNSLookupError:
-        return
-    if result != "nxdomain":
-        raise ConflictingAnswers(
-            f"conflicting answers for {name}: system DNS says it doesn't exist, "
-            f"DNS-over-HTTPS says it does (often a stale local DNS cache)"
-        )
+    for provider, url in DOH_SERVERS.items():
+        try:
+            result, _ = _ask_doh(url, name, rtype)
+        except DNSLookupError:
+            continue
+        if result != "nxdomain":
+            raise ConflictingAnswers(
+                f"conflicting answers for {name}: system DNS says it doesn't exist, "
+                f"{provider} DNS-over-HTTPS says it does (often a stale DNS cache)"
+            )
 
 
 def get_cname(name: str) -> str | None:
@@ -185,6 +223,8 @@ def host_status(host: str) -> tuple[str, list[str]]:
       "no_such_host"    the name doesn't exist (NXDOMAIN, double-checked
                         over DNS-over-HTTPS when reachable)
       "conflicting"     system DNS and DNS-over-HTTPS disagree: unknown
+      "servfail"        DNS servers answered SERVFAIL (broken zone or a
+                        provider under load), even after a retry: unknown
       "lookup_failed"   no DNS server answered: unknown
     Never raises: every outcome is a status, so callers can't crash on one host.
     """
@@ -198,5 +238,7 @@ def host_status(host: str) -> tuple[str, list[str]]:
         return ("ipv6_only" if ipv6 else "no_address"), []
     except ConflictingAnswers:
         return "conflicting", []
+    except ServerFailure:
+        return "servfail", []
     except DNSLookupError:
         return "lookup_failed", []

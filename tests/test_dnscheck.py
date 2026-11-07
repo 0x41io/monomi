@@ -37,12 +37,26 @@ def use_resolvers(monkeypatch, *errors):
 
 
 def use_doh(monkeypatch, answer):
-    """Make doh_lookup() return a fixed answer, or raise if given an exception."""
-    def fake(name, rtype):
+    """Make every DoH server return a fixed answer, or raise if given an exception."""
+    def fake(url, name, rtype):
         if isinstance(answer, Exception):
             raise answer
         return answer
-    monkeypatch.setattr(dnscheck, "doh_lookup", fake)
+    monkeypatch.setattr(dnscheck, "_ask_doh", fake)
+
+
+def use_doh_servers(monkeypatch, *answers):
+    """Make DoH answer differently per call, in order: Cloudflare, Google, retry.
+    Each answer is a (result, records) tuple or an exception to raise."""
+    calls = []
+    def fake(url, name, rtype):
+        answer = answers[len(calls)]
+        calls.append(url)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(dnscheck, "_ask_doh", fake)
+    return calls
 
 
 # --- doh_lookup(): reading Cloudflare's JSON reply (the real function) ---
@@ -204,3 +218,61 @@ def test_host_status_nobody_answers(monkeypatch):
     use_resolvers(monkeypatch, dns.exception.Timeout(), dns.exception.Timeout())
     use_doh(monkeypatch, dnscheck.DNSLookupError("blocked"))
     assert dnscheck.host_status("x.lab.test") == ("lookup_failed", [])
+
+
+# --- v1.9: two DoH servers, one retry, and the "servfail" status ---
+
+def test_doh_lookup_asks_google_when_cloudflare_servfails(monkeypatch):
+    calls = use_doh_servers(monkeypatch, dnscheck.ServerFailure("cf"), ("ok", ["203.0.113.7"]))
+    assert dnscheck.doh_lookup("web.lab.test", "A") == ("ok", ["203.0.113.7"])
+    assert calls == list(dnscheck.DOH_SERVERS.values())
+
+
+def test_doh_lookup_retries_once_after_both_fail(monkeypatch):
+    calls = use_doh_servers(monkeypatch, dnscheck.ServerFailure("cf"),
+                            dnscheck.ServerFailure("google"), ("ok", ["203.0.113.7"]))
+    assert dnscheck.doh_lookup("web.lab.test", "A") == ("ok", ["203.0.113.7"])
+    assert len(calls) == 3
+
+
+def test_doh_lookup_servfail_after_retry(monkeypatch):
+    use_doh_servers(monkeypatch, *[dnscheck.ServerFailure("x")] * 3)
+    with pytest.raises(dnscheck.ServerFailure):
+        dnscheck.doh_lookup("broken.lab.test", "A")
+
+
+def test_doh_lookup_unreachable_is_not_servfail(monkeypatch):
+    use_doh_servers(monkeypatch, *[dnscheck.DNSLookupError("blocked")] * 3)
+    with pytest.raises(dnscheck.DNSLookupError) as e:
+        dnscheck.doh_lookup("x.lab.test", "A")
+    assert not isinstance(e.value, dnscheck.ServerFailure)
+
+
+def test_nxdomain_contradicted_by_google_is_conflict(monkeypatch):
+    # The 41xlab lab: Cloudflare had cached the old NXDOMAIN too, Google hadn't
+    use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
+    use_doh_servers(monkeypatch, ("nxdomain", []), ("ok", []))
+    with pytest.raises(dnscheck.ConflictingAnswers, match="Google"):
+        dnscheck.get_cname("dev.lab.test")
+
+
+def test_nxdomain_confirmed_when_one_server_unreachable(monkeypatch):
+    use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
+    use_doh_servers(monkeypatch, dnscheck.DNSLookupError("blocked"), ("nxdomain", []))
+    with pytest.raises(dnscheck.NoSuchHost):
+        dnscheck.get_cname("gone.lab.test")
+
+
+def test_host_status_servfail(monkeypatch):
+    use_resolvers(monkeypatch, dns.exception.Timeout(), dns.exception.Timeout())
+    use_doh(monkeypatch, dnscheck.ServerFailure("SERVFAIL"))
+    assert dnscheck.host_status("broken.lab.test") == ("servfail", [])
+
+
+def test_servfail_lands_in_takeover_errors(monkeypatch):
+    # The Anduril sweep: ~90 hosts came back as a generic "error"
+    use_resolvers(monkeypatch, dns.exception.Timeout(), dns.exception.Timeout())
+    use_doh(monkeypatch, dnscheck.ServerFailure("SERVFAIL"))
+    report = takeover.check_hosts(["broken.lab.test"])
+    assert report["results"]["broken.lab.test"]["status"] == "servfail"
+    assert report["leads"] == []

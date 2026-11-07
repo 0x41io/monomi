@@ -290,7 +290,7 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
 def takeover_summary(full: dict) -> dict:
     """check_takeover in short: drop the per-host results, keep what to act on."""
     results = full.get("results", {})
-    unknown = [h for h, r in results.items() if r["status"] in ("error", "conflicting")]
+    unknown = [h for h, r in results.items() if r["status"] in ("error", "servfail", "conflicting")]
     return {
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],

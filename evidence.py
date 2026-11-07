@@ -24,6 +24,8 @@ DNS_FACTS = {
     "ipv6_only": "had an IPv6 address but no IPv4 address when checked (not looked up further)",
     "conflicting": "got conflicting DNS answers when checked (system DNS said it doesn't exist, "
                    "DNS-over-HTTPS said it does), so whether it exists is unknown",
+    "servfail": "could not be looked up (DNS servers answered SERVFAIL, even after a retry: "
+                "a broken zone or a provider under load), so whether it resolves is unknown",
     "lookup_failed": "could not be looked up (no DNS server answered), so whether it resolves is unknown",
     # Scans saved before v1.8 used "gone" for no_such_host
     "gone": "had no DNS record when checked (NXDOMAIN: the name doesn't exist)",

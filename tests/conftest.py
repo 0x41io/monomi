@@ -1,5 +1,6 @@
 import pytest
 
+import dnscheck
 from collectors import pacing, saved
 
 
@@ -15,3 +16,9 @@ def saved_dir(tmp_path, monkeypatch):
     """Every test gets its own empty folder for saved source copies, never the real scans/."""
     monkeypatch.setattr(saved, "SCANS_DIR", str(tmp_path / "scans"))
     return tmp_path / "scans"
+
+
+@pytest.fixture(autouse=True)
+def no_retry_pause(monkeypatch):
+    """The DoH retry doesn't wait in tests."""
+    monkeypatch.setattr(dnscheck, "RETRY_PAUSE", 0)

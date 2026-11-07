@@ -16,7 +16,7 @@ import re
 
 
 from common import now_utc
-from dnscheck import ConflictingAnswers, DNSLookupError, NoSuchHost, get_cname, name_exists
+from dnscheck import ConflictingAnswers, DNSLookupError, NoSuchHost, ServerFailure, get_cname, name_exists
 
 # Services where a deleted resource's name goes NXDOMAIN AND can usually
 # be re-claimed by anyone who signs up. Each entry: (CNAME ending, name).
@@ -167,13 +167,16 @@ def _safe_check(host: str, domain: str | None = None):
     """inspect_host() that never crashes: returns (host, info, error, status).
 
     On a DNS problem, info is None, error is the reason, and status says
-    which kind: "conflicting" (system DNS and DNS-over-HTTPS disagree)
+    which kind: "conflicting" (system DNS and DNS-over-HTTPS disagree),
+    "servfail" (DNS servers answered SERVFAIL, even after a retry)
     or "error" (no DNS server answered).
     """
     try:
         return host, inspect_host(host, domain), None, None
     except ConflictingAnswers as e:
         return host, None, str(e), "conflicting"
+    except ServerFailure as e:
+        return host, None, str(e), "servfail"
     except DNSLookupError as e:
         return host, None, str(e), "error"
 

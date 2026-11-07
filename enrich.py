@@ -71,6 +71,7 @@ DNS_LABELS = {
     "ipv6_only": "IPv6 only",                   # live, just no IPv4 address
     "no_address": "no IP address",              # no A or AAAA record (may still be retired: Cloudflare never says NXDOMAIN)
     "conflicting": "conflicting DNS answers",   # system DNS and DNS-over-HTTPS disagree: unknown
+    "servfail": "DNS server failure",           # SERVFAIL even after a retry: unknown
     "lookup_failed": "DNS lookup failed",       # no DNS server answered: unknown
     "gone": "no DNS record",                    # pre-v1.8 name for no_such_host (old saved scans)
 }

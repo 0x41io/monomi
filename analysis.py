@@ -58,7 +58,7 @@ CNAME points to a deleted name (old DNS to clean up; only the takeover check \
 decides whether it's claimable, never call it a takeover yourself); "no_address" \
 have no address and may be retired too (some DNS providers, e.g. Cloudflare, \
 never say a name is gone); "ipv6_only" are live over IPv6 and weren't checked \
-further; "conflicting" and "lookup_failed" are unknown, never call them retired \
+further; "conflicting", "servfail" and "lookup_failed" are unknown, never call them retired \
 or dead. In scans saved before v1.8, "gone" means the same as "no_such_host".
 - In Limitations, note that DNS reflects one point in time from one resolver.
 
