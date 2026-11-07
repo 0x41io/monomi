@@ -42,12 +42,14 @@ def owners(*keys: str) -> list[str]:
     and the CLI report always name the same roles."""
     return [OWNERS[k] for k in keys]
 
+
 # --- Summary mode -------------------------------------------------------
 # Big sweeps return thousands of hosts, which fills up the agent's chat.
 # By default each tool returns a short summary (counts + the hosts that
 # matter) and saves the full result to a file the agent can point to.
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scans", "mcp")
+SCANS_DIR = os.path.dirname(RESULTS_DIR)  # the only folder hosts_file may read from
 LIST_CAP = 20  # max names in any summary list; the full list is in the file
 RISKY_CATEGORIES = ("non-production", "legacy", "access", "internal-tools",
                     "iot-ot", "partner-portal")
@@ -67,7 +69,7 @@ def finish(tool: str, full: dict, summary: dict, detail: str) -> dict:
     """Save the full result, then return it (detail="full") or the summary."""
     path = save_full(tool, full)
     if detail == "full":
-        return {**full, "full_results_file": path}
+        return {"detail": "full", **full, "full_results_file": path}
     return {"detail": "summary", **summary, "full_results_file": path}
 
 
@@ -113,6 +115,53 @@ def clean_hosts(hostnames: list[str], limit: int = MAX_HOSTS) -> tuple[list[str]
     hosts = sorted(hosts)
     return hosts[:limit], max(len(hosts) - limit, 0), rejected[:20]
 
+
+def load_hosts_file(path: str) -> list[str]:
+    """Hostnames from a file in Monomi's scans folder: a .json file with a
+    "hostnames" list (what find_subdomains saves) or a .txt file with one
+    host per line ("#" starts a comment). Files anywhere else are refused,
+    so an agent can't be tricked into reading other files (like ~/.bashrc)."""
+    if not os.path.isabs(path):
+        path = os.path.join(SCANS_DIR, path)  # "mcp/x.json" means scans/mcp/x.json
+    real = os.path.realpath(path)  # follows ../ and symlinks to where the file really is
+    scans = os.path.realpath(SCANS_DIR)
+    if os.path.commonpath([real, scans]) != scans:
+        raise ValueError(f"hosts_file must be inside Monomi's scans folder ({scans})")
+    if not real.lower().endswith((".json", ".txt")):
+        raise ValueError("hosts_file must be a .json or .txt file")
+    if not os.path.isfile(real):
+        raise ValueError(f"hosts_file not found: {path}")
+    with open(real) as f:
+        if not real.lower().endswith(".json"):
+            return [line.split("#")[0] for line in f]
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            raise ValueError("hosts_file isn't valid JSON")
+    hosts = data.get("hostnames") if isinstance(data, dict) else None
+    if not isinstance(hosts, list):
+        raise ValueError('a .json hosts_file needs a "hostnames" list, like the file find_subdomains saves')
+    return [str(h) for h in hosts]
+
+
+def pick_hosts(hostnames: list[str] | None, hosts_file: str | None,
+               start: int, limit: int) -> tuple[list[str], int, list[dict], dict]:
+    """The hosts one tool call checks: from "hostnames" or "hosts_file"
+    (exactly one), cleaned, then at most `limit` of them from `start` on.
+    Returns (hosts, how many are left after this batch, rejected inputs,
+    batch info for the reply)."""
+    if (hostnames is None) == (hosts_file is None):
+        raise ValueError("pass either hostnames or hosts_file, not both")
+    raw = load_hosts_file(hosts_file) if hosts_file else hostnames
+    hosts, _, rejected = clean_hosts(raw, limit=len(raw))  # clean them all, batch below
+    start = max(start, 0)
+    batch = hosts[start:start + limit]
+    end = start + len(batch)
+    info = {"start": start, "size": len(batch), "total": len(hosts),
+            "next_start": end if end < len(hosts) else None}
+    return batch, len(hosts) - end, rejected, info
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 def ping(name: str = "world") -> str:
     """Say hello. Used to check that the Monomi MCP server is connected."""
@@ -133,7 +182,9 @@ def find_subdomains(domain: str, detail: str = "summary") -> dict:
     it matched: facts from naming patterns, not confirmed by contacting hosts.
     detail="summary" (default): counts per category plus up to 20 example
     hosts per risky category; the full list is saved to "full_results_file".
-    detail="full": every hostname and category in the reply."""
+    detail="full": every hostname and category in the reply.
+    Pass "full_results_file" as "hosts_file" to the other tools instead of
+    copying the hostnames into them."""
     domain = clean_domain(domain)
 
     results = {"sources": {}, "errors": {}}
@@ -193,8 +244,10 @@ def check_email_auth(domain: str) -> dict:
         result = check_email(domain)
     return {"domain": domain, "owners": owners("dns", "email"), **result}
 
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def check_takeover(hostnames: list[str], domain: str | None = None, detail: str = "summary") -> dict:
+def check_takeover(hostnames: list[str] | None = None, domain: str | None = None, detail: str = "summary",
+                   hosts_file: str | None = None, start: int = 0) -> dict:
     """Check hostnames for dangling CNAMEs that could allow a subdomain
     takeover: a CNAME pointing at a cloud service (e.g. Azure, Elastic
     Beanstalk) whose target no longer exists and could be claimed by
@@ -212,8 +265,14 @@ def check_takeover(hostnames: list[str], domain: str | None = None, detail: str 
     Checks at most 200 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason.
     detail="summary" (default): counts per status, every lead and stale record,
     and up to 20 hosts whose check failed; the full per-host "results" are
-    saved to "full_results_file". detail="full": everything in the reply."""
-    checked, skipped, rejected = clean_hosts(hostnames)
+    saved to "full_results_file". detail="full": everything in the reply.
+    Pass the hosts as "hostnames", or as "hosts_file": a file in Monomi's
+    scans folder, like the "full_results_file" from find_subdomains (.json)
+    or a .txt list with one host per line. A big file goes in batches of
+    200: call again with "start" set to the reply's batch.next_start
+    until it is null.
+    """
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_hosts(checked, domain=domain.strip().lower().rstrip(".") if domain else None)
     for lead in result["leads"]:
@@ -221,7 +280,8 @@ def check_takeover(hostnames: list[str], domain: str | None = None, detail: str 
     for record in result.get("stale", []):
         record["owners"] = owners("dns")
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
-    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected, **result}
+    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
+            "batch": batch, **result}
     return finish("check_takeover", full, takeover_summary(full), detail)
 
 
@@ -233,6 +293,7 @@ def takeover_summary(full: dict) -> dict:
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],
         "rejected": full["rejected"],
+        "batch": full["batch"],
         "status_counts": dict(Counter(r["status"] for r in results.values()).most_common()),
         "leads": full["leads"],
         "stale": full.get("stale", []),
@@ -240,8 +301,10 @@ def takeover_summary(full: dict) -> dict:
         "unknown_hosts": first(unknown),
     }
 
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def enrich_hosts(hostnames: list[str], detail: str = "summary") -> dict:
+def enrich_hosts(hostnames: list[str] | None = None, detail: str = "summary",
+                 hosts_file: str | None = None, start: int = 0) -> dict:
     """Resolve hostnames to IP addresses and look up who hosts each IP:
     ASN, hosting provider and country, with private IPs flagged.
     Pass the hostnames from find_subdomains. Passive: DNS and public
@@ -252,14 +315,21 @@ def enrich_hosts(hostnames: list[str], detail: str = "summary") -> dict:
     detail="summary" (default): counts (resolved, providers, not resolving by
     DNS status), every dangling-CNAME host, and up to 20 private-IP hosts; the
     full per-host and per-IP data is saved to "full_results_file".
-    detail="full": everything in the reply."""
-    checked, skipped, rejected = clean_hosts(hostnames)
+    detail="full": everything in the reply.
+    Pass the hosts as "hostnames", or as "hosts_file": a file in Monomi's
+    scans folder, like the "full_results_file" from find_subdomains (.json)
+    or a .txt list with one host per line. A big file goes in batches of
+    200: call again with "start" set to the reply's batch.next_start
+    until it is null.
+    """
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         result = enrich(checked)
     for entry in result["hosts"].values():
         if entry.get("dns") == "dangling_cname" or entry.get("private_ips"):
             entry["owners"] = owners("dns")
-    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected, **result}
+    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
+            "batch": batch, **result}
     return finish("enrich_hosts", full, enrich_summary(full), detail)
 
 
@@ -271,6 +341,7 @@ def enrich_summary(full: dict) -> dict:
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],
         "rejected": full["rejected"],
+        "batch": full["batch"],
         "resolved": full.get("resolved", 0),
         "unique_ips": full.get("unique_ips", 0),
         "providers": full.get("providers", {}),
@@ -283,6 +354,7 @@ def enrich_summary(full: dict) -> dict:
         "asn_error": full.get("asn_error"),
         "cdn_error": full.get("cdn_error"),
     }
+
 
 def ports_summary(enrichment: dict, exposure: dict) -> dict:
     """Short counts for the top of check_ports' result, read before the per-IP details."""
@@ -300,8 +372,10 @@ def ports_summary(enrichment: dict, exposure: dict) -> dict:
         "origin_ips_with_risky_ports": len(exposure.get("risky", [])),
     }
 
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def check_ports(hostnames: list[str], detail: str = "summary") -> dict:
+def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
+                hosts_file: str | None = None, start: int = 0) -> dict:
     """Look up open ports, risky services and known CVEs for the IPs
     behind hostnames, from Shodan InternetDB (what Shodan's own internet
     scans last saw). Resolves the hostnames first, so pass the hostnames
@@ -318,8 +392,14 @@ def check_ports(hostnames: list[str], detail: str = "summary") -> dict:
     Checks at most 100 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason.
     detail="summary" (default): the "summary" counts, origin IPs in full (up to
     20 hostnames each), and CDN edge IPs only as counts per provider; the full
-    result is saved to "full_results_file". detail="full": everything in the reply."""
-    checked, skipped, rejected = clean_hosts(hostnames, MAX_PORT_HOSTS)
+    result is saved to "full_results_file". detail="full": everything in the reply.
+    Pass the hosts as "hostnames", or as "hosts_file": a file in Monomi's
+    scans folder, like the "full_results_file" from find_subdomains (.json)
+    or a .txt list with one host per line. A big file goes in batches of
+    100: call again with "start" set to the reply's batch.next_start
+    until it is null.
+    """
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_PORT_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         exposure = internetdb.lookup(enrichment)
@@ -332,7 +412,7 @@ def check_ports(hostnames: list[str], detail: str = "summary") -> dict:
 
     full = {"summary": ports_summary(enrichment, exposure),
             "hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
-            "not_resolving": enrichment.get("not_resolving", {}), **exposure}
+            "batch": batch, "not_resolving": enrichment.get("not_resolving", {}), **exposure}
     return finish("check_ports", full, ports_brief(full), detail)
 
 
@@ -347,6 +427,7 @@ def ports_brief(full: dict) -> dict:
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],
         "rejected": full["rejected"],
+        "batch": full["batch"],
         "ips_checked": full["ips_checked"],
         "ip_errors": full["ip_errors"],
         "ips_skipped": full["ips_skipped"],
@@ -354,8 +435,8 @@ def ports_brief(full: dict) -> dict:
         "risky": full.get("risky", []),
         "origin_ips": {ip: short(d) for ip, d in full.get("ips", {}).items()
                        if not d["shared_edge"]},
-        "origin_ips_nothing_seen": {ip: short(d) for ip, d in full.get("nothing_seen", {}).items()
-                                    if not d["shared_edge"]},
+        "nothing_seen": {ip: short(d) for ip, d in full.get("nothing_seen", {}).items()
+                         if not d["shared_edge"]},
         "edge_ips_by_provider": dict(edge.most_common()),
         "not_resolving_counts": {s: len(h) for s, h in full["not_resolving"].items()},
     }

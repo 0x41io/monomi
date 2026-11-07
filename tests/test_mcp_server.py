@@ -82,7 +82,7 @@ def test_check_ports_summary_counts(monkeypatch):
         "checked": 4, "errors": 1, "skipped": 0,
         "unique_cves": ["CVE-2024-0001"], "risky": [("2.2.2.2", ["22/ssh"])]})
     result = mcp_server.check_ports(["a.example.com"], detail="full")
-    assert list(result)[0] == "summary"  # agents read it first
+    assert list(result)[:2] == ["detail", "summary"]  # agents read these first
     assert result["summary"] == {
         "hosts_resolved": 3, "hosts_not_resolving": 3,
         "edge_ips": 1, "origin_ips": 2, "ips_nothing_seen": 1,
@@ -204,7 +204,7 @@ def test_full_detail_still_returns_everything(monkeypatch):
         "leads": [], "stale": [], "results": {"a": {"status": "no_cname"}},
         "checked": 1, "errors": {}})
     result = mcp_server.check_takeover(["a"], detail="full")
-    assert "detail" not in result
+    assert result["detail"] == "full"
     assert result["results"]["a"]["status"] == "no_cname"
     assert result["full_results_file"].endswith("_check_takeover.json")
 
@@ -242,7 +242,7 @@ def test_ports_summary_counts_edge_and_keeps_origin(monkeypatch):
     ip = result["origin_ips"]["64.227.89.72"]
     assert ip["owners"] == ["server / infrastructure admin"]
     assert ip["host_count"] == 30 and len(ip["hosts"]) == mcp_server.LIST_CAP
-    assert list(result["origin_ips_nothing_seen"]) == ["5.5.5.5"]
+    assert list(result["nothing_seen"]) == ["5.5.5.5"]
 
 
 def test_subdomains_summary_counts_categories():
@@ -255,3 +255,88 @@ def test_subdomains_summary_counts_categories():
     assert "hostnames" not in s and "categories" not in s
     assert s["category_counts"] == {"non-production": 1, "content": 1, "apex": 1}
     assert s["risky_categories"] == {"non-production": {"count": 1, "hosts": ["dev"]}}
+
+
+# --- hosts_file + batches (v1.9) ---
+
+def scans_dir(monkeypatch, tmp_path):
+    """Point SCANS_DIR at a temp folder and return it."""
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    monkeypatch.setattr(mcp_server, "SCANS_DIR", str(folder))
+    return folder
+
+
+def test_hosts_file_reads_find_subdomains_json(monkeypatch, tmp_path):
+    folder = scans_dir(monkeypatch, tmp_path)
+    (folder / "subs.json").write_text(json.dumps({"hostnames": ["b", "a"]}))
+    assert mcp_server.load_hosts_file(str(folder / "subs.json")) == ["b", "a"]
+
+
+def test_hosts_file_reads_txt_and_drops_comments(monkeypatch, tmp_path):
+    folder = scans_dir(monkeypatch, tmp_path)
+    (folder / "hosts.txt").write_text("a\n# a comment\nb  # old box\n")
+    hosts, _, _, _ = mcp_server.pick_hosts(None, "hosts.txt", 0, 200)  # relative = inside scans/
+    assert hosts == ["a", "b"]
+
+
+def test_hosts_file_outside_scans_is_refused(monkeypatch, tmp_path):
+    folder = scans_dir(monkeypatch, tmp_path)
+    secret = tmp_path / "bashrc.txt"
+    secret.write_text("export ANTHROPIC_API_KEY=sk-ant-secret\n")
+    for path in (str(secret), "../bashrc.txt"):
+        with pytest.raises(ValueError, match="scans folder"):
+            mcp_server.load_hosts_file(path)
+
+
+def test_hosts_file_symlink_out_of_scans_is_refused(monkeypatch, tmp_path):
+    folder = scans_dir(monkeypatch, tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("sk-ant-secret\n")
+    (folder / "link.txt").symlink_to(secret)
+    with pytest.raises(ValueError, match="scans folder"):
+        mcp_server.load_hosts_file("link.txt")
+
+
+def test_hosts_file_wrong_type_or_shape_is_refused(monkeypatch, tmp_path):
+    folder = scans_dir(monkeypatch, tmp_path)
+    (folder / "notes.md").write_text("a\n")
+    (folder / "other.json").write_text(json.dumps({"leads": []}))
+    with pytest.raises(ValueError, match=".json or .txt"):
+        mcp_server.load_hosts_file("notes.md")
+    with pytest.raises(ValueError, match="hostnames"):
+        mcp_server.load_hosts_file("other.json")
+    with pytest.raises(ValueError, match="not found"):
+        mcp_server.load_hosts_file("missing.txt")
+
+
+def test_pick_hosts_needs_exactly_one_input():
+    with pytest.raises(ValueError, match="either hostnames or hosts_file"):
+        mcp_server.pick_hosts(None, None, 0, 200)
+    with pytest.raises(ValueError, match="either hostnames or hosts_file"):
+        mcp_server.pick_hosts(["a"], "hosts.txt", 0, 200)
+
+
+def test_pick_hosts_batches_with_next_start():
+    names = [f"h{i:03d}" for i in range(250)]
+    first_batch, left, _, info = mcp_server.pick_hosts(names, None, 0, 200)
+    assert len(first_batch) == 200 and left == 50
+    assert info == {"start": 0, "size": 200, "total": 250, "next_start": 200}
+    last_batch, left, _, info = mcp_server.pick_hosts(names, None, 200, 200)
+    assert last_batch[0] == "h200" and len(last_batch) == 50 and left == 0
+    assert info["next_start"] is None
+
+
+def test_check_takeover_from_hosts_file(monkeypatch, tmp_path):
+    folder = scans_dir(monkeypatch, tmp_path)
+    (folder / "subs.json").write_text(json.dumps({"hostnames": ["a", "bad host"]}))
+    seen = {}
+
+    def fake_check(hosts, domain=None):
+        seen["hosts"] = hosts
+        return {"leads": [], "stale": [], "results": {}, "checked": len(hosts), "errors": {}}
+    monkeypatch.setattr(mcp_server, "check_hosts", fake_check)
+    result = mcp_server.check_takeover(hosts_file="subs.json")
+    assert seen["hosts"] == ["a"]
+    assert result["rejected"][0]["host"] == "bad host"
+    assert result["batch"]["next_start"] is None
