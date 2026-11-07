@@ -255,7 +255,13 @@ def flag_silent_crtsh_failure(results: dict) -> None:
     with an empty reply when it's overloaded). Treat that as a failure, so
     change detection won't save an incomplete baseline and the AI report won't
     say crt.sh found nothing.
+
+    One exception to "broke": if the crt.sh database itself answered with 0
+    rows, crt.sh really has nothing yet (it can fall days behind the CT logs,
+    e.g. for a new domain). It's still a gap, but the message says "behind".
     """
+    db = results["sources"].get("crt.sh database")
+    behind = db is not None and db["certificates_seen"] == 0  # a real 0 from crt.sh's own database
     for name in FULL_HISTORY_SOURCES:
         r = results["sources"].get(name)
         if not r or r["certificates_seen"] > 0:
@@ -265,11 +271,19 @@ def flag_silent_crtsh_failure(results: dict) -> None:
         if best is None or others[best] == 0:
             continue  # nobody found anything: a genuine empty result
         del results["sources"][name]
-        results["errors"][name] = (
-            f"returned no certificates while {best} found {others[best]}; "
-            f"{name} likely failed silently (empty reply)"
-        )
-        warn(f"{name} returned nothing but {best} found certificates, so it probably failed silently. Treating it as unavailable.")
+        if behind:
+            results["errors"][name] = (
+                f"no certificates for this domain yet: the crt.sh database answered with 0 "
+                f"while {best} found {others[best]}; crt.sh may not have indexed them"
+            )
+            warn(f"{name} has none of the certificates {best} found, so crt.sh is probably behind "
+                 f"on the CT logs. Treating it as unavailable.")
+        else:
+            results["errors"][name] = (
+                f"returned no certificates while {best} found {others[best]}; "
+                f"{name} likely failed silently (empty reply)"
+            )
+            warn(f"{name} returned nothing but {best} found certificates, so it probably failed silently. Treating it as unavailable.")
 
 def run_enrich(results: dict, ports_on: bool) -> dict:
     """--enrich: resolve every host, look up who hosts it, and print the table."""

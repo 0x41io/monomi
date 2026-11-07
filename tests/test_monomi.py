@@ -118,3 +118,24 @@ def test_hosts_file_is_capped(tmp_path):
     hosts, skipped = read_hosts_file(str(f), "lab")
     assert len(hosts) == MAX_HOSTS_FILE
     assert skipped == [f"5 more hostnames: over the {MAX_HOSTS_FILE} limit"]
+
+
+def test_crtsh_database_answering_zero_means_behind():
+    # The 41xlab case: crt.sh's own database has nothing, so crt.sh is behind, not broken
+    results = {"sources": {"crt.sh": _ct("crt.sh", 0), "crt.sh database": _ct("crt.sh database", 0),
+                           "certspotter": _ct("certspotter", 3)},
+               "errors": {}}
+    flag_silent_crtsh_failure(results)
+    assert list(results["sources"]) == ["certspotter"]
+    for name in ("crt.sh", "crt.sh database"):
+        assert "may not have indexed them" in results["errors"][name]
+        assert "certspotter found 3" in results["errors"][name]
+    assert baseline_gaps(results) == ["crt.sh", "crt.sh database"]  # still a gap: no baseline
+
+
+def test_empty_website_with_failed_database_is_still_silent_failure():
+    # The database didn't answer, so the website's empty reply can't be trusted
+    results = {"sources": {"crt.sh": _ct("crt.sh", 0), "certspotter": _ct("certspotter", 3)},
+               "errors": {"crt.sh database": "connection timeout"}}
+    flag_silent_crtsh_failure(results)
+    assert "likely failed silently" in results["errors"]["crt.sh"]
