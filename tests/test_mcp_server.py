@@ -1,6 +1,17 @@
 """Tests for the MCP server's tool wrappers. No network: the checks
 the tools call are swapped for fakes with monkeypatch."""
+import json
+
+import pytest
+
 import mcp_server
+
+
+@pytest.fixture(autouse=True)
+def results_dir(tmp_path, monkeypatch):
+    """Every test saves its full results in a temp folder, not the real scans/."""
+    monkeypatch.setattr(mcp_server, "RESULTS_DIR", str(tmp_path))
+    return tmp_path
 
 
 def test_clean_hosts_normalizes_and_dedupes():
@@ -70,7 +81,7 @@ def test_check_ports_summary_counts(monkeypatch):
         "nothing_seen": {"3.3.3.3": {"shared_edge": False}},
         "checked": 4, "errors": 1, "skipped": 0,
         "unique_cves": ["CVE-2024-0001"], "risky": [("2.2.2.2", ["22/ssh"])]})
-    result = mcp_server.check_ports(["a.example.com"])
+    result = mcp_server.check_ports(["a.example.com"], detail="full")
     assert list(result)[0] == "summary"  # agents read it first
     assert result["summary"] == {
         "hosts_resolved": 3, "hosts_not_resolving": 3,
@@ -144,7 +155,7 @@ def test_enrich_hosts_owners_only_on_problems(monkeypatch):
         "dangle": {"ips": [], "dns": "dangling_cname"},
         "inside": {"ips": ["10.0.0.5"], "dns": "live", "private_ips": ["10.0.0.5"]},
         "fine": {"ips": ["8.8.8.8"], "dns": "live", "private_ips": []}}})
-    hosts = mcp_server.enrich_hosts(["dangle", "inside", "fine"])["hosts"]
+    hosts = mcp_server.enrich_hosts(["dangle", "inside", "fine"], detail="full")["hosts"]
     assert hosts["dangle"]["owners"] == ["DNS admin"]
     assert hosts["inside"]["owners"] == ["DNS admin"]
     assert "owners" not in hosts["fine"]
@@ -155,7 +166,7 @@ def test_check_ports_owners_skip_edge_ips(monkeypatch):
     monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
         "ips": {"1.1.1.1": {"shared_edge": True}, "8.8.8.8": {"shared_edge": False}},
         "checked": 2, "errors": 0, "skipped": 0})
-    ips = mcp_server.check_ports(["a"])["ips"]
+    ips = mcp_server.check_ports(["a"], detail="full")["ips"]
     assert ips["8.8.8.8"]["owners"] == ["server / infrastructure admin"]
     assert "owners" not in ips["1.1.1.1"]
 
@@ -165,3 +176,82 @@ def test_check_email_auth_adds_owners(monkeypatch):
     monkeypatch.setattr(mcp_server, "check_email", lambda domain: {"verdict": {}})
     result = mcp_server.check_email_auth("examplecom")
     assert result["owners"] == ["DNS admin", "email admin"]
+
+
+# --- Summary mode (v1.9) ---
+
+def test_takeover_summary_counts_and_keeps_leads(monkeypatch):
+    monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
+        "leads": [{"host": "a", "claimable": True}],
+        "stale": [{"host": "b"}],
+        "results": {"a": {"status": "lead"}, "b": {"status": "stale"},
+                    "c": {"status": "no_such_host"}, "d": {"status": "no_such_host"},
+                    "e": {"status": "error"}},
+        "checked": 5, "errors": {"e": "timeout"}})
+    result = mcp_server.check_takeover(["a"])
+    assert result["detail"] == "summary"
+    assert "results" not in result          # the per-host list stays in the file
+    assert result["status_counts"]["no_such_host"] == 2
+    assert result["leads"][0]["owners"] == ["DNS admin", "cloud / service account owner"]
+    assert result["stale"][0]["owners"] == ["DNS admin"]
+    assert result["unknown_hosts"] == ["e"]
+    with open(result["full_results_file"]) as f:   # the file has everything
+        assert len(json.load(f)["results"]) == 5
+
+
+def test_full_detail_still_returns_everything(monkeypatch):
+    monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
+        "leads": [], "stale": [], "results": {"a": {"status": "no_cname"}},
+        "checked": 1, "errors": {}})
+    result = mcp_server.check_takeover(["a"], detail="full")
+    assert "detail" not in result
+    assert result["results"]["a"]["status"] == "no_cname"
+    assert result["full_results_file"].endswith("_check_takeover.json")
+
+
+def test_enrich_summary_caps_private_hosts(monkeypatch):
+    hosts = {f"h{i:03}": {"ips": ["10.0.0.1"], "dns": "live", "private_ips": ["10.0.0.1"]}
+             for i in range(50)}
+    hosts["dangle"] = {"ips": [], "dns": "dangling_cname", "cname": "gone"}
+    monkeypatch.setattr(mcp_server, "enrich", lambda h: {
+        "hosts": hosts, "private_ip_hosts": [h for h in hosts if h != "dangle"],
+        "resolved": 50, "unique_ips": 1, "providers": {"PRIVATE IP": 50},
+        "not_resolving": {"dangling_cname": ["dangle"]}})
+    result = mcp_server.enrich_hosts(["a"])
+    assert "hosts" not in result and "ip_info" not in result
+    assert result["private_ip_host_count"] == 50
+    assert len(result["private_ip_hosts"]) == mcp_server.LIST_CAP
+    assert result["dangling_cnames"] == {"dangle": {"cname": "gone", "owners": ["DNS admin"]}}
+    assert result["not_resolving_counts"] == {"dangling_cname": 1}
+
+
+def test_ports_summary_counts_edge_and_keeps_origin(monkeypatch):
+    monkeypatch.setattr(mcp_server, "enrich", lambda h: {"hosts": {}, "resolved": 30,
+                                                         "not_resolving": {}})
+    edge = {f"104.16.0.{i}": {"shared_edge": True, "provider": "Cloudflare", "hosts": ["w"]}
+            for i in range(5)}
+    origin = {"shared_edge": False, "provider": "DigitalOcean",
+              "hosts": [f"h{i}" for i in range(30)], "ports": [22]}
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda e: {
+        "ips": {**edge, "64.227.89.72": origin},
+        "nothing_seen": {"5.5.5.5": {"shared_edge": False, "provider": "OVH", "hosts": ["x"]}},
+        "checked": 7, "errors": 0, "skipped": 0})
+    result = mcp_server.check_ports(["a"])
+    assert "ips" not in result
+    assert result["edge_ips_by_provider"] == {"Cloudflare": 5}
+    ip = result["origin_ips"]["64.227.89.72"]
+    assert ip["owners"] == ["server / infrastructure admin"]
+    assert ip["host_count"] == 30 and len(ip["hosts"]) == mcp_server.LIST_CAP
+    assert list(result["origin_ips_nothing_seen"]) == ["5.5.5.5"]
+
+
+def test_subdomains_summary_counts_categories():
+    full = {"domain": "lab", "hostname_count": 3, "wildcards": [], "sources": {},
+            "errors": {}, "hostnames": ["dev", "www", "lab"],
+            "categories": {"dev": {"category": "non-production"},
+                           "www": {"category": "content"},
+                           "lab": {"category": "apex"}}}
+    s = mcp_server.subdomains_summary(full)
+    assert "hostnames" not in s and "categories" not in s
+    assert s["category_counts"] == {"non-production": 1, "content": 1, "apex": 1}
+    assert s["risky_categories"] == {"non-production": {"count": 1, "hosts": ["dev"]}}
