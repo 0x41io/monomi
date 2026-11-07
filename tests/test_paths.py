@@ -209,16 +209,14 @@ def test_private_ip_is_never_a_side_door():
     assert side_doors(out) == []
 
 
-def test_host_with_several_ips_gets_one_side_door():
-    # A load-balanced host has several IPs: still one path, naming all of them
+def test_host_on_several_ips_is_a_load_balancer():
+    # Several IPs (one per cloud zone) = a load balancer, not one server: no side door
     results = lab_results()
     three = ["198.51.100.7", "198.51.100.8", "198.51.100.9"]
     for h in ("lab", "staging"):
         results["enrichment"]["hosts"][h]["ips"] = three
     out, ev = run(results)
-    doors = side_doors(out)
-    assert len(doors) == 1
-    assert doors[0]["title"] == "Use staging as a side door into 198.51.100.7, 198.51.100.8 and 198.51.100.9"
+    assert side_doors(out) == []
 
 
 def test_many_hosts_on_one_ip_is_a_shared_front_door():

@@ -154,7 +154,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     # E. Side door: risky-named hosts on the same server as production.
     # Private IPs are skipped (nobody on the internet can reach them), hosts
     # are grouped by their set of IPs (one path per server, not one per IP),
-    # and IPs that carry many hosts are a shared load balancer, not one server.
+    # and a host on several IPs, or an IP that carries many hosts, is behind a
+    # load balancer or shared front door, not on one server.
     private = {h: d.get("private_ips", []) for h, d in enr.get("hosts", {}).items()}
     groups = {}  # set of IPs -> the risky-name facts of every host on exactly those IPs
     for r in kinds.get("risky_name", []):
@@ -167,8 +168,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         names = sorted(names, key=lambda r: r["host"])
         hosts = [r["host"] for r in names]
         on_ips = [h for h, h_ips in ips_of.items() if ips & set(h_ips)]
-        if len(on_ips) > SHARED_INGRESS:
-            continue  # a shared front door, so "same server" can't be claimed
+        if len(ips) > 1 or len(on_ips) > SHARED_INGRESS:
+            continue  # a load balancer or shared front door, so "same server" can't be claimed
         shared = [h for h in on_ips if h not in hosts
                   and categorize(h, target)["category"] in ("apex", "content", "app-api", "uncategorized")]
         if not shared:
