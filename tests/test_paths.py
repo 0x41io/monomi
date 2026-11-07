@@ -182,3 +182,14 @@ def test_names_reads_like_a_sentence():
     assert _names(["a", "b"]) == "a and b"
     assert _names(["a", "b", "c"]) == "a, b and c"
     assert _names(["a", "b", "c", "d", "e"]) == "a, b, c and 2 more"
+
+
+def test_dangling_cname_under_cloud_provider_builds_no_path():
+    results = lab_results()
+    results["takeover"]["leads"] = [{"host": "oldapi", "cname": "gone-api.svc.us-east-1.amazonaws.com",
+                                     "service": None, "claimable": False, "collected_at": None}]
+    out, ev = run(results)
+    fact = next(e for e in ev if e["host"] == "oldapi")
+    assert fact["kind"] == "dangling_provider"
+    assert "can-i-take-over-xyz" in fact["fact"]
+    assert not any("oldapi" in p["title"] for p in out["paths"])

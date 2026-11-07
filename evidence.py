@@ -9,6 +9,7 @@ import re
 
 from categorize import categorize
 from common import now_utc
+from takeover import match_provider
 
 # What we can honestly say about a host with no IPv4 address, per its DNS
 # status from dnscheck.host_status()
@@ -195,6 +196,12 @@ def build_evidence(results: dict) -> list[dict]:
             if lead["claimable"]:
                 add(f"{lead['host']} has a CNAME to {lead['cname']} ({lead['service']}), and that target "
                     "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source, ("dns", "cloud"), kind="takeover_lead", host=lead["host"])
+            elif provider := match_provider(lead["cname"]):
+                add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
+                    f"(NXDOMAIN); it is under {provider}'s own domain, so nobody can buy the domain, "
+                    "but this service isn't on Monomi's list: check whether it lets deleted names be "
+                    "claimed again (can-i-take-over-xyz)", lead_source, ("dns", "cloud"),
+                    kind="dangling_provider", host=lead["host"])
             else:
                 add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
                     "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source, ("dns",), kind="dangling_unknown", host=lead["host"])

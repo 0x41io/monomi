@@ -62,6 +62,36 @@ def match_not_claimable(target: str) -> str | None:
     return None
 
 
+# Big cloud providers' own domains. A dangling CNAME under one of these
+# can't be taken over by BUYING the domain (the provider owns it). Whether
+# the name itself can be claimed again depends on the service, so a hit
+# here is "check it", not a lead and not stale. Known services above win.
+PROVIDER_DOMAINS = [
+    (".amazonaws.com", "AWS"),
+    (".amazonaws.com.cn", "AWS"),
+    (".windows.net", "Microsoft Azure"),
+    (".azure.com", "Microsoft Azure"),
+    (".azure.net", "Microsoft Azure"),
+    (".azurefd.net", "Microsoft Azure"),
+    (".googleusercontent.com", "Google Cloud"),
+    (".googleapis.com", "Google Cloud"),
+    (".appspot.com", "Google Cloud"),
+    (".run.app", "Google Cloud"),
+    (".cloudflare.net", "Cloudflare"),
+    (".fastly.net", "Fastly"),
+    (".akamaiedge.net", "Akamai"),
+    (".edgekey.net", "Akamai"),
+]
+
+
+def match_provider(target: str) -> str | None:
+    """Which big cloud provider's own domain a CNAME target is under, if any."""
+    for ending, provider in PROVIDER_DOMAINS:
+        if target.endswith(ending):
+            return provider
+    return None
+
+
 def match_service(target: str) -> str | None:
     """Which takeover-prone service a CNAME target belongs to, if any.
 

@@ -1,7 +1,7 @@
 import dnscheck
 import takeover
 from evidence import build_evidence
-from takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_service
+from takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_provider, match_service
 
 def fake_dns(monkeypatch, cnames, dead):
     """Replace the real DNS lookups with made-up answers.
@@ -171,3 +171,10 @@ def test_nlb_govcloud_and_china_match():
 def test_s3_and_lookalike_nlb_do_not_match():
     assert match_not_claimable("bucket.s3.amazonaws.com") is None
     assert match_not_claimable("evil.elb.us-east-1.amazonaws.com.attacker.net") is None
+
+
+def test_provider_domain_matches():
+    assert match_provider("web-1.svc.us-east-1.amazonaws.com") == "AWS"
+    assert match_provider("x.blob.core.windows.net") == "Microsoft Azure"
+    assert match_provider("gone.blog-example.com") is None
+    assert match_provider("evil.amazonaws.com.attacker.net") is None
