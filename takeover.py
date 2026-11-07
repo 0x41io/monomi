@@ -12,6 +12,7 @@ means actually claiming the name, which Monomi never does.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 
 from common import now_utc
@@ -38,8 +39,14 @@ TAKEOVER_SERVICES = [
 # housekeeping), not a takeover risk. Each entry: (CNAME ending, name).
 NOT_CLAIMABLE = [
     (".elb.amazonaws.com", "AWS Elastic Load Balancing"),
+    (".elb.amazonaws.com.cn", "AWS Elastic Load Balancing"),
     (".cloudfront.net", "AWS CloudFront"),
 ]
+
+# Newer AWS load balancers (NLBs) put the region AFTER "elb", so they
+# don't end in ".elb.amazonaws.com":
+# 'app-nlb-1a2b3c.elb.us-east-1.amazonaws.com' ('.amazonaws.com.cn' in China)
+AWS_NLB = re.compile(r"\.elb\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$")
 
 
 def match_not_claimable(target: str) -> str | None:
@@ -50,6 +57,8 @@ def match_not_claimable(target: str) -> str | None:
     for ending, service in NOT_CLAIMABLE:
         if target.endswith(ending):
             return service
+    if AWS_NLB.search(target):
+        return "AWS Elastic Load Balancing"
     return None
 
 

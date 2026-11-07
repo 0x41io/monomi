@@ -153,3 +153,21 @@ def test_get_cname_returns_the_target(monkeypatch):
 
     monkeypatch.setattr(dnscheck, "_resolvers", lambda: (FakeResolver(),))
     assert takeover.get_cname("app.example.com") == "myapp.azurewebsites.net"
+
+def test_nlb_dangling_cname_is_stale(monkeypatch):
+    target = "app-nlb-1a2b3c.elb.us-east-1.amazonaws.com"
+    fake_dns(monkeypatch, cnames={"api.example.com": target}, dead={target})
+    result = inspect_host("api.example.com")
+    assert result["status"] == "stale"
+    assert result["stale"]["service"] == "AWS Elastic Load Balancing"
+
+
+def test_nlb_govcloud_and_china_match():
+    assert match_not_claimable("x-1.elb.us-gov-west-1.amazonaws.com") == "AWS Elastic Load Balancing"
+    assert match_not_claimable("x-1.elb.cn-north-1.amazonaws.com.cn") == "AWS Elastic Load Balancing"
+    assert match_not_claimable("x.cn-north-1.elb.amazonaws.com.cn") == "AWS Elastic Load Balancing"
+
+
+def test_s3_and_lookalike_nlb_do_not_match():
+    assert match_not_claimable("bucket.s3.amazonaws.com") is None
+    assert match_not_claimable("evil.elb.us-east-1.amazonaws.com.attacker.net") is None
