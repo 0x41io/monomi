@@ -277,6 +277,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.7.1: takeover fixes from field testing: dangling CNAMEs inside the scanned domain marked `stale` (not leads), new `no_such_host` status, optional `domain` argument for the `check_takeover` MCP tool
 
 - [x] v1.8: attack paths built by code (every step evidence-cited and labeled), `owner` roles on every finding and "fix this first", `--hosts FILE`, DNS reliability (shared DNS helper, DNS-over-HTTPS double-check, one set of status words), MCP input cleanup
+- [x] v1.8.1: fixes from a 2,000+ host field test: newer AWS load balancer names (region after `elb`) marked `stale`, dangling CNAMEs under a cloud provider domain get a "check it" label instead of an expired-name path, side doors skip private IPs, load balancers and shared front doors, and side-door wording follows the host category
 
 **Next**
 - [ ] v1.9: report exports (Markdown, HTML, findings CSV), `monomi doctor`, next-check suggestions, a second DNS-over-HTTPS resolver, a "go around the CDN" attack path, crt.sh rate-limit handling
