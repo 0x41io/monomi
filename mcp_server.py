@@ -21,6 +21,7 @@ from evidence import OWNERS
 import internetdb
 import threatintel
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 # The server itself. "monomi" is the name agents will see.
@@ -126,21 +127,21 @@ def load_hosts_file(path: str) -> list[str]:
     real = os.path.realpath(path)  # follows ../ and symlinks to where the file really is
     scans = os.path.realpath(SCANS_DIR)
     if os.path.commonpath([real, scans]) != scans:
-        raise ValueError(f"hosts_file must be inside Monomi's scans folder ({scans})")
+        raise ToolError(f"hosts_file must be inside Monomi's scans folder ({scans})")
     if not real.lower().endswith((".json", ".txt")):
-        raise ValueError("hosts_file must be a .json or .txt file")
+        raise ToolError("hosts_file must be a .json or .txt file")
     if not os.path.isfile(real):
-        raise ValueError(f"hosts_file not found: {path}")
+        raise ToolError(f"hosts_file not found: {path}")
     with open(real) as f:
         if not real.lower().endswith(".json"):
             return [line.split("#")[0] for line in f]
         try:
             data = json.load(f)
         except json.JSONDecodeError:
-            raise ValueError("hosts_file isn't valid JSON")
+            raise ToolError("hosts_file isn't valid JSON")
     hosts = data.get("hostnames") if isinstance(data, dict) else None
     if not isinstance(hosts, list):
-        raise ValueError('a .json hosts_file needs a "hostnames" list, like the file find_subdomains saves')
+        raise ToolError('a .json hosts_file needs a "hostnames" list, like the file find_subdomains saves')
     return [str(h) for h in hosts]
 
 
@@ -151,7 +152,7 @@ def pick_hosts(hostnames: list[str] | None, hosts_file: str | None,
     Returns (hosts, how many are left after this batch, rejected inputs,
     batch info for the reply)."""
     if (hostnames is None) == (hosts_file is None):
-        raise ValueError("pass either hostnames or hosts_file, not both")
+        raise ToolError("pass either hostnames or hosts_file, not both")
     raw = load_hosts_file(hosts_file) if hosts_file else hostnames
     hosts, _, rejected = clean_hosts(raw, limit=len(raw))  # clean them all, batch below
     start = max(start, 0)

@@ -1,5 +1,6 @@
 """Tests for the MCP server's tool wrappers. No network: the checks
 the tools call are swapped for fakes with monkeypatch."""
+import asyncio
 import json
 
 import pytest
@@ -60,6 +61,7 @@ def test_check_ports_uses_smaller_cap(monkeypatch):
     assert result["hosts_checked"] == mcp_server.MAX_PORT_HOSTS
     assert result["hosts_skipped"] == 150 - mcp_server.MAX_PORT_HOSTS
 
+
 def test_check_ports_renames_ip_counts(monkeypatch):
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": hosts})
     monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
@@ -70,6 +72,7 @@ def test_check_ports_renames_ip_counts(monkeypatch):
     assert result["ips_skipped"] == 0
     for old in ("checked", "errors", "skipped"):
         assert old not in result
+
 
 def test_check_ports_summary_counts(monkeypatch):
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {
@@ -116,6 +119,7 @@ def test_investigate_ip_caps_and_counts_skipped(monkeypatch):
     assert result["ips_checked"] == mcp_server.MAX_IPS
     assert result["ips_skipped"] == 15 - mcp_server.MAX_IPS
 
+
 def test_clean_hosts_rejects_junk_with_reasons():
     import mcp_server
     link = "[dev.lab.test](https:" + "//dev.lab.test)"
@@ -139,6 +143,7 @@ def test_clean_hosts_caps_rejected_list():
     import mcp_server
     _, _, rejected = mcp_server.clean_hosts([f"bad{i}..test" for i in range(50)])
     assert len(rejected) == 20
+
 
 def test_check_takeover_adds_owners(monkeypatch):
     monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
@@ -285,7 +290,7 @@ def test_hosts_file_outside_scans_is_refused(monkeypatch, tmp_path):
     secret = tmp_path / "bashrc.txt"
     secret.write_text("export ANTHROPIC_API_KEY=sk-ant-secret\n")
     for path in (str(secret), "../bashrc.txt"):
-        with pytest.raises(ValueError, match="scans folder"):
+        with pytest.raises(mcp_server.ToolError, match="scans folder"):
             mcp_server.load_hosts_file(path)
 
 
@@ -294,7 +299,7 @@ def test_hosts_file_symlink_out_of_scans_is_refused(monkeypatch, tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("sk-ant-secret\n")
     (folder / "link.txt").symlink_to(secret)
-    with pytest.raises(ValueError, match="scans folder"):
+    with pytest.raises(mcp_server.ToolError, match="scans folder"):
         mcp_server.load_hosts_file("link.txt")
 
 
@@ -302,19 +307,27 @@ def test_hosts_file_wrong_type_or_shape_is_refused(monkeypatch, tmp_path):
     folder = scans_dir(monkeypatch, tmp_path)
     (folder / "notes.md").write_text("a\n")
     (folder / "other.json").write_text(json.dumps({"leads": []}))
-    with pytest.raises(ValueError, match=".json or .txt"):
+    with pytest.raises(mcp_server.ToolError, match=".json or .txt"):
         mcp_server.load_hosts_file("notes.md")
-    with pytest.raises(ValueError, match="hostnames"):
+    with pytest.raises(mcp_server.ToolError, match="hostnames"):
         mcp_server.load_hosts_file("other.json")
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(mcp_server.ToolError, match="not found"):
         mcp_server.load_hosts_file("missing.txt")
 
 
 def test_pick_hosts_needs_exactly_one_input():
-    with pytest.raises(ValueError, match="either hostnames or hosts_file"):
+    with pytest.raises(mcp_server.ToolError, match="either hostnames or hosts_file"):
         mcp_server.pick_hosts(None, None, 0, 200)
-    with pytest.raises(ValueError, match="either hostnames or hosts_file"):
+    with pytest.raises(mcp_server.ToolError, match="either hostnames or hosts_file"):
         mcp_server.pick_hosts(["a"], "hosts.txt", 0, 200)
+
+
+def test_refused_hosts_file_reason_reaches_the_client():
+    # Only a ToolError's message gets through MCP; any other error shows
+    # just "Error executing tool", so the agent can't tell what went wrong.
+    with pytest.raises(mcp_server.ToolError, match="scans folder"):
+        asyncio.run(mcp_server.mcp.call_tool(
+            "check_takeover", {"hosts_file": "../../hosts.txt"}))
 
 
 def test_pick_hosts_batches_with_next_start():
