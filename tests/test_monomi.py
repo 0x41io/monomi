@@ -1,6 +1,6 @@
 import pytest
 
-from monomi import baseline_gaps, clean_domain, collect_ct, flag_silent_crtsh_failure
+from monomi import baseline_gaps, clean_domain, collect_ct, flag_silent_crtsh_failure, gap_reason
 
 
 def test_clean_domain_strips_url_parts():
@@ -139,3 +139,26 @@ def test_empty_website_with_failed_database_is_still_silent_failure():
                "errors": {"crt.sh database": "connection timeout"}}
     flag_silent_crtsh_failure(results)
     assert "likely failed silently" in results["errors"]["crt.sh"]
+
+
+# --- gap_reason(): the history warning says "behind", not "failed", when crt.sh is behind ---
+
+def test_gap_reason_all_behind():
+    results = {"sources": {"crt.sh": _ct("crt.sh", 0), "crt.sh database": _ct("crt.sh database", 0),
+                           "certspotter": _ct("certspotter", 3)},
+               "errors": {}}
+    flag_silent_crtsh_failure(results)
+    gaps = baseline_gaps(results)
+    assert gap_reason(results, gaps) == "crt.sh, crt.sh database are behind on the CT logs"
+
+
+def test_gap_reason_failed():
+    results = {"errors": {"certspotter": "429 rate limited"}}
+    assert gap_reason(results, ["certspotter"]) == "certspotter failed"
+
+
+def test_gap_reason_failed_and_behind():
+    results = {"errors": {"certspotter": "429 rate limited",
+                          "crt.sh": "no certificates for this domain yet: the crt.sh database answered with 0"}}
+    assert gap_reason(results, ["certspotter", "crt.sh"]) == \
+        "certspotter failed and crt.sh is behind on the CT logs"

@@ -173,6 +173,8 @@ def add_import(results: dict, sf: dict, path: str) -> None:
 
 # Sources that keep every certificate ever logged (expired ones too)
 FULL_HISTORY_SOURCES = ("crt.sh", "crt.sh database")
+# Start of the error message when crt.sh is behind the CT logs (not broken)
+CRTSH_BEHIND = "no certificates for this domain yet"
 
 # Job name in collect_ct() -> the "source" name its result is stored under
 SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert Spotter": "certspotter"}
@@ -273,7 +275,7 @@ def flag_silent_crtsh_failure(results: dict) -> None:
         del results["sources"][name]
         if behind:
             results["errors"][name] = (
-                f"no certificates for this domain yet: the crt.sh database answered with 0 "
+                f"{CRTSH_BEHIND}: the crt.sh database answered with 0 "
                 f"while {best} found {others[best]}; crt.sh may not have indexed them"
             )
             warn(f"{name} has none of the certificates {best} found, so crt.sh is probably behind "
@@ -488,6 +490,19 @@ def baseline_gaps(results: dict) -> list[str]:
             if not (name in FULL_HISTORY_SOURCES and crtsh_ok)]
 
 
+def gap_reason(results: dict, gaps: list[str]) -> str:
+    """Why these sources left a gap, in words: which failed, which are only behind."""
+    behind = [g for g in gaps if results["errors"][g].startswith(CRTSH_BEHIND)]
+    failed = [g for g in gaps if g not in behind]
+    parts = []
+    if failed:
+        parts.append(f"{', '.join(failed)} failed")
+    if behind:
+        verb = "is" if len(behind) == 1 else "are"
+        parts.append(f"{', '.join(behind)} {verb} behind on the CT logs")
+    return " and ".join(parts)
+
+
 def show_changes(results: dict) -> None:
     """Compare with the last scan of this domain, then save this one as the new baseline.
 
@@ -503,14 +518,14 @@ def show_changes(results: dict) -> None:
     gaps = baseline_gaps(results)
     if gaps:
         print()
-        warn(f"{', '.join(gaps)} failed, so this scan wasn't saved to history (it would be an incomplete baseline).")
+        warn(f"{gap_reason(results, gaps)}, so this scan wasn't saved to history (it would be an incomplete baseline).")
         if previous is not None:
             changes = history.compare(previous, all_subs)
             results["changes"] = changes
             for sub in changes["added"]:
                 print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
             if changes["removed"]:
-                info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the failed source.")
+                info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the missing source.")
         return
 
     saved_path = history.save(domain, all_subs)
