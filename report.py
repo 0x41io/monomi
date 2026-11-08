@@ -360,7 +360,7 @@ def save(results: dict, formats: list[str], generated, folder: str = None) -> li
     written = []
     for fmt in formats:
         build, ending, encoding = FORMATS[fmt]
-        path = os.path.join(folder, f"{name}_{generated:%Y-%m-%d_%H%M}_export{ending}")
+        path = os.path.join(folder, f"{name}_{generated:%Y-%m-%d_%H%M%S}_export{ending}")
         # newline="": write line endings exactly as built (no extra \r on Windows)
         with open(path, "w", encoding=encoding, newline="") as f:
             f.write(build(results, generated))

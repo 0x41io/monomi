@@ -197,7 +197,7 @@ def test_parse_formats():
 def test_save_writes_each_format(lab, tmp_path):
     written = report.save(lab, ["md", "html", "csv"], WHEN, folder=str(tmp_path))
     names = [Path(p).name for p in written]
-    stem = LAB + "_2026-11-08_1120_export"
+    stem = LAB + "_2026-11-08_112000_export"
     assert names == [stem + ".md", stem + ".html", stem + ".csv"]
     raw = (tmp_path / names[2]).read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")         # BOM, so Excel reads ø right
