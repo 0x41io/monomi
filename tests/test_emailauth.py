@@ -2,6 +2,7 @@ import dns.exception
 import dns.resolver
 import pytest
 
+import dnscheck
 import emailauth
 from emailauth import check_dkim, check_dmarc, check_spf, email_verdict
 
@@ -138,10 +139,37 @@ def test_no_record_does_not_retry(monkeypatch):
     assert len(calls) == 1
 
 
-def test_all_resolvers_down_raises(monkeypatch):
+def port_53_down(monkeypatch):
+    """Both normal resolvers time out (blocked or flaky port 53)."""
     def fake_query(resolver, name):
         raise dns.exception.Timeout()
-
     monkeypatch.setattr(emailauth, "_query_txt", fake_query)
+
+
+def use_doh(monkeypatch, answer):
+    """Make the DNS-over-HTTPS fallback return a fixed answer, or raise if given an exception."""
+    def fake(name, rtype):
+        assert rtype == "TXT"
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(emailauth.dnscheck, "doh_lookup", fake)
+
+
+def test_all_resolvers_down_raises(monkeypatch):
+    port_53_down(monkeypatch)
+    use_doh(monkeypatch, dnscheck.DNSLookupError("no route"))
     with pytest.raises(emailauth.DNSLookupError):
         emailauth.get_txt("example.com")
+
+
+def test_falls_back_to_doh_when_port_53_fails(monkeypatch):
+    port_53_down(monkeypatch)
+    use_doh(monkeypatch, ("ok", ["v=spf1 -all"]))
+    assert emailauth.get_txt("mail-lab") == ["v=spf1 -all"]
+
+
+def test_doh_no_such_name_means_no_records(monkeypatch):
+    port_53_down(monkeypatch)
+    use_doh(monkeypatch, ("nxdomain", []))
+    assert emailauth.get_txt("gone-lab") == []

@@ -94,6 +94,20 @@ def test_doh_lookup_network_error_raises(monkeypatch):
         dnscheck.doh_lookup("www.lab.test", "A")
 
 
+def test_doh_txt_keeps_case_and_drops_quotes(monkeypatch):
+    # Cloudflare style: quoted, and DKIM keys are case-sensitive
+    data = {"Status": 0, "Answer": [{"type": 16, "data": '"v=DKIM1; k=rsa; p=MIGfMA0GCSq"'}]}
+    monkeypatch.setattr(dnscheck.requests, "get", lambda *a, **k: FakeResponse(data))
+    assert dnscheck.doh_lookup("sel-lab", "TXT") == ("ok", ["v=DKIM1; k=rsa; p=MIGfMA0GCSq"])
+
+
+def test_txt_text_joins_chunks_and_unescapes():
+    assert dnscheck.txt_text('"v=spf1 include:a" " ~all"') == "v=spf1 include:a ~all"
+    assert dnscheck.txt_text('"say \\"hi\\""') == 'say "hi"'
+    assert dnscheck.txt_text('"a\\032b"') == "a b"
+    assert dnscheck.txt_text("v=spf1 -all") == "v=spf1 -all"  # Google style: bare text
+
+
 # --- get_cname(): the NXDOMAIN double-check and the HTTPS fallback ---
 
 def test_nxdomain_confirmed_by_doh_is_no_such_host(monkeypatch):

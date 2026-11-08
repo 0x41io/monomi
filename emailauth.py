@@ -6,13 +6,17 @@ lookups (asked of DNS servers, not the target's own servers), so nothing
 is sent to the target directly.
 
 If the system's DNS can't answer (WSL's DNS relay often times out on TXT
-lookups), it retries with public DNS: Cloudflare, then Google.
+lookups), it retries with public DNS: Cloudflare, then Google. If port 53
+is blocked or flaky too (VPNs, some networks), it asks over DNS-over-HTTPS,
+like every other Monomi check.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 
 import dns.exception
 import dns.resolver
+
+import dnscheck
 
 FALLBACK_NAMESERVERS = ["1.1.1.1", "8.8.8.8"]
 
@@ -49,7 +53,12 @@ def get_txt(name: str) -> list[str]:
         except dns.exception.DNSException:
             continue  # this resolver failed (timeout etc.), try the next one
 
-    raise DNSLookupError(f"no DNS server answered a TXT lookup for {name}")
+    # Neither answered over port 53: ask over HTTPS (port 443) instead
+    try:
+        _, records = dnscheck.doh_lookup(name, "TXT")
+    except dnscheck.DNSLookupError:
+        raise DNSLookupError(f"no DNS server answered a TXT lookup for {name}") from None
+    return records  # [] if the name doesn't exist or has no TXT records
 
 
 # Every way an SPF record can end, telling receivers what to do with

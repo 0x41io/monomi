@@ -298,7 +298,10 @@ def test_hosts_file_symlink_out_of_scans_is_refused(monkeypatch, tmp_path):
     folder = scans_dir(monkeypatch, tmp_path)
     secret = tmp_path / "secret.txt"
     secret.write_text("sk-ant-secret\n")
-    (folder / "link.txt").symlink_to(secret)
+    try:
+        (folder / "link.txt").symlink_to(secret)
+    except OSError:  # Windows only allows symlinks with admin rights or Developer Mode
+        pytest.skip("this system doesn't allow creating symlinks")
     with pytest.raises(mcp_server.ToolError, match="scans folder"):
         mcp_server.load_hosts_file("link.txt")
 

@@ -11,6 +11,7 @@ answer for the same host. Order of trust:
 Only asks DNS servers, never the target itself, so it stays passive.
 """
 
+import re
 import time
 
 import dns.exception
@@ -26,7 +27,7 @@ DOH_SERVERS = {
     "Cloudflare": "https://cloudflare-dns.com/dns-query",
     "Google": "https://dns.google/resolve",
 }
-DOH_TYPE_CODES = {"A": 1, "AAAA": 28, "CNAME": 5}   # DoH JSON gives record types as numbers
+DOH_TYPE_CODES = {"A": 1, "AAAA": 28, "CNAME": 5, "TXT": 16}   # DoH JSON gives record types as numbers
 RETRY_PAUSE = 2   # seconds to wait before one last try when every DoH server failed
 
 
@@ -82,9 +83,36 @@ def _ask_doh(url: str, name: str, rtype: str) -> tuple[str, list[str]]:
     if status != 0:                      # 0 = NOERROR; anything else is a failure
         raise DNSLookupError(f"DNS-over-HTTPS returned status {status} for {name}")
     wanted = DOH_TYPE_CODES[rtype]
-    records = [a["data"].rstrip(".").lower()
-               for a in data.get("Answer", []) if a.get("type") == wanted]
-    return "ok", records
+    answers = [a["data"] for a in data.get("Answer", []) if a.get("type") == wanted]
+    if rtype == "TXT":
+        # TXT is text, not a name: keep its case (DKIM keys are case-sensitive)
+        return "ok", [txt_text(d) for d in answers]
+    return "ok", [d.rstrip(".").lower() for d in answers]
+
+
+# One quoted chunk of a TXT answer, e.g. "v=spf1 -all" (\" inside is an escaped quote)
+TXT_CHUNK = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# An escape inside a chunk: \" or \\ (a character) or \032 (a byte as 3 digits)
+TXT_ESCAPE = re.compile(r"\\(\d{3}|.)")
+
+
+def txt_text(data: str) -> str:
+    """Turn one DoH TXT answer into the record's text.
+
+    Cloudflare wraps TXT data in quotes and shows a long record as several
+    quoted chunks ("v=spf1 include:a" " ~all"); Google gives the bare text.
+    The chunks are joined back into one string, like dnspython does.
+    """
+    chunks = TXT_CHUNK.findall(data)
+    if not chunks:
+        return data
+    return "".join(TXT_ESCAPE.sub(_unescape, c) for c in chunks)
+
+
+def _unescape(m) -> str:
+    """An escaped 3-digit number becomes that character; any other escaped character stays as itself."""
+    code = m.group(1)
+    return chr(int(code)) if code.isdigit() else code
 
 
 def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:

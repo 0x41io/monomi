@@ -54,6 +54,24 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Installing on Windows
+
+Monomi runs on Windows without WSL. In PowerShell:
+
+```powershell
+python --version                # must be 3.10 or newer
+git clone https://github.com/0x41io/monomi.git
+cd monomi
+python -m venv venv
+venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+If something goes wrong:
+- **`python` isn't found, or opens the Microsoft Store:** install Python from python.org (tick **"Add python.exe to PATH"**). If `python` still opens the Store or runs an old version, open **Settings > Apps > Advanced app settings > App execution aliases**, turn off the "App Installer" and older Python entries for `python.exe` / `python3.exe`, and turn on the new ones. Then open a new PowerShell window.
+- **"running scripts is disabled on this system"** when activating: run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
+- **The prompt shows `(venv)` but the command isn't found:** another venv is active. Run `deactivate`, then activate the one inside the `monomi` folder.
+
 ### API key (only for `--ai`)
 
 The AI analysis uses the Claude API. Get a key at [console.anthropic.com](https://console.anthropic.com), then:
@@ -61,6 +79,8 @@ The AI analysis uses the Claude API. Get a key at [console.anthropic.com](https:
 ```bash
 export ANTHROPIC_API_KEY="your-key-here"
 ```
+
+On Windows (PowerShell): `$env:ANTHROPIC_API_KEY = "your-key-here"` (for the current window only).
 
 Never commit your key. The tool reads it from the environment only.
 
@@ -298,8 +318,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.8.1: fixes from a 2,000+ host field test: newer AWS load balancer names (region after `elb`) marked `stale`, dangling CNAMEs under a cloud provider domain get a "check it" label instead of an expired-name path, side doors skip private IPs, load balancers and shared front doors, and side-door wording follows the host category
 - [x] v1.9: MCP summary replies with full results saved to a file, `hosts_file` input and batches, shared crt.sh / Cert Spotter pacing, saved per-domain source copies as a fallback, crt.sh "behind" status, Google as a second DNS-over-HTTPS server with one retry and a `servfail` status, Vercel counted as shared edge
 
+- [x] v1.9.1: runs on Windows without WSL (Windows file locking for pacing, install guide), email check falls back to DNS-over-HTTPS when port 53 fails
+
 **Next**
-- [ ] v1.9.1: report exports (Markdown, HTML, findings CSV), `monomi doctor` (API keys, source reachability), `monomi mcp setup`
+- [ ] v1.9.2: report exports (Markdown, HTML, findings CSV), `monomi doctor` (API keys, source reachability), `monomi mcp setup`
 - [ ] v1.10: finds more: subfinder import and a free passive DNS source for subdomain breadth, a "go around the CDN" attack path, next-check suggestions, security header and exposed API spec checks over MCP
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
