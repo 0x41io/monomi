@@ -40,6 +40,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
 - **JSON export** for use in other tools
+- **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
 - **MCP server mode (passive-only):** run Monomi as an MCP server so AI agents can call its checks directly. Seven tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
 ## Installation
@@ -52,6 +53,7 @@ cd monomi
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+python monomi.py doctor         # check the setup
 ```
 
 ### Installing on Windows
@@ -65,6 +67,7 @@ cd monomi
 python -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python monomi.py doctor         # check the setup
 ```
 
 If something goes wrong:
@@ -89,6 +92,49 @@ By default the tool uses the newest Claude Sonnet model available to your key. T
 ```bash
 export CLAUDE_MODEL="model-id-here"
 ```
+
+### Check your setup
+
+Run this after installing, and whenever a scan looks off:
+
+```bash
+python monomi.py doctor
+```
+
+It checks, in about 10 seconds:
+- **Setup:** the Python version, every package in `requirements.txt` (installed and new enough), and that `scans/`, `reports/` and `cache/` can be written to
+- **Claude API:** whether `ANTHROPIC_API_KEY` is set (only its first 7 characters are ever shown), whether the API accepts it (one free call that lists models, no tokens used), and which model `--ai` would use
+- **DNS:** system DNS and public DNS on port 53, and DNS-over-HTTPS (Cloudflare and Google). A VPN's DNS can drop lookups under load, and doctor says so when port 53 fails
+- **Sources:** crt.sh (website and database), Cert Spotter (how much of the free hourly quota is used, or when a cooldown ends), Shodan InternetDB, Amazon's IP range list and the Tor exit list
+
+```
+Setup
+  [+] Python 3.14.4
+  [+] packages: requests, anthropic, rich, dnspython, mcp, psycopg
+  [+] scans/, reports/, cache/ writable
+
+Claude API
+  [+] ANTHROPIC_API_KEY set (sk-ant-…, 106 chars)
+  [+] key accepted · --ai would use claude-sonnet-5-5
+
+DNS
+  [+] system DNS (port 53) answered
+  [+] public DNS on port 53 (1.1.1.1, 8.8.8.8) answered
+  [+] DNS-over-HTTPS: Cloudflare, Google
+
+Sources
+  [!] crt.sh website: timed out after 10s
+      fix: it's often overloaded; scans still use the other sources
+  [+] crt.sh database reachable
+  [+] Cert Spotter reachable · 10 of 90 free queries used this hour
+  [+] Shodan InternetDB reachable
+  [+] AWS IP ranges (cached 16h ago)
+  [+] Tor exit list reachable (for --investigate-ip)
+
+13 ok · 1 warning · 0 problems: ready to scan
+```
+
+Each line is `[+]` ok, `[!]` a warning (a feature is weaker or off, but scans still work) or `[x]` a problem, and every warning or problem comes with a one-line fix. The exit code is 1 if anything failed, so scripts can check it. Doctor sends one request to each source, through the same rate-limit pacing scans use, and nothing to any scan target.
 
 ## Usage
 
@@ -231,6 +277,7 @@ Certificate Transparency (CT) is a public log of every TLS certificate issued by
 ```
 monomi/
 ├── monomi.py             # CLI entry point
+├── doctor.py             # setup check: packages, API key, DNS, sources (monomi.py doctor)
 ├── analysis.py           # Claude analysis layer
 ├── enrich.py             # DNS + ASN/provider enrichment
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
@@ -292,7 +339,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners and the attack-path rules.
+The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules (including golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident) and the doctor checks (with fake network calls).
 
 ## Roadmap
 
