@@ -174,6 +174,8 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
     web = {80, 443}
     items = exposure["ips"].items()
     edge = [ip for ip, d in items if d["shared_edge"]]
+    # The target's own IPs Shodan has no data on: checked, just nothing on record
+    quiet_own = [ip for ip, d in exposure.get("nothing_seen", {}).items() if not d["shared_edge"]]
     web_only = {ip for ip, d in items if not d["shared_edge"] and not d["vulns"] and set(d["ports"]) <= web}
     rows = sorted(
         ((ip, d) for ip, d in items if not d["shared_edge"] and ip not in web_only),
@@ -196,6 +198,10 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
             cve_txt = paint(f"{n:>{cve_w}}", RED, BOLD) if n else paint(f"{n:>{cve_w}}", GREY)
             print(indent + f"{paint(_cell(ip, ip_w), GREY)}  {_cell(host, host_w)}  {_cell(ports, ports_w)}  {cve_txt}  {note}".rstrip())
         print()
+    elif not web_only and edge and quiet_own:
+        print(indent + paint(f"Shodan has nothing on record for the target's own {len(quiet_own)} IP(s) "
+                             "(not crawled yet, or nothing open), and every IP with open ports "
+                             "belongs to a CDN.", GREEN))
     elif not web_only and edge:
         print(indent + paint("Every IP with open ports belongs to a CDN, so none of the target's own servers are visible to check.", GREEN))
     else:

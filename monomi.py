@@ -339,7 +339,7 @@ def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
         warn(f"Only the first {internetdb.MAX_IPS} IPs were checked ({exposure['skipped']} skipped).")
     print()
     if not exposure["ips"]:
-        good(f"Shodan has no open ports on record for the {exposure['checked']} IPs checked.")
+        good(f"Shodan has no open ports on record for the {exposure['checked']} IP(s) checked.")
     else:
         ui.exposure_table(exposure)
         print()
