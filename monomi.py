@@ -178,6 +178,7 @@ CRTSH_BEHIND = "no certificates for this domain yet"
 
 # Job name in collect_ct() -> the "source" name its result is stored under
 SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert Spotter": "certspotter"}
+DISPLAY_NAMES = {key: name for name, key in SOURCE_NAMES.items()}  # "certspotter" -> "Cert Spotter"
 
 
 def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET,
@@ -273,19 +274,21 @@ def flag_silent_crtsh_failure(results: dict) -> None:
         if best is None or others[best] == 0:
             continue  # nobody found anything: a genuine empty result
         del results["sources"][name]
+        shown = DISPLAY_NAMES.get(best, best)
         if behind:
             results["errors"][name] = (
                 f"{CRTSH_BEHIND}: the crt.sh database answered with 0 "
-                f"while {best} found {others[best]}; crt.sh may not have indexed them"
+                f"while {shown} found {others[best]}; crt.sh may not have indexed them"
             )
-            warn(f"{name} has none of the certificates {best} found, so crt.sh is probably behind "
+            warn(f"{name} has none of the certificates {shown} found, so crt.sh is probably behind "
                  f"on the CT logs. Treating it as unavailable.")
         else:
             results["errors"][name] = (
-                f"returned no certificates while {best} found {others[best]}; "
+                f"returned no certificates while {shown} found {others[best]}; "
                 f"{name} likely failed silently (empty reply)"
             )
-            warn(f"{name} returned nothing but {best} found certificates, so it probably failed silently. Treating it as unavailable.")
+            warn(f"{name} returned nothing but {shown} found certificates, so it probably failed silently. Treating it as unavailable.")
+
 
 def run_enrich(results: dict, ports_on: bool) -> dict:
     """--enrich: resolve every host, look up who hosts it, and print the table."""

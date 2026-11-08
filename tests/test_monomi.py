@@ -129,7 +129,7 @@ def test_crtsh_database_answering_zero_means_behind():
     assert list(results["sources"]) == ["certspotter"]
     for name in ("crt.sh", "crt.sh database"):
         assert "may not have indexed them" in results["errors"][name]
-        assert "certspotter found 3" in results["errors"][name]
+        assert "Cert Spotter found 3" in results["errors"][name]  # display name, not the key
     assert baseline_gaps(results) == ["crt.sh", "crt.sh database"]  # still a gap: no baseline
 
 
