@@ -22,3 +22,8 @@ def saved_dir(tmp_path, monkeypatch):
 def no_retry_pause(monkeypatch):
     """The DoH retry doesn't wait in tests."""
     monkeypatch.setattr(dnscheck, "RETRY_PAUSE", 0)
+
+
+def pytest_addoption(parser):
+    parser.addoption("--update-golden", action="store_true",
+                     help="rewrite tests/golden/expected/ from the current code")
