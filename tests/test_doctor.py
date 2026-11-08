@@ -491,3 +491,100 @@ def test_crtsh_database_shows_the_reason_not_the_address(monkeypatch):
     fake_db(monkeypatch, connect_error=error)
     r = doctor.check_crtsh_database()
     assert r["detail"].endswith("database: sorry, too many clients already")
+
+
+# ---------- MCP (Claude app) ----------
+
+ENTRY = {"command": "/monomi/venv/bin/python", "args": ["/monomi/mcp_server.py"]}
+
+
+def fake_mcp(monkeypatch, tmp_path, files, error=None):
+    """files: {file name: text} -> config files that 'exist' in tmp_path."""
+    paths = []
+    for name, text in files.items():
+        f = tmp_path / name
+        f.write_text(text, encoding="utf-8")
+        paths.append(str(f))
+
+    def config_paths():
+        if error:
+            raise error
+        return paths, str(tmp_path / "standard.json")
+    monkeypatch.setattr(doctor.mcp_setup, "config_paths", config_paths)
+    monkeypatch.setattr(doctor.mcp_setup, "server_entry", lambda: dict(ENTRY))
+
+
+def config_with(entry):
+    servers = {"other": {"command": "x"}}
+    if entry is not None:
+        servers["monomi"] = entry
+    return doctor.mcp_setup.json.dumps({"mcpServers": servers})
+
+
+def test_mcp_points_at_this_monomi(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    [r] = doctor.check_mcp()
+    assert r["status"] == OK
+    assert r["detail"] == "Claude app config points at this Monomi"
+
+
+def test_mcp_no_config_yet(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {})
+    [r] = doctor.check_mcp()
+    assert r["status"] == WARN
+    assert r["fix"] == "python monomi.py mcp setup"
+
+
+def test_mcp_no_monomi_entry(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(None)})
+    [r] = doctor.check_mcp()
+    assert (r["status"], r["detail"]) == (
+        WARN, "Monomi isn't set up in the Claude app")
+
+
+def test_mcp_points_at_a_different_monomi(monkeypatch, tmp_path):
+    old = {"command": "/old/venv/bin/python", "args": ["/old/mcp_server.py"]}
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(old)})
+    [r] = doctor.check_mcp()
+    assert r["status"] == WARN
+    assert "a different Monomi" in r["detail"]
+
+
+def test_mcp_broken_json_is_a_warning_not_a_crash(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": "{not json"})
+    [r] = doctor.check_mcp()
+    assert r["status"] == WARN
+    assert "isn't valid JSON" in r["detail"]
+    assert "a.json" in r["detail"]
+
+
+def test_mcp_config_not_found(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {},
+             error=doctor.mcp_setup.SetupError("no %APPDATA%"))
+    [r] = doctor.check_mcp()
+    assert r["status"] == WARN
+    assert "--print" in r["fix"]
+
+
+def test_mcp_two_copies_shows_the_worst(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ENTRY),
+                                     "msix.json": config_with(None)})
+    [r] = doctor.check_mcp()
+    assert r["status"] == WARN
+    assert "isn't set up" in r["detail"] and "msix.json" in r["detail"]
+
+
+def test_mcp_two_good_copies(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ENTRY),
+                                     "msix.json": config_with(ENTRY)})
+    [r] = doctor.check_mcp()
+    assert r["status"] == OK
+    assert r["detail"].endswith("(2 config files)")
+
+
+def test_mcp_check_writes_nothing(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(None)})
+    before = (tmp_path / "a.json").read_text(encoding="utf-8")
+    doctor.check_mcp()
+    assert (tmp_path / "a.json").read_text(encoding="utf-8") == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.json"]

@@ -28,6 +28,7 @@ import requests
 import aws_ranges
 import dnscheck
 import internetdb
+import mcp_setup
 import threatintel
 import ui
 from collectors import certspotter, crtsh, crtsh_db, pacing, saved
@@ -500,11 +501,70 @@ def check_tor_list():
     return [result(SRC, "tor", OK, "Tor exit list reachable (for --investigate-ip)")]
 
 
+# ---------- 5. MCP (Claude app) ----------
+
+MCP = "MCP"
+SETUP_FIX = "python monomi.py mcp setup"
+# Worst first: when there are two config copies, the worst one is shown
+MCP_STATES = ["unreadable", "broken", "different", "missing", "ok"]
+
+
+def mcp_state(path, entry):
+    """How one config file stands: one of MCP_STATES."""
+    try:
+        config = mcp_setup.load_config(path)
+    except mcp_setup.SetupError:
+        return "broken"
+    except OSError:
+        return "unreadable"
+    status, _ = mcp_setup.change(config, entry)
+    return {"new": "missing", "unchanged": "ok", "changing": "different"}[status]
+
+
+def check_mcp():
+    """Is Monomi in the Claude app's config, pointing at this Monomi?
+
+    Read-only: finds the config and builds the entry the same way
+    mcp setup does, so the two always agree. Nothing is written.
+    """
+    try:
+        found, _ = mcp_setup.config_paths()
+    except mcp_setup.SetupError:
+        return [result(MCP, "mcp", WARN, "couldn't find the Claude app config",
+                       "python monomi.py mcp setup --print, then add it by hand")]
+    if not found:
+        return [result(MCP, "mcp", WARN,
+                       "Monomi isn't set up in the Claude app", SETUP_FIX)]
+
+    entry = mcp_setup.server_entry()
+    states = {path: mcp_state(path, entry) for path in found}
+    path, state = min(states.items(), key=lambda kv: MCP_STATES.index(kv[1]))
+    where = f" ({path})" if len(found) > 1 else ""
+    if state == "ok":
+        many = f" ({len(found)} config files)" if len(found) > 1 else ""
+        return [result(MCP, "mcp", OK,
+                       f"Claude app config points at this Monomi{many}")]
+    if state == "unreadable":
+        return [result(MCP, "mcp", WARN,
+                       f"can't read the Claude app config ({path})",
+                       "check that file's permissions")]
+    if state == "broken":
+        return [result(MCP, "mcp", WARN,
+                       f"Claude app config isn't valid JSON ({path})",
+                       f"fix or move that file, then run {SETUP_FIX}")]
+    if state == "different":
+        return [result(MCP, "mcp", WARN,
+                       f"Claude app config points at a different Monomi{where}",
+                       SETUP_FIX)]
+    return [result(MCP, "mcp", WARN,
+                   f"Monomi isn't set up in the Claude app{where}", SETUP_FIX)]
+
+
 # ---------- Running and showing the checks ----------
 
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list]
+          check_tor_list, check_mcp]
 
 
 def run_all(checks=None):
