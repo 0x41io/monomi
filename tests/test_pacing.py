@@ -1,4 +1,7 @@
+import importlib.util
 import json
+import sys
+import types
 
 import pytest
 
@@ -93,3 +96,47 @@ def test_wrong_shaped_state_file_counts_as_empty(clock, pacing_dir):
     pacing_dir.mkdir()
     (pacing_dir / "t.json").write_text('["a list", "not a dict"]')
     Pacer("t", "Test", limit=1, window=60).acquire(max_wait=0)
+
+
+# --- Windows: no fcntl, file locks come from msvcrt ---
+
+def fake_msvcrt(fail=False):
+    """Stands in for Windows' msvcrt module and records each lock request."""
+    calls = []
+
+    def locking(fd, mode, nbytes):
+        calls.append((mode, nbytes))
+        if fail:
+            raise OSError("lock busy")
+
+    return types.SimpleNamespace(LK_LOCK=1, locking=locking, calls=calls)
+
+
+def test_module_imports_without_fcntl(monkeypatch):
+    """On Windows `import fcntl` fails; the module must still load and use msvcrt."""
+    fake = fake_msvcrt()
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # None makes `import fcntl` raise ImportError
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    spec = importlib.util.spec_from_file_location("pacing_on_windows", pacing.__file__)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.fcntl is None
+    assert mod.msvcrt is fake
+
+
+def test_windows_lock_is_used(clock, monkeypatch):
+    fake = fake_msvcrt()
+    monkeypatch.setattr(pacing, "fcntl", None)
+    monkeypatch.setattr(pacing, "msvcrt", fake)
+    Pacer("t", "Test", limit=3, window=60).acquire(max_wait=0)
+    assert fake.calls == [(fake.LK_LOCK, 1)]
+
+
+def test_windows_lock_failure_does_not_stop_the_scan(clock, monkeypatch):
+    fake = fake_msvcrt(fail=True)
+    monkeypatch.setattr(pacing, "fcntl", None)
+    monkeypatch.setattr(pacing, "msvcrt", fake)
+    p = Pacer("t", "Test", limit=1, window=60)
+    p.acquire(max_wait=0)  # lock fails, request still goes through
+    with pytest.raises(Paced):  # and the count was still saved
+        p.acquire(max_wait=0)

@@ -8,15 +8,38 @@ in a small file (scans/.pacing/<name>.json) that every run shares, instead of
 in memory where each run would start from zero.
 """
 
-import fcntl
 import json
 import os
 import threading
 import time
 from datetime import datetime
 
+try:
+    import fcntl          # Linux and macOS
+    msvcrt = None
+except ImportError:       # Windows has no fcntl; it locks files with msvcrt instead
+    fcntl = None
+    import msvcrt
+
 # Inside the monomi folder (one level up from collectors/), next to the other scans
 PACING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scans", ".pacing")
+
+
+def _lock_file(f) -> None:
+    """Lock the open file so other Monomi runs wait their turn. The lock is
+    released when the file closes.
+
+    Pacing is best-effort: if Windows can't get the lock (another run held it
+    for ~10 seconds), carry on without it rather than fail the scan.
+    """
+    if fcntl:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return
+    try:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # lock the first byte; retries for ~10s
+    except OSError:
+        pass
 
 
 class Paced(RuntimeError):
@@ -60,7 +83,7 @@ class Pacer:
         Returns whatever update() returns."""
         os.makedirs(PACING_DIR, exist_ok=True)
         with self._lock, open(self._path(), "a+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)  # released when the file closes
+            _lock_file(f)
             now = time.time()
             state = self._load(f)
             # Forget requests older than the window: they no longer count
