@@ -229,3 +229,265 @@ def test_monomi_doctor_runs_the_doctor(monkeypatch, capsys):
     monkeypatch.setattr(doctor, "run_all", lambda: [])
     assert monomi.main() == 0
     assert "monomi doctor" in capsys.readouterr().out
+
+
+# ---------- DNS (d2) ----------
+
+class FakeResolver:
+    """Answers, or raises `error`, like dns.resolver.Resolver.resolve."""
+    def __init__(self, error=None):
+        self.error = error
+
+    def resolve(self, name, rtype, lifetime):
+        if self.error:
+            raise self.error
+
+
+def fake_dns(monkeypatch, system=None, public=None, doh=None):
+    """system/public: an error to raise, or None. doh: {server name: error or None}."""
+    monkeypatch.setattr(doctor.dnscheck, "_resolvers",
+                        lambda: (FakeResolver(system), FakeResolver(public)))
+    doh = doh or {}
+    urls = {url: doh.get(name) for name, url in doctor.dnscheck.DOH_SERVERS.items()}
+
+    def ask(url, name, rtype):
+        if urls[url]:
+            raise doctor.dnscheck.DNSLookupError(urls[url])
+        return "ok", ["an-ip"]
+
+    monkeypatch.setattr(doctor.dnscheck, "_ask_doh", ask)
+    monkeypatch.setattr(doctor, "in_wsl", lambda: False)
+
+
+def test_dns_all_good(monkeypatch):
+    fake_dns(monkeypatch)
+    results = doctor.check_dns()
+    assert statuses(results) == [OK, OK, OK]
+    assert results[2]["detail"] == "DNS-over-HTTPS: Cloudflare, Google"
+
+
+def test_port_53_blocked_is_a_warning_while_doh_works(monkeypatch):
+    fake_dns(monkeypatch, system=TimeoutError("timed out"))
+    results = doctor.check_dns()
+    assert statuses(results) == [WARN, OK, OK]
+    assert "fall back to DNS-over-HTTPS" in results[0]["detail"]
+    assert "NordVPN" in results[0]["fix"]
+
+
+def test_wsl_gets_the_flushdns_tip(monkeypatch):
+    fake_dns(monkeypatch, system=TimeoutError("timed out"))
+    monkeypatch.setattr(doctor, "in_wsl", lambda: True)
+    assert "ipconfig /flushdns" in doctor.check_dns()[0]["fix"]
+
+
+def test_one_doh_server_down(monkeypatch):
+    fake_dns(monkeypatch, doh={"Google": "HTTP 503"})
+    doh = doctor.check_dns()[2]
+    assert doh["status"] == WARN
+    assert "Google failed (HTTP 503)" in doh["detail"]
+    assert "Cloudflare works" in doh["detail"]
+
+
+def test_all_doh_down_but_port_53_works(monkeypatch):
+    fake_dns(monkeypatch, doh={"Cloudflare": "x", "Google": "y"})
+    assert statuses(doctor.check_dns()) == [OK, OK, WARN]
+
+
+def test_no_dns_at_all_is_one_fail_line(monkeypatch):
+    fake_dns(monkeypatch, system=TimeoutError("a"), public=TimeoutError("b"),
+             doh={"Cloudflare": "x", "Google": "y"})
+    [r] = doctor.check_dns()
+    assert r["status"] == FAIL and "failed everywhere" in r["detail"]
+
+
+# ---------- Sources (d2) ----------
+
+class FakeHTTP:
+    def __init__(self, code=200, headers=None):
+        self.status_code, self.headers = code, headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise doctor.requests.HTTPError(response=self)
+
+
+def fake_get(monkeypatch, answer):
+    """requests.get in doctor returns `answer` (a FakeHTTP) or raises it (an error).
+    Returns the list of URLs asked, so tests can check nothing was sent."""
+    asked = []
+
+    def get(url, **kwargs):
+        asked.append(url)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(doctor.requests, "get", get)
+    return asked
+
+
+def test_net_error_in_plain_words():
+    requests = doctor.requests
+    assert doctor.net_error(requests.ConnectionError("x")) == "couldn't connect"
+    assert doctor.net_error(requests.Timeout()) == f"timed out after {doctor.TIMEOUT}s"
+    err = doctor.requests.HTTPError(response=FakeHTTP(502))
+    assert doctor.net_error(err) == "HTTP 502"
+
+
+@pytest.mark.parametrize("answer, status, words", [
+    (FakeHTTP(200), OK, "reachable"),
+    (FakeHTTP(502), WARN, "HTTP 502"),
+    (doctor.requests.ConnectionError("boom"), WARN, "couldn't connect"),
+])
+def test_crtsh_website(monkeypatch, answer, status, words):
+    fake_get(monkeypatch, answer)
+    r = doctor.check_crtsh_website()
+    assert r["status"] == status and words in r["detail"]
+
+
+def test_crtsh_website_respects_the_rate_limit(monkeypatch):
+    for _ in range(doctor.pacing.CRTSH.limit):
+        doctor.pacing.CRTSH.acquire(max_wait=0)  # use up this minute's requests
+    asked = fake_get(monkeypatch, FakeHTTP(200))
+    r = doctor.check_crtsh_website()
+    assert r["status"] == WARN and "not checked" in r["detail"]
+    assert asked == []  # no request sent
+
+
+class FakeConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query):
+        assert query == "SELECT 1"
+
+
+def fake_db(monkeypatch, lookup_error=None, connect_error=None):
+    def lookup(host):
+        if lookup_error:
+            raise lookup_error
+        return "an-ip"
+
+    def connect(**kwargs):
+        if connect_error:
+            raise connect_error
+        return FakeConnection()
+
+    monkeypatch.setattr(doctor.socket, "gethostbyname", lookup)
+    monkeypatch.setattr(doctor.crtsh_db.psycopg, "connect", connect)
+
+
+def test_crtsh_database_ok(monkeypatch):
+    fake_db(monkeypatch)
+    assert doctor.check_crtsh_database()["status"] == OK
+
+
+def test_crtsh_database_lookup_fails(monkeypatch):
+    fake_db(monkeypatch, lookup_error=OSError("no name"))
+    r = doctor.check_crtsh_database()
+    assert r["status"] == WARN and "couldn't look up" in r["detail"]
+
+
+def test_crtsh_database_down(monkeypatch):
+    down = doctor.crtsh_db.psycopg.OperationalError("down")
+    fake_db(monkeypatch, connect_error=down)
+    r = doctor.check_crtsh_database()
+    assert r["status"] == WARN and "down" in r["detail"]
+
+
+def test_certspotter_ok_counts_the_query(monkeypatch):
+    fake_get(monkeypatch, FakeHTTP(200))
+    r = doctor.check_certspotter()
+    assert r["status"] == OK and "1 of 90 free queries used" in r["detail"]
+
+
+def test_certspotter_429_starts_a_cooldown(monkeypatch):
+    fake_get(monkeypatch, FakeHTTP(429, {"Retry-After": "600"}))
+    assert doctor.check_certspotter()["status"] == WARN
+    assert doctor.pacing.CERTSPOTTER.status()["cooldown_until"]  # later scans skip it
+
+
+def test_certspotter_cooling_down_sends_nothing(monkeypatch):
+    doctor.pacing.CERTSPOTTER.cool_down(600)
+    asked = fake_get(monkeypatch, FakeHTTP(200))
+    r = doctor.check_certspotter()
+    assert r["status"] == WARN and "cooling down until" in r["detail"]
+    assert asked == []
+
+
+def test_pacer_status_takes_no_slot():
+    doctor.pacing.CERTSPOTTER.acquire(max_wait=0)
+    first = doctor.pacing.CERTSPOTTER.status()
+    assert first == doctor.pacing.CERTSPOTTER.status()
+    assert first["used"] == 1 and first["cooldown_until"] is None
+
+
+def test_no_certificate_source_is_a_fail(monkeypatch):
+    down = lambda: doctor.result("Sources", "x", WARN, "down")
+    for name in ("check_crtsh_website", "check_crtsh_database", "check_certspotter"):
+        monkeypatch.setattr(doctor, name, down)
+    assert statuses(doctor.check_ct_sources()) == [WARN, WARN, WARN, FAIL]
+
+
+def test_one_certificate_source_is_enough(monkeypatch):
+    monkeypatch.setattr(doctor, "check_crtsh_website",
+                        lambda: doctor.result("Sources", "x", WARN, "down"))
+    monkeypatch.setattr(doctor, "check_crtsh_database",
+                        lambda: doctor.result("Sources", "x", WARN, "down"))
+    monkeypatch.setattr(doctor, "check_certspotter",
+                        lambda: doctor.result("Sources", "x", OK, "fine"))
+    assert FAIL not in statuses(doctor.check_ct_sources())
+
+
+@pytest.mark.parametrize("code, status", [(200, OK), (404, OK), (500, WARN)])
+def test_shodan(monkeypatch, code, status):
+    fake_get(monkeypatch, FakeHTTP(code))
+    assert statuses(doctor.check_shodan()) == [status]
+
+
+def test_aws_fresh_cache(monkeypatch, tmp_path):
+    cache = tmp_path / "aws.json"
+    cache.write_text("{}")
+    monkeypatch.setattr(doctor.aws_ranges, "CACHE_FILE", str(cache))
+    [r] = doctor.check_aws_ranges()
+    assert r["status"] == OK and "cached 0h ago" in r["detail"]
+
+
+def test_aws_no_cache_downloads(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.aws_ranges, "CACHE_FILE", str(tmp_path / "none.json"))
+    monkeypatch.setattr(doctor.aws_ranges, "_download", lambda: {})
+    [r] = doctor.check_aws_ranges()
+    assert r["status"] == OK and "just downloaded" in r["detail"]
+
+
+def test_aws_download_fails_with_an_old_copy(monkeypatch, tmp_path):
+    cache = tmp_path / "aws.json"
+    cache.write_text("{}")
+    three_days_ago = doctor.time.time() - 3 * 86400
+    doctor.os.utime(cache, (three_days_ago, three_days_ago))
+    monkeypatch.setattr(doctor.aws_ranges, "CACHE_FILE", str(cache))
+    # no mock for _download: the real one runs and its request fails
+    fake_get(monkeypatch, doctor.requests.ConnectionError("x"))
+    [r] = doctor.check_aws_ranges()
+    assert r["status"] == WARN
+    assert "download failed (couldn't connect); using a 3-day-old copy" in r["detail"]
+
+
+@pytest.mark.parametrize("answer, status", [
+    (FakeHTTP(200), OK), (FakeHTTP(503), WARN),
+    (doctor.requests.Timeout(), WARN)])
+def test_tor_list(monkeypatch, answer, status):
+    fake_get(monkeypatch, answer)
+    assert statuses(doctor.check_tor_list()) == [status]
+
+
+def test_crtsh_database_shows_the_reason_not_the_address(monkeypatch):
+    message = ('connection failed: connection to server at "an-ip", port 5432 '
+               'failed: sorry, too many clients already')
+    error = doctor.crtsh_db.psycopg.OperationalError(message)
+    fake_db(monkeypatch, connect_error=error)
+    r = doctor.check_crtsh_database()
+    assert r["detail"].endswith("database: sorry, too many clients already")

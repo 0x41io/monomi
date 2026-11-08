@@ -118,6 +118,17 @@ class Pacer:
         if wait > 0:
             time.sleep(wait)  # outside the lock, so other runs aren't blocked meanwhile
 
+    def status(self) -> dict:
+        """Requests used in the current window and any cooldown, without taking a slot.
+
+        {"used": 12, "limit": 90, "cooldown_until": None or a time.time() value}
+        """
+        def look(state, now):
+            cooling = state["cooldown_until"] > now
+            return {"used": len(state["sent"]), "limit": self.limit,
+                    "cooldown_until": state["cooldown_until"] if cooling else None}
+        return self._change(look)
+
     def cool_down(self, seconds: float) -> None:
         """The source told us to back off (e.g. HTTP 429): skip it for `seconds`."""
         def mark(state, now):

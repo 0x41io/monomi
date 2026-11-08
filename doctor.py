@@ -14,14 +14,24 @@ Exit code 1 if anything failed, so scripts can check it.
 import argparse
 import importlib.metadata
 import os
+import platform
 import re
+import socket
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+import requests
 
 import aws_ranges
+import dnscheck
+import internetdb
+import threatintel
 import ui
-from collectors import saved
+from collectors import certspotter, crtsh, crtsh_db, pacing, saved
+from common import USER_AGENT
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +39,11 @@ REQUIREMENTS = os.path.join(HERE, "requirements.txt")
 MIN_PYTHON = (3, 10)
 # Built from pieces so chat apps don't turn it into a link when pasting
 CONSOLE = "console.anthropic" + ".com"
+
+# A name that always exists, for DNS and Cert Spotter checks
+EXAMPLE = "example" + ".com"
+TIMEOUT = 10  # seconds per network check
+HEADERS = {"User-Agent": USER_AGENT}
 
 # Packages Monomi can run without: {package: what's missing without it}
 OPTIONAL = {"anthropic": "--ai is off"}
@@ -226,9 +241,270 @@ def check_api_access():
                    f"key accepted · --ai would use {model}{source}")]
 
 
+# ---------- 3. DNS ----------
+
+def short(e):
+    """First line of an error, at most 80 characters (DNS errors can be long)."""
+    text = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+    return text[:80]
+
+
+def net_error(e):
+    """A requests error in plain words, instead of its long internal text."""
+    if isinstance(e, requests.Timeout):
+        return f"timed out after {TIMEOUT}s"
+    if isinstance(e, requests.ConnectionError):
+        return "couldn't connect"
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return f"HTTP {e.response.status_code}"
+    return short(e)
+
+
+def db_error(e):
+    """The reason from a psycopg error, without the address in front of it.
+
+    'connection to server at "x", port 5432 failed: sorry, too many
+    clients already' -> 'sorry, too many clients already'
+    """
+    lines = str(e).strip().splitlines()
+    first = lines[0] if lines else type(e).__name__
+    return short(first.rsplit("failed: ", 1)[-1])
+
+
+def in_wsl():
+    return "microsoft" in platform.uname().release.lower()
+
+
+def port53_fix():
+    fix = ("a VPN's DNS (e.g. NordVPN) can drop lookups: turn it off, "
+           f"or set your DNS to {dnscheck.FALLBACK_NAMESERVERS[0]}")
+    if in_wsl():
+        fix += "; in WSL, also run ipconfig /flushdns in an admin PowerShell"
+    return fix
+
+
+def ask_port53(resolver):
+    """None if this resolver answered, otherwise the error text."""
+    try:
+        resolver.resolve(EXAMPLE, "A", lifetime=5)
+        return None
+    except Exception as e:  # any DNS failure is the answer we're after
+        return short(e)
+
+
+def ask_doh(url):
+    try:
+        dnscheck._ask_doh(url, EXAMPLE, "A")
+        return None
+    except dnscheck.DNSLookupError as e:
+        return short(e)
+
+
+def check_dns():
+    """Port 53 (system and public DNS) and DNS-over-HTTPS, all at once.
+
+    Scans use system DNS first and DNS-over-HTTPS to double-check, so
+    port 53 failing is only a warning while DNS-over-HTTPS still works.
+    """
+    group = "DNS"
+    system, public = dnscheck._resolvers()
+    servers = dnscheck.DOH_SERVERS
+    with ThreadPoolExecutor(max_workers=2 + len(servers)) as pool:
+        sys_job = pool.submit(ask_port53, system)
+        pub_job = pool.submit(ask_port53, public)
+        doh_jobs = {name: pool.submit(ask_doh, url) for name, url in servers.items()}
+        sys_err, pub_err = sys_job.result(), pub_job.result()
+        doh_errs = {name: job.result() for name, job in doh_jobs.items()}
+
+    doh_ok = [name for name, err in doh_errs.items() if err is None]
+    if sys_err and pub_err and not doh_ok:
+        return [result(group, "dns", FAIL,
+                       f"DNS lookups failed everywhere (system DNS: {sys_err})",
+                       "check your internet connection; " + port53_fix())]
+
+    out = []
+    if sys_err:
+        out.append(result(group, "system dns", WARN,
+                          f"system DNS (port 53) failed: {sys_err}; "
+                          "scans fall back to DNS-over-HTTPS", port53_fix()))
+    else:
+        out.append(result(group, "system dns", OK, "system DNS (port 53) answered"))
+
+    public_names = ", ".join(dnscheck.FALLBACK_NAMESERVERS)
+    if pub_err:
+        out.append(result(group, "public dns", WARN,
+                          f"public DNS on port 53 ({public_names}) failed: {pub_err}",
+                          port53_fix()))
+    else:
+        out.append(result(group, "public dns", OK,
+                          f"public DNS on port 53 ({public_names}) answered"))
+
+    failed = [f"{name} failed ({err})" for name, err in doh_errs.items() if err]
+    if not failed:
+        out.append(result(group, "doh", OK, "DNS-over-HTTPS: " + ", ".join(doh_ok)))
+    elif doh_ok:
+        out.append(result(group, "doh", WARN,
+                          f"DNS-over-HTTPS: {'; '.join(failed)}; "
+                          f"{', '.join(doh_ok)} works",
+                          "usually a brief outage: scans use the other server"))
+    else:
+        out.append(result(group, "doh", WARN,
+                          f"DNS-over-HTTPS: {'; '.join(failed)}",
+                          "scans lose the double-check that catches stale "
+                          "DNS answers; check whether port 443 is blocked"))
+    return out
+
+
+# ---------- 4. Sources ----------
+
+SRC = "Sources"
+
+
+def at_time(timestamp):
+    """A time.time() value as local 'HH:MM'."""
+    return datetime.fromtimestamp(timestamp).strftime("%H:%M")
+
+
+def check_crtsh_website():
+    name = pacing.CRTSH.label  # kept out of the code so chat apps don't link it
+    try:
+        pacing.CRTSH.acquire(max_wait=0)  # counts as 1 of its 5 requests a minute
+    except pacing.Paced as e:
+        return result(SRC, "crtsh", WARN, f"{name} website not checked: {e}")
+    fix = "it's often overloaded; scans still use the other sources"
+    try:
+        resp = requests.get(crtsh.CRTSH_URL, headers=HEADERS, timeout=TIMEOUT)
+    except requests.RequestException as e:
+        return result(SRC, "crtsh", WARN, f"{name} website: {net_error(e)}", fix)
+    if resp.status_code != 200:
+        return result(SRC, "crtsh", WARN,
+                      f"{name} website: HTTP {resp.status_code}", fix)
+    return result(SRC, "crtsh", OK, f"{name} website reachable")
+
+
+def check_crtsh_database():
+    name = pacing.CRTSH.label
+    db = crtsh_db.DB
+    try:
+        ipv4 = socket.gethostbyname(db["host"])  # IPv4 only, like crtsh_db.py
+    except OSError:
+        return result(SRC, "crtsh database", WARN,
+                      f"{name} database: couldn't look up its address",
+                      "check your DNS (see the DNS lines above)")
+    try:
+        with crtsh_db.psycopg.connect(**db, hostaddr=ipv4, connect_timeout=TIMEOUT,
+                                      autocommit=True) as conn:
+            conn.execute("SELECT 1")
+    except (OSError, crtsh_db.psycopg.Error) as e:
+        return result(SRC, "crtsh database", WARN, f"{name} database: {db_error(e)}",
+                      "it's sometimes down; scans still use the other sources")
+    return result(SRC, "crtsh database", OK, f"{name} database reachable")
+
+
+def check_certspotter():
+    pacer = pacing.CERTSPOTTER
+    state = pacer.status()
+    if state["cooldown_until"]:
+        until = at_time(state["cooldown_until"])
+        return result(SRC, "certspotter", WARN,
+                      f"Cert Spotter cooling down until {until} "
+                      "after a rate limit (scans skip it until then)",
+                      "wait, or sweep fewer domains per hour")
+    try:
+        pacer.acquire(max_wait=0)  # one real query from the free hourly quota
+    except pacing.Paced as e:
+        return result(SRC, "certspotter", WARN, f"Cert Spotter not checked: {e}")
+    try:
+        params = {"domain": EXAMPLE, "include_subdomains": "false"}
+        resp = requests.get(certspotter.API_URL, params=params, headers=HEADERS,
+                            timeout=TIMEOUT)
+    except requests.RequestException as e:
+        return result(SRC, "certspotter", WARN, f"Cert Spotter: {net_error(e)}",
+                      "check your internet connection")
+    if resp.status_code == 429:
+        pacer.cool_down(certspotter.cooldown_seconds(resp))
+        return result(SRC, "certspotter", WARN,
+                      "Cert Spotter: rate limited (free tier used up for now)",
+                      "wait, or sweep fewer domains per hour")
+    if resp.status_code != 200:
+        return result(SRC, "certspotter", WARN,
+                      f"Cert Spotter: HTTP {resp.status_code}",
+                      "try again in a few minutes")
+    used = pacer.status()
+    return result(SRC, "certspotter", OK,
+                  f"Cert Spotter reachable · {used['used']} of {used['limit']} "
+                  "free queries used this hour")
+
+
+def check_ct_sources():
+    """The three certificate sources, at the same time. Scans need at least one."""
+    checks = [check_crtsh_website, check_crtsh_database, check_certspotter]
+    with ThreadPoolExecutor(max_workers=len(checks)) as pool:
+        out = list(pool.map(lambda check: check(), checks))
+    if not any(r["status"] == OK for r in out):
+        out.append(result(SRC, "certificates", FAIL,
+                          "no certificate source answered, so scans can't find "
+                          "hostnames right now",
+                          "try again in a few minutes (--hosts FILE still works)"))
+    return out
+
+
+def check_shodan():
+    ip = ".".join(["1"] * 4)  # any public IP Shodan knows
+    try:
+        resp = requests.get(internetdb.API_URL.format(ip=ip), headers=HEADERS,
+                            timeout=TIMEOUT)
+    except requests.RequestException as e:
+        return [result(SRC, "shodan", WARN, f"Shodan InternetDB: {net_error(e)}",
+                       "--ports won't find anything until it's reachable")]
+    if resp.status_code not in (200, 404):  # 404 = "nothing on this IP", still up
+        return [result(SRC, "shodan", WARN,
+                       f"Shodan InternetDB: HTTP {resp.status_code}",
+                       "--ports won't find anything until it's reachable")]
+    return [result(SRC, "shodan", OK, "Shodan InternetDB reachable")]
+
+
+def check_aws_ranges():
+    """AWS's IP list (used to spot CloudFront edge IPs), cached for a day."""
+    try:
+        age = time.time() - os.path.getmtime(aws_ranges.CACHE_FILE)
+    except OSError:
+        age = None
+    if age is not None and age < aws_ranges.MAX_AGE:
+        return [result(SRC, "aws", OK, f"AWS IP ranges (cached {age / 3600:.0f}h ago)")]
+    try:
+        aws_ranges._download()
+    except RuntimeError as e:
+        # _download wraps the network error; show that one in plain words
+        cause = e.__context__
+        network = isinstance(cause, requests.RequestException)
+        why = net_error(cause) if network else short(e)
+        fix = "CloudFront edge IPs may be counted as the target's own servers"
+        if age is not None:
+            days = age / 86400
+            return [result(SRC, "aws", WARN,
+                           f"AWS IP ranges: download failed ({why}); "
+                           f"using a {days:.0f}-day-old copy", fix)]
+        return [result(SRC, "aws", WARN,
+                       f"AWS IP ranges: download failed ({why})", fix)]
+    return [result(SRC, "aws", OK, "AWS IP ranges (just downloaded)")]
+
+
+def check_tor_list():
+    try:
+        resp = requests.get(threatintel.TOR_EXIT_URL, headers=HEADERS, timeout=TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return [result(SRC, "tor", WARN, f"Tor exit list: {net_error(e)}",
+                       "only --investigate-ip uses it")]
+    return [result(SRC, "tor", OK, "Tor exit list reachable (for --investigate-ip)")]
+
+
 # ---------- Running and showing the checks ----------
 
-CHECKS = [check_python, check_packages, check_folders, check_api_key]
+CHECKS = [check_python, check_packages, check_folders, check_api_key,
+          check_dns, check_ct_sources, check_shodan, check_aws_ranges,
+          check_tor_list]
 
 
 def run_all(checks=None):
