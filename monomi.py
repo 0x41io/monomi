@@ -25,6 +25,7 @@ import enrich
 import evidence
 import mcp_setup
 import paths
+import report
 import fingerprint
 import history
 import internetdb
@@ -70,6 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("domain", nargs="?", help="target domain, e.g. example.com")
     parser.add_argument("--import", dest="import_file", metavar="FILE", help="analyze a SpiderFoot CSV export")
     parser.add_argument("--json", metavar="FILE", help="save raw results to a JSON file")
+    parser.add_argument("--export", type=report.parse_formats, metavar="FORMATS",
+                        help="save the report as files: all, or any of md,html,csv (e.g. --export html,csv)")
     parser.add_argument("--ai", action="store_true", help="have Claude write a summary report (needs ANTHROPIC_API_KEY)")
     parser.add_argument("--enrich", action="store_true", help="resolve hosts to IPs and look up hosting provider/ASN (sends DNS queries)")
     parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
@@ -588,6 +591,8 @@ def write_ai_report(results: dict) -> None:
     except Exception as e:  # missing key, network, API errors
         fail(f"AI summary failed: {e}")
         return
+    # Kept with the results, so --export and a later --json save include it
+    results["ai_report"] = {"text": summary, "model": model}
 
     domain = results["target"]
     os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -623,6 +628,13 @@ def write_ai_report(results: dict) -> None:
         warn(f"The AI named attack path(s) that don't exist: {', '.join(made_up)}. Treat them with caution.")
     if not missing and not made_up:
         good("The report covers every attack path and adds none.")
+
+
+def export_reports(results: dict, formats: list[str]) -> None:
+    """--export: save the report as Markdown, HTML and/or a findings CSV."""
+    print()
+    for path in report.save(results, formats, datetime.now()):
+        good(f"Report saved to {short_path(path)}")
 
 
 def save_json(results: dict, path: str) -> None:
@@ -730,6 +742,9 @@ def main() -> int:
     # "doctor" is a command, not a domain (a domain always has a dot)
     if sys.argv[1:2] == ["doctor"]:
         return doctor.main(sys.argv[2:])
+    # "report FILE": export a saved --json scan again, without scanning
+    if sys.argv[1:2] == ["report"]:
+        return report.main(sys.argv[2:])
     # "mcp setup": add Monomi to the Claude app's MCP config
     if sys.argv[1:2] == ["mcp"]:
         return mcp_setup.main(sys.argv[2:])
@@ -744,6 +759,8 @@ def main() -> int:
     if args.investigate_ip:
         if args.domain or args.import_file:
             parser.error("--investigate-ip works on its own: don't pass a domain or --import with it")
+        if args.export:
+            parser.error("--export works on domain scans, not --investigate-ip")
         return run_investigate(args.investigate_ip, args.json, args.ai)
     
     if args.ports and not args.enrich:
@@ -827,6 +844,8 @@ def main() -> int:
     show_paths(results)
     if args.ai:
         write_ai_report(results)
+    if args.export:
+        export_reports(results, args.export)
     if args.json:
         save_json(results, args.json)
     return 0

@@ -10,12 +10,18 @@ A "finding" is an evidence item with an owner: evidence.py only gives owners
 to facts someone has to act on (which source found a hostname has none).
 """
 
+import argparse
 import csv
 import html
 import io
+import json
+import os
+import re
+from datetime import datetime
 
 import evidence
 import paths
+import ui
 
 SEVERITIES = ("High", "Medium", "Low")
 # Cells starting with these can run as formulas in Excel / Sheets
@@ -314,3 +320,103 @@ def to_html(results: dict, generated) -> str:
                    f"{owners}</li>")
     out += ["</ul>", "</body></html>"]
     return "\n".join(out) + "\n"
+
+
+# ---------- Saving (--export and the report command) ----------
+
+# Reports go in the monomi folder, wherever the command is run from
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+# format name: (builder, file ending, encoding). utf-8-sig puts a BOM at the
+# start of the CSV, so Excel reads characters like ø correctly
+FORMATS = {
+    "md": (to_markdown, ".md", "utf-8"),
+    "html": (to_html, ".html", "utf-8"),
+    "csv": (lambda r, when: to_csv(r), ".csv", "utf-8-sig"),
+}
+
+
+def parse_formats(text: str) -> list[str]:
+    """'html,csv' -> ['html', 'csv']; 'all' -> every format.
+
+    Raises argparse.ArgumentTypeError, so argparse shows a clean error.
+    """
+    if text.strip().lower() == "all":
+        return list(FORMATS)
+    asked = [f.strip().lower() for f in text.split(",") if f.strip()]
+    unknown = [f for f in asked if f not in FORMATS]
+    if unknown or not asked:
+        raise argparse.ArgumentTypeError(
+            f"unknown format {', '.join(unknown) or text!r}: use all, or any of "
+            f"{', '.join(FORMATS)} (e.g. html,csv)")
+    return list(dict.fromkeys(asked))  # drop repeats, keep the order
+
+
+def save(results: dict, formats: list[str], generated, folder: str = None) -> list[str]:
+    """Write each format to the reports folder. Returns the paths written."""
+    folder = folder or REPORTS_DIR
+    os.makedirs(folder, exist_ok=True)
+    # The target is a checked domain, but a file name gets only safe characters
+    name = re.sub(r"[^a-z0-9.-]", "_", str(results["target"]).lower())
+    written = []
+    for fmt in formats:
+        build, ending, encoding = FORMATS[fmt]
+        path = os.path.join(folder, f"{name}_{generated:%Y-%m-%d_%H%M}_export{ending}")
+        # newline="": write line endings exactly as built (no extra \r on Windows)
+        with open(path, "w", encoding=encoding, newline="") as f:
+            f.write(build(results, generated))
+        written.append(path)
+    return written
+
+
+def short_path(path: str) -> str:
+    """'reports/x.md' when run from the monomi folder, the full path otherwise."""
+    rel = os.path.relpath(path)
+    return path if rel.startswith("..") else rel
+
+
+def load_scan(path: str) -> dict:
+    """A saved --json domain scan, ready to export.
+
+    Evidence and attack paths saved with the scan are used as they are, so
+    the IDs an AI summary cites still match. Older saves without them get
+    them built now.
+    """
+    with open(path, encoding="utf-8-sig") as f:
+        results = json.load(f)
+    if not isinstance(results, dict) or results.get("mode") == "investigate_ip":
+        raise ValueError("only domain scans can be exported, not --investigate-ip results")
+    if "target" not in results or "subdomains" not in results:
+        raise ValueError("this doesn't look like a Monomi --json scan")
+    if "evidence" not in results or "paths" not in results:
+        results["evidence"] = evidence.build_evidence(results)
+        results["paths"] = paths.build_paths(results, results["evidence"])
+    return results
+
+
+def main(argv=None) -> int:
+    """python monomi.py report FILE: export a saved --json scan again."""
+    parser = argparse.ArgumentParser(
+        prog="monomi.py report",
+        description="export a saved --json scan as Markdown, HTML or a findings CSV")
+    parser.add_argument("file", help="a scan saved with --json")
+    parser.add_argument("--format", type=parse_formats, default=list(FORMATS),
+                        help="all (default), or any of md,html,csv")
+    parser.add_argument("--no-color", action="store_true",
+                        help="plain output (also respects NO_COLOR)")
+    args = parser.parse_args(argv)
+    if args.no_color:
+        ui.disable()
+    try:
+        results = load_scan(args.file)
+    except json.JSONDecodeError as e:
+        ui.fail(f"can't export {args.file}: it isn't valid JSON ({e})")
+        return 1
+    except OSError as e:  # missing file, no permission
+        ui.fail(f"can't export {args.file}: {e.strerror or e}")
+        return 1
+    except ValueError as e:  # valid JSON, but not a domain scan
+        ui.fail(f"can't export {args.file}: {e}")
+        return 1
+    for path in save(results, args.format, datetime.now()):
+        ui.good(f"Saved {short_path(path)}")
+    return 0

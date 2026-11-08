@@ -182,3 +182,71 @@ def test_html_no_findings():
     page = report.to_html(made_up([]), WHEN)
     assert "Nothing to fix was found in this scan." in page
     assert "No attack path found" in page
+
+
+# ---------- Saving and the report command ----------
+
+def test_parse_formats():
+    assert report.parse_formats("all") == ["md", "html", "csv"]
+    assert report.parse_formats("HTML, csv,html") == ["html", "csv"]
+    for bad in ("pdf", "html,pdf", ","):
+        with pytest.raises(report.argparse.ArgumentTypeError):
+            report.parse_formats(bad)
+
+
+def test_save_writes_each_format(lab, tmp_path):
+    written = report.save(lab, ["md", "html", "csv"], WHEN, folder=str(tmp_path))
+    names = [Path(p).name for p in written]
+    stem = LAB + "_2026-11-08_1120_export"
+    assert names == [stem + ".md", stem + ".html", stem + ".csv"]
+    raw = (tmp_path / names[2]).read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")         # BOM, so Excel reads ø right
+    assert b"\r\r\n" not in raw                    # no doubled line endings
+    assert (tmp_path / names[1]).read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+
+
+def test_save_file_name_is_only_safe_characters(tmp_path):
+    scan = made_up([])
+    scan["target"] = "../../evil name"
+    [path] = report.save(scan, ["csv"], WHEN, folder=str(tmp_path))
+    assert Path(path).parent == tmp_path
+    assert Path(path).name.startswith(".._.._evil_name_")
+
+
+def saved_scan(tmp_path, results):
+    f = tmp_path / "scan.json"
+    f.write_text(json.dumps(results), encoding="utf-8")
+    return str(f)
+
+
+def test_load_scan_builds_missing_evidence(tmp_path):
+    raw = json.loads(FIXTURE.read_text(encoding="utf-8"))  # saved without evidence
+    results = report.load_scan(saved_scan(tmp_path, raw))
+    assert results["evidence"] and results["paths"]["paths"]
+
+
+def test_load_scan_keeps_saved_evidence(lab, tmp_path):
+    lab["evidence"][25]["fact"] = "fact as it was saved"  # E26
+    results = report.load_scan(saved_scan(tmp_path, lab))
+    assert results["evidence"][25]["fact"] == "fact as it was saved"
+
+
+@pytest.mark.parametrize("scan", [{"mode": "investigate_ip", "ips": {}}, {"hello": 1}, []])
+def test_load_scan_refuses_other_files(tmp_path, scan):
+    with pytest.raises(ValueError):
+        report.load_scan(saved_scan(tmp_path, scan))
+
+
+def test_report_command(lab, tmp_path, monkeypatch):
+    monkeypatch.setattr(report, "REPORTS_DIR", str(tmp_path / "reports"))
+    assert report.main([saved_scan(tmp_path, lab), "--format", "csv", "--no-color"]) == 0
+    assert len(list((tmp_path / "reports").glob("*_export.csv"))) == 1
+
+
+def test_report_command_bad_files(tmp_path, capsys):
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    assert report.main([str(broken), "--no-color"]) == 1
+    assert "isn't valid JSON" in capsys.readouterr().out
+    assert report.main([str(tmp_path / "missing.json"), "--no-color"]) == 1
+    assert "No such file" in capsys.readouterr().out
