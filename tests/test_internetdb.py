@@ -1,7 +1,7 @@
 """Tests for internetdb.py: shared edge detection."""
 
 import internetdb
-from internetdb import edge_from_cname, edge_from_cpes, edge_reason
+from internetdb import edge_from_cname, edge_from_cpes, edge_from_ip, edge_reason
 
 def test_cdn_network_owner_is_edge():
     assert edge_reason("Cloudflare", []) == "network owner is Cloudflare"
@@ -81,3 +81,52 @@ def test_ips_shodan_has_nothing_on_are_still_listed(monkeypatch):
     assert result["ips"] == {}
     assert result["nothing_seen"] == {"64.227.89.72": {
         "hosts": ["dev.example.com"], "provider": "DigitalOcean", "shared_edge": False}}
+
+
+# --- Vercel: its IP blocks are announced through AWS, so the owner says "AWS" ---
+# Names are built from pieces so the chat app can't turn them into links
+
+COM = ".com"
+
+
+def test_vercel_ip_is_edge_even_when_owner_says_aws():
+    # The Yuga Labs case: 216.150.1.x labeled AWS (AS16509)
+    reason = edge_reason("AWS", [], (), "216.150.1.1")
+    assert reason == "IP is in Vercel's edge range (216.150.1.0/24)"
+
+
+def test_ip_outside_the_ranges_is_not_edge():
+    assert edge_from_ip("216.150.2.1") is None
+    assert edge_from_ip("2001:db8::1") is None
+    assert edge_from_ip("not-an-ip") is None
+
+
+def test_numbered_vercel_cname_is_edge():
+    name = "4f5c61a345ea02e1.vercel-dns-017" + COM
+    assert edge_from_cname({name}) == ("Vercel", name)
+
+
+def test_lookalike_vercel_cname_does_not_match():
+    assert edge_from_cname({"evilvercel-dns" + COM}) is None
+    assert edge_from_cname({"x.vercel-dns-017" + COM + ".evil"}) is None
+
+
+def test_vercel_ports_are_not_blamed_on_target(monkeypatch):
+    shodan = {"ports": [80, 443], "vulns": ["CVE-2023-0001"], "tags": [], "cpes": []}
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: dict(shodan))
+    enrichment = {"hosts": {"app": {"ips": ["216.150.1.1"], "provider": "AWS"}},
+                  "ip_info": {"216.150.1.1": {"provider": "AWS"}}}
+    result = internetdb.lookup(enrichment)
+    ip = result["ips"]["216.150.1.1"]
+    assert ip["shared_edge"] is True
+    assert ip["edge_reason"] == "IP is in Vercel's edge range (216.150.1.0/24)"
+    assert result["unique_cves"] == []
+
+
+def test_quiet_vercel_ip_is_still_edge(monkeypatch):
+    # Shodan has nothing on it, but it's still Vercel's server, not the target's
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
+    enrichment = {"hosts": {"app": {"ips": ["216.198.79.1"], "provider": "AWS"}},
+                  "ip_info": {"216.198.79.1": {"provider": "AWS"}}}
+    result = internetdb.lookup(enrichment)
+    assert result["nothing_seen"]["216.198.79.1"]["shared_edge"] is True

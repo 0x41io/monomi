@@ -13,7 +13,7 @@ No path is ever made up: if nothing chains, the answer is "no path found".
 
 import re
 from categorize import categorize
-from internetdb import SHARED_EDGE
+from internetdb import SHARED_EDGE, edge_from_ip
 
 LABEL_RANK = {"Observed": 0, "Inference": 1, "Lead": 2}
 SEVERITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
@@ -85,6 +85,7 @@ def _edge_ips(results):
     for h in enr.get("hosts", {}).values():
         if h.get("provider") in SHARED_EDGE:
             edge.update(h["ips"])
+        edge.update(ip for ip in h["ips"] if edge_from_ip(ip))
     return edge
 
 

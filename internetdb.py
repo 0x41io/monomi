@@ -15,6 +15,7 @@ Two things to keep in mind:
 """
 
 import ipaddress
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -33,7 +34,7 @@ RISKY_PORTS = {
 
 # Providers whose IPs are shared edge servers. Their open ports belong to
 # the CDN, not to the target's own server.
-SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva", "AWS CloudFront"}
+SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva", "AWS CloudFront", "Vercel"}
 
 # Shodan CPE names (software fingerprints) that mean "this IP is a shared
 # edge server", even when the network owner isn't a CDN: e.g. Cloudflare
@@ -76,6 +77,15 @@ EDGE_CNAMES = [
     (".incapdns.net", "Imperva"),
     (".azurefd.net", "Azure Front Door"),
     (".azureedge.net", "Azure CDN"),
+    (".vercel.app", "Vercel"),
+]
+
+
+# CNAME endings with a changing number in them, which a plain ending
+# can't catch: Vercel gives each domain its own numbered target, under
+# vercel-dns-NNN (e.g. vercel-dns-017)
+EDGE_CNAME_PATTERNS = [
+    (re.compile(r"\.vercel-dns(-\d+)?\.com$"), "Vercel"),
 ]
 
 
@@ -89,9 +99,48 @@ def edge_from_cname(names) -> tuple[str, str] | None:
         for ending, vendor in EDGE_CNAMES:
             if name.endswith(ending):
                 return vendor, name
+        for pattern, vendor in EDGE_CNAME_PATTERNS:
+            if pattern.search(name):
+                return vendor, name
     return None
 
-def edge_reason(provider: str | None, cpes: list[str], cnames=()) -> str | None:
+
+# IP blocks that are a shared edge network even when the network owner
+# says otherwise. Vercel's blocks are announced through AWS (AS16509), so
+# Team Cymru calls them "AWS". From Vercel's ARIN records (VERCEL-01..11).
+VERCEL_RANGES = [
+    "64.29.17.0/24",
+    "64.239.109.0/24",
+    "64.239.123.0/24",
+    "66.33.60.0/24",
+    "76.76.21.0/24",
+    "198.169.1.0/24",
+    "198.169.2.0/24",
+    "216.150.1.0/24",
+    "216.150.16.0/24",
+    "216.198.79.0/24",
+    "216.230.84.0/24",
+    "216.230.86.0/24",
+]
+EDGE_RANGES = [(ipaddress.ip_network(c), "Vercel") for c in VERCEL_RANGES]
+
+
+def edge_from_ip(ip) -> tuple[str, str] | None:
+    """Which shared-edge vendor's IP block an IP is in, if any.
+
+    '216.150.1.1' -> ('Vercel', '216.150.1.0/24')
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    for net, vendor in EDGE_RANGES:
+        if addr in net:  # an IPv6 address is never "in" an IPv4 block
+            return vendor, str(net)
+    return None
+
+
+def edge_reason(provider: str | None, cpes: list[str], cnames=(), ip=None) -> str | None:
     """Why an IP counts as a shared edge server, or None if it doesn't."""
     if provider in SHARED_EDGE:
         return f"network owner is {provider}"
@@ -103,6 +152,10 @@ def edge_reason(provider: str | None, cpes: list[str], cnames=()) -> str | None:
     if found:
         vendor, name = found
         return f"hostname's CNAME points to {vendor} ({name})"
+    found = edge_from_ip(ip) if ip else None
+    if found:
+        vendor, net = found
+        return f"IP is in {vendor}'s edge range ({net})"
     return None
 
 
@@ -160,13 +213,13 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
             if not data or not (data["ports"] or data["vulns"]):
                 # Shodan has nothing on this IP (yet). Still list it, so a
                 # report can't mistake "no data" for "no server here".
-                reason = edge_reason(meta["provider"], [], meta["canonicals"])
+                reason = edge_reason(meta["provider"], [], meta["canonicals"], ip)
                 quiet[ip] = {"hosts": sorted(meta["hosts"]), "provider": meta["provider"],
                              "shared_edge": reason is not None}
                 continue
             data["hosts"] = sorted(meta["hosts"])
             data["provider"] = meta["provider"]
-            data["edge_reason"] = edge_reason(meta["provider"], data["cpes"], meta["canonicals"])
+            data["edge_reason"] = edge_reason(meta["provider"], data["cpes"], meta["canonicals"], ip)
             data["shared_edge"] = data["edge_reason"] is not None
             data["risky"] = [f"{p}/{RISKY_PORTS[p]}" for p in data["ports"] if p in RISKY_PORTS]
             found[ip] = data

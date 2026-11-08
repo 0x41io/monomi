@@ -226,3 +226,10 @@ def test_evidence_explains_cves_on_cdn_edge():
     add_vulns_note(r)
     facts = [e["fact"] for e in build_evidence({"ips": {"104.21.37.188": r}})]
     assert any("shared CDN edge" in f for f in facts)
+
+
+def test_cdn_edge_from_vercel_ip_range():
+    # Vercel's blocks are announced through AWS, so the owner alone says hosting
+    labels = label(facts(ip="216.150.1.1", network={"as_name": "AWS"}))
+    assert names(labels) == ["cdn_edge", "no_anonymizer_found"]
+    assert labels[0]["reason"].startswith("IP is in Vercel's edge range")

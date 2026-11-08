@@ -240,3 +240,13 @@ def test_side_door_wording_follows_the_category():
     door = side_doors(out)[0]
     assert door["steps"][0]["text"] == "admin is live and named like a login or remote-access host"
     assert door["steps"][2]["text"].startswith("Login and remote-access pages are where attackers try")
+
+
+def test_vercel_ip_is_never_a_side_door():
+    # The Yuga Labs case: Vercel's IP labeled AWS, and no --ports run to
+    # mark it shared_edge. Two hosts on it are two Vercel sites, not one server.
+    results = lab_results()
+    for h in ("lab", "staging"):
+        results["enrichment"]["hosts"][h] = {"ips": ["216.150.1.1"], "provider": "AWS"}
+    out, ev = run(results)
+    assert side_doors(out) == []
