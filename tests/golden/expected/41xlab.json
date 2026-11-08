@@ -1,0 +1,495 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "41xlab.com was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T01:36:49+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "dev.41xlab.com was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T01:37:22+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "legacy.41xlab.com was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T01:37:22+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "nope-zz9.41xlab.com was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T01:37:22+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E5",
+      "fact": "old-lb.41xlab.com was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T01:37:22+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E6",
+      "fact": "staging.41xlab.com was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T01:36:49+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E7",
+      "fact": "www.41xlab.com was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T01:37:22+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E8",
+      "fact": "41xlab.com resolves to 64.227.89.72 (DigitalOcean, US)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "41xlab.com"
+    },
+    {
+      "id": "E9",
+      "fact": "dev.41xlab.com resolves to 64.227.89.72 (DigitalOcean, US)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "dev.41xlab.com"
+    },
+    {
+      "id": "E10",
+      "fact": "legacy.41xlab.com exists in DNS, but its CNAME points to a name that does not exist (NXDOMAIN), so it has no IP address",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E11",
+      "fact": "nope-zz9.41xlab.com does not exist in DNS when checked (NXDOMAIN, double-checked over DNS-over-HTTPS when reachable)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E12",
+      "fact": "old-lb.41xlab.com exists in DNS, but its CNAME points to a name that does not exist (NXDOMAIN), so it has no IP address",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E13",
+      "fact": "staging.41xlab.com resolves to 64.227.89.72 (DigitalOcean, US)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "staging.41xlab.com"
+    },
+    {
+      "id": "E14",
+      "fact": "www.41xlab.com resolves to 104.21.9.101, 172.67.189.57 (Cloudflare, US)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "www.41xlab.com"
+    },
+    {
+      "id": "E15",
+      "fact": "dev.41xlab.com is live and its name puts it in the 'non-production' category (label 'dev' matched rule word 'dev')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "dev.41xlab.com"
+    },
+    {
+      "id": "E16",
+      "fact": "staging.41xlab.com is live and its name puts it in the 'non-production' category (label 'staging' matched rule word 'staging')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "staging.41xlab.com"
+    },
+    {
+      "id": "E17",
+      "fact": "41xlab.com (HTTP 200) shows nginx/1.28.3 (Ubuntu) in its response (server: nginx/1.28.3 (Ubuntu)); exact version 1.28.3 is exposed",
+      "sources": [
+        {
+          "name": "HTTP fingerprint (active, 1 request)",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "version_leak",
+      "host": "41xlab.com"
+    },
+    {
+      "id": "E18",
+      "fact": "staging.41xlab.com (HTTP 200) shows nginx/1.28.3 (Ubuntu) in its response (server: nginx/1.28.3 (Ubuntu)); exact version 1.28.3 is exposed",
+      "sources": [
+        {
+          "name": "HTTP fingerprint (active, 1 request)",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "version_leak",
+      "host": "staging.41xlab.com"
+    },
+    {
+      "id": "E19",
+      "fact": "www.41xlab.com (HTTP 200) shows cloudflare in its response (server: cloudflare)",
+      "sources": [
+        {
+          "name": "HTTP fingerprint (active, 1 request)",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": "www.41xlab.com"
+    },
+    {
+      "id": "E20",
+      "fact": "41xlab.com (HTTP 200) security headers: Strict-Transport-Security missing (browsers aren't told to always use HTTPS); Content-Security-Policy missing (no limit on which scripts can run (XSS defense)); X-Frame-Options missing (page can be framed by other sites (clickjacking); no CSP frame-ancestors either); X-Content-Type-Options missing (not set to nosniff, so browsers may guess content types); Referrer-Policy missing (full URLs may leak to other sites in the Referer header)",
+      "sources": [
+        {
+          "name": "HTTP security headers (same fingerprint request)",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "web app team",
+        "CDN / proxy admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E21",
+      "fact": "staging.41xlab.com (HTTP 200) security headers: Strict-Transport-Security missing (browsers aren't told to always use HTTPS); Content-Security-Policy missing (no limit on which scripts can run (XSS defense)); X-Frame-Options missing (page can be framed by other sites (clickjacking); no CSP frame-ancestors either); X-Content-Type-Options missing (not set to nosniff, so browsers may guess content types); Referrer-Policy missing (full URLs may leak to other sites in the Referer header)",
+      "sources": [
+        {
+          "name": "HTTP security headers (same fingerprint request)",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "web app team",
+        "CDN / proxy admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E22",
+      "fact": "www.41xlab.com (HTTP 200) security headers: Strict-Transport-Security missing (browsers aren't told to always use HTTPS); Content-Security-Policy missing (no limit on which scripts can run (XSS defense)); X-Frame-Options missing (page can be framed by other sites (clickjacking); no CSP frame-ancestors either); X-Content-Type-Options missing (not set to nosniff, so browsers may guess content types); Referrer-Policy missing (full URLs may leak to other sites in the Referer header)",
+      "sources": [
+        {
+          "name": "HTTP security headers (same fingerprint request)",
+          "collected_at": "2026-11-08T01:37:40+00:00"
+        }
+      ],
+      "owners": [
+        "web app team",
+        "CDN / proxy admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E23",
+      "fact": "41xlab.com has no SPF record",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T01:37:56+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E24",
+      "fact": "41xlab.com has no DMARC record (nothing at _dmarc.41xlab.com)",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T01:37:56+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E25",
+      "fact": "No DKIM key found for 41xlab.com under common selector names; a custom selector can't be ruled out",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T01:37:56+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E26",
+      "fact": "Email spoofing verdict for 41xlab.com (worked out by code from the DMARC policy): spoofable, DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T01:37:56+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": "email_spoofable",
+      "host": "41xlab.com"
+    },
+    {
+      "id": "E27",
+      "fact": "legacy.41xlab.com has a CNAME to gone.41xlab.com (same domain), and that target does not exist (NXDOMAIN); only the owner of 41xlab.com can create names under it, so this is a stale DNS record, not a takeover risk",
+      "sources": [
+        {
+          "name": "DNS CNAME lookups (takeover check)",
+          "collected_at": "2026-11-08T01:38:02+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E28",
+      "fact": "old-lb.41xlab.com has a CNAME to old-lb-1234567890.us-west-2.elb.amazonaws.com (AWS Elastic Load Balancing), and that target does not exist (NXDOMAIN); names on this service include a random ID and can't be claimed again, so this is a stale DNS record, not a takeover risk",
+      "sources": [
+        {
+          "name": "DNS CNAME lookups (takeover check)",
+          "collected_at": "2026-11-08T01:38:02+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": null,
+      "host": null
+    }
+  ],
+  "paths": {
+    "paths": [
+      {
+        "title": "Send email as 41xlab.com",
+        "severity": "High",
+        "strength": "Inference",
+        "steps": [
+          {
+            "text": "Receiving mail servers have no enforced policy to reject mail that falsely claims to be from 41xlab.com",
+            "evidence": [
+              "E26"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "An attacker sends phishing email from an @41xlab.com address to staff, customers or partners",
+            "evidence": [
+              "E26"
+            ],
+            "label": "Inference"
+          }
+        ],
+        "outcome": "Stolen passwords, payments or malware through trusted-looking email",
+        "fix": [
+          "E26"
+        ],
+        "id": "P1"
+      },
+      {
+        "title": "Use dev.41xlab.com and staging.41xlab.com as a side door into 64.227.89.72",
+        "severity": "Medium",
+        "strength": "Lead",
+        "steps": [
+          {
+            "text": "dev.41xlab.com and staging.41xlab.com are live and named like non-production hosts",
+            "evidence": [
+              "E15",
+              "E16"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "They are on the same IP (64.227.89.72) as 41xlab.com",
+            "evidence": [
+              "E8",
+              "E9",
+              "E13"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "Non-production sites are often less protected, so dev.41xlab.com and staging.41xlab.com are likely first targets, and getting in there may mean getting into the same server",
+            "evidence": [
+              "E15",
+              "E16"
+            ],
+            "label": "Inference"
+          },
+          {
+            "text": "The server shows software versions an attacker can match to public exploits (versions must be verified)",
+            "evidence": [
+              "E17",
+              "E18"
+            ],
+            "label": "Lead"
+          }
+        ],
+        "outcome": "Access to the server that also runs 41xlab.com",
+        "fix": [
+          "E15",
+          "E16",
+          "E17",
+          "E18"
+        ],
+        "id": "P2"
+      }
+    ],
+    "fix_first": {
+      "evidence": "E26",
+      "fact": "Email spoofing verdict for 41xlab.com (worked out by code from the DMARC policy): spoofable, DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes",
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "closes": [
+        "P1"
+      ]
+    },
+    "more": 0
+  }
+}

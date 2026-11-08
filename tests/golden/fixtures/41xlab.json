@@ -1,0 +1,489 @@
+{
+  "target": "41xlab.com",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T01:36:49+00:00",
+      "domain": "41xlab.com",
+      "certificates_seen": 3,
+      "subdomain_count": 2,
+      "subdomains": [
+        "41xlab.com",
+        "staging.41xlab.com"
+      ],
+      "wildcards": [
+        "*.41xlab.com"
+      ]
+    },
+    "hosts file": {
+      "source": "hosts file",
+      "file": "lab-hosts.txt",
+      "subdomains": [
+        "dev.41xlab.com",
+        "legacy.41xlab.com",
+        "nope-zz9.41xlab.com",
+        "old-lb.41xlab.com",
+        "www.41xlab.com"
+      ],
+      "collected_at": "2026-11-08T01:37:22+00:00"
+    }
+  },
+  "errors": {
+    "crt.sh": "crt.sh gave up after 3 tries (200s budget): HTTP 502",
+    "crt.sh database": "no certificates for this domain yet: the crt.sh database answered with 0 while Cert Spotter found 3; crt.sh may not have indexed them"
+  },
+  "subdomains": [
+    "41xlab.com",
+    "dev.41xlab.com",
+    "legacy.41xlab.com",
+    "nope-zz9.41xlab.com",
+    "old-lb.41xlab.com",
+    "staging.41xlab.com",
+    "www.41xlab.com"
+  ],
+  "enrichment": {
+    "hosts": {
+      "41xlab.com": {
+        "ips": [
+          "64.227.89.72"
+        ],
+        "canonical": null,
+        "dns": "live",
+        "private_ips": [],
+        "providers": [
+          "DigitalOcean"
+        ],
+        "asn": "AS14061",
+        "as_name": "DigitalOcean",
+        "raw_as_name": "DIGITALOCEAN-ASN - DigitalOcean, LLC, US",
+        "prefix": "64.227.80.0/20",
+        "country": "US",
+        "provider": "DigitalOcean"
+      },
+      "dev.41xlab.com": {
+        "ips": [
+          "64.227.89.72"
+        ],
+        "canonical": null,
+        "dns": "live",
+        "private_ips": [],
+        "providers": [
+          "DigitalOcean"
+        ],
+        "asn": "AS14061",
+        "as_name": "DigitalOcean",
+        "raw_as_name": "DIGITALOCEAN-ASN - DigitalOcean, LLC, US",
+        "prefix": "64.227.80.0/20",
+        "country": "US",
+        "provider": "DigitalOcean"
+      },
+      "legacy.41xlab.com": {
+        "ips": [],
+        "canonical": null,
+        "dns": "dangling_cname",
+        "provider": null,
+        "providers": [],
+        "cname": "gone.41xlab.com"
+      },
+      "nope-zz9.41xlab.com": {
+        "ips": [],
+        "canonical": null,
+        "dns": "no_such_host",
+        "provider": null,
+        "providers": []
+      },
+      "old-lb.41xlab.com": {
+        "ips": [],
+        "canonical": null,
+        "dns": "dangling_cname",
+        "provider": null,
+        "providers": [],
+        "cname": "old-lb-1234567890.us-west-2.elb.amazonaws.com"
+      },
+      "staging.41xlab.com": {
+        "ips": [
+          "64.227.89.72"
+        ],
+        "canonical": null,
+        "dns": "live",
+        "private_ips": [],
+        "providers": [
+          "DigitalOcean"
+        ],
+        "asn": "AS14061",
+        "as_name": "DigitalOcean",
+        "raw_as_name": "DIGITALOCEAN-ASN - DigitalOcean, LLC, US",
+        "prefix": "64.227.80.0/20",
+        "country": "US",
+        "provider": "DigitalOcean"
+      },
+      "www.41xlab.com": {
+        "ips": [
+          "104.21.9.101",
+          "172.67.189.57"
+        ],
+        "canonical": null,
+        "dns": "live",
+        "private_ips": [],
+        "providers": [
+          "Cloudflare"
+        ],
+        "asn": "AS13335",
+        "as_name": "Cloudflare",
+        "raw_as_name": "CLOUDFLARENET - Cloudflare, Inc., US",
+        "prefix": "104.21.0.0/20",
+        "country": "US",
+        "provider": "Cloudflare"
+      }
+    },
+    "ip_info": {
+      "104.21.9.101": {
+        "asn": "AS13335",
+        "as_name": "Cloudflare",
+        "raw_as_name": "CLOUDFLARENET - Cloudflare, Inc., US",
+        "prefix": "104.21.0.0/20",
+        "country": "US",
+        "provider": "Cloudflare"
+      },
+      "172.67.189.57": {
+        "asn": "AS13335",
+        "as_name": "Cloudflare",
+        "raw_as_name": "CLOUDFLARENET - Cloudflare, Inc., US",
+        "prefix": "172.67.176.0/20",
+        "country": "US",
+        "provider": "Cloudflare"
+      },
+      "64.227.89.72": {
+        "asn": "AS14061",
+        "as_name": "DigitalOcean",
+        "raw_as_name": "DIGITALOCEAN-ASN - DigitalOcean, LLC, US",
+        "prefix": "64.227.80.0/20",
+        "country": "US",
+        "provider": "DigitalOcean"
+      }
+    },
+    "providers": {
+      "DigitalOcean": 3,
+      "CNAME to a deleted name": 2,
+      "no DNS record": 1,
+      "Cloudflare": 1
+    },
+    "resolved": 4,
+    "not_resolving": {
+      "dangling_cname": [
+        "legacy.41xlab.com",
+        "old-lb.41xlab.com"
+      ],
+      "no_such_host": [
+        "nope-zz9.41xlab.com"
+      ]
+    },
+    "unique_ips": 3,
+    "private_ip_hosts": [],
+    "asn_error": null,
+    "cdn_error": null,
+    "collected_at": "2026-11-08T01:37:40+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "104.21.9.101": {
+        "ports": [
+          80,
+          443,
+          2052,
+          2053,
+          2082,
+          2083,
+          2086,
+          2087,
+          2095,
+          2096,
+          8080,
+          8443,
+          8880
+        ],
+        "vulns": [],
+        "tags": [
+          "cdn"
+        ],
+        "cpes": [
+          "cpe:/a:cloudflare:cloudflare"
+        ],
+        "hosts": [
+          "www.41xlab.com"
+        ],
+        "provider": "Cloudflare",
+        "edge_reason": "network owner is Cloudflare",
+        "shared_edge": true,
+        "risky": []
+      },
+      "172.67.189.57": {
+        "ports": [
+          80,
+          443,
+          2052,
+          2053,
+          2082,
+          2083,
+          2086,
+          2087,
+          2095,
+          2096,
+          8080,
+          8443,
+          8880
+        ],
+        "vulns": [],
+        "tags": [
+          "cdn"
+        ],
+        "cpes": [
+          "cpe:/a:cloudflare:cloudflare"
+        ],
+        "hosts": [
+          "www.41xlab.com"
+        ],
+        "provider": "Cloudflare",
+        "edge_reason": "network owner is Cloudflare",
+        "shared_edge": true,
+        "risky": []
+      }
+    },
+    "nothing_seen": {
+      "64.227.89.72": {
+        "hosts": [
+          "41xlab.com",
+          "dev.41xlab.com",
+          "staging.41xlab.com"
+        ],
+        "provider": "DigitalOcean",
+        "shared_edge": false
+      }
+    },
+    "checked": 3,
+    "unique_cves": [],
+    "risky": [],
+    "errors": 0,
+    "skipped": 0,
+    "collected_at": "2026-11-08T01:37:40+00:00"
+  },
+  "fingerprint": {
+    "hosts": {
+      "41xlab.com": {
+        "host": "41xlab.com",
+        "url": "https://41xlab.com/",
+        "status": 200,
+        "collected_at": "2026-11-08T01:37:40+00:00",
+        "techs": [
+          {
+            "tech": "nginx/1.28.3 (Ubuntu)",
+            "version": "1.28.3",
+            "evidence": "server: nginx/1.28.3 (Ubuntu)"
+          }
+        ],
+        "header_issues": [
+          {
+            "header": "Strict-Transport-Security",
+            "problem": "missing",
+            "detail": "browsers aren't told to always use HTTPS"
+          },
+          {
+            "header": "Content-Security-Policy",
+            "problem": "missing",
+            "detail": "no limit on which scripts can run (XSS defense)"
+          },
+          {
+            "header": "X-Frame-Options",
+            "problem": "missing",
+            "detail": "page can be framed by other sites (clickjacking); no CSP frame-ancestors either"
+          },
+          {
+            "header": "X-Content-Type-Options",
+            "problem": "missing",
+            "detail": "not set to nosniff, so browsers may guess content types"
+          },
+          {
+            "header": "Referrer-Policy",
+            "problem": "missing",
+            "detail": "full URLs may leak to other sites in the Referer header"
+          }
+        ]
+      },
+      "staging.41xlab.com": {
+        "host": "staging.41xlab.com",
+        "url": "https://staging.41xlab.com/",
+        "status": 200,
+        "collected_at": "2026-11-08T01:37:40+00:00",
+        "techs": [
+          {
+            "tech": "nginx/1.28.3 (Ubuntu)",
+            "version": "1.28.3",
+            "evidence": "server: nginx/1.28.3 (Ubuntu)"
+          }
+        ],
+        "header_issues": [
+          {
+            "header": "Strict-Transport-Security",
+            "problem": "missing",
+            "detail": "browsers aren't told to always use HTTPS"
+          },
+          {
+            "header": "Content-Security-Policy",
+            "problem": "missing",
+            "detail": "no limit on which scripts can run (XSS defense)"
+          },
+          {
+            "header": "X-Frame-Options",
+            "problem": "missing",
+            "detail": "page can be framed by other sites (clickjacking); no CSP frame-ancestors either"
+          },
+          {
+            "header": "X-Content-Type-Options",
+            "problem": "missing",
+            "detail": "not set to nosniff, so browsers may guess content types"
+          },
+          {
+            "header": "Referrer-Policy",
+            "problem": "missing",
+            "detail": "full URLs may leak to other sites in the Referer header"
+          }
+        ]
+      },
+      "www.41xlab.com": {
+        "host": "www.41xlab.com",
+        "url": "https://www.41xlab.com/",
+        "status": 200,
+        "collected_at": "2026-11-08T01:37:40+00:00",
+        "techs": [
+          {
+            "tech": "cloudflare",
+            "version": null,
+            "evidence": "server: cloudflare"
+          }
+        ],
+        "header_issues": [
+          {
+            "header": "Strict-Transport-Security",
+            "problem": "missing",
+            "detail": "browsers aren't told to always use HTTPS"
+          },
+          {
+            "header": "Content-Security-Policy",
+            "problem": "missing",
+            "detail": "no limit on which scripts can run (XSS defense)"
+          },
+          {
+            "header": "X-Frame-Options",
+            "problem": "missing",
+            "detail": "page can be framed by other sites (clickjacking); no CSP frame-ancestors either"
+          },
+          {
+            "header": "X-Content-Type-Options",
+            "problem": "missing",
+            "detail": "not set to nosniff, so browsers may guess content types"
+          },
+          {
+            "header": "Referrer-Policy",
+            "problem": "missing",
+            "detail": "full URLs may leak to other sites in the Referer header"
+          }
+        ]
+      }
+    },
+    "checked": 4,
+    "errors": {
+      "dev.41xlab.com": "SSLError"
+    },
+    "skipped": 0,
+    "collected_at": "2026-11-08T01:37:40+00:00"
+  },
+  "email": {
+    "spf": {
+      "record": null,
+      "issues": [
+        {
+          "problem": "missing",
+          "detail": "no SPF record, so nothing says which servers may send mail for this domain"
+        }
+      ]
+    },
+    "dmarc": {
+      "record": null,
+      "policy": null,
+      "issues": [
+        {
+          "problem": "missing",
+          "detail": "no DMARC record, so receivers get no instructions for mail that fails SPF/DKIM"
+        }
+      ]
+    },
+    "dkim": {
+      "record": null,
+      "selectors": [],
+      "issues": [
+        {
+          "problem": "not-confirmed",
+          "detail": "no DKIM key under 11 common selectors; it may use a custom one, so this is a lead, not proof"
+        }
+      ]
+    },
+    "verdict": {
+      "verdict": "spoofable",
+      "summary": "DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes",
+      "notes": []
+    },
+    "collected_at": "2026-11-08T01:37:56+00:00"
+  },
+  "takeover": {
+    "leads": [],
+    "stale": [
+      {
+        "host": "legacy.41xlab.com",
+        "cname": "gone.41xlab.com",
+        "service": "same domain",
+        "reason": "only the owner of 41xlab.com can create names under it",
+        "collected_at": "2026-11-08T01:38:02+00:00"
+      },
+      {
+        "host": "old-lb.41xlab.com",
+        "cname": "old-lb-1234567890.us-west-2.elb.amazonaws.com",
+        "service": "AWS Elastic Load Balancing",
+        "reason": "names on this service include a random ID and can't be claimed again",
+        "collected_at": "2026-11-08T01:38:02+00:00"
+      }
+    ],
+    "results": {
+      "41xlab.com": {
+        "status": "no_cname",
+        "cname": null
+      },
+      "dev.41xlab.com": {
+        "status": "no_cname",
+        "cname": null
+      },
+      "legacy.41xlab.com": {
+        "status": "stale",
+        "cname": "gone.41xlab.com"
+      },
+      "nope-zz9.41xlab.com": {
+        "status": "no_such_host",
+        "cname": null
+      },
+      "old-lb.41xlab.com": {
+        "status": "stale",
+        "cname": "old-lb-1234567890.us-west-2.elb.amazonaws.com"
+      },
+      "staging.41xlab.com": {
+        "status": "no_cname",
+        "cname": null
+      },
+      "www.41xlab.com": {
+        "status": "no_cname",
+        "cname": null
+      }
+    },
+    "checked": 7,
+    "errors": {},
+    "collected_at": "2026-11-08T01:38:02+00:00"
+  }
+}
