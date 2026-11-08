@@ -23,6 +23,7 @@ import doctor
 import emailauth
 import enrich
 import evidence
+import mcp_setup
 import paths
 import fingerprint
 import history
@@ -729,6 +730,9 @@ def main() -> int:
     # "doctor" is a command, not a domain (a domain always has a dot)
     if sys.argv[1:2] == ["doctor"]:
         return doctor.main(sys.argv[2:])
+    # "mcp setup": add Monomi to the Claude app's MCP config
+    if sys.argv[1:2] == ["mcp"]:
+        return mcp_setup.main(sys.argv[2:])
 
     parser = build_parser()
     args = parser.parse_args()
