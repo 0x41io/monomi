@@ -39,6 +39,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Known hostnames (`--hosts FILE`):** check hostnames you already know alongside the ones from certificate logs, one per line. Only the target domain and its subdomains are kept, so a file can't point Monomi outside the scan, and the file's hosts stay out of scan history
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
+- **Report exports (`--export`):** the scan as Markdown, a self-contained HTML page and a findings CSV for ticketing, built by code with or without `--ai` (see [Exporting reports](#exporting-reports))
 - **JSON export** for use in other tools
 - **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
 - **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, changing only Monomi's entry and backing up the old file first (see [MCP server mode](#mcp-server-mode))
@@ -185,9 +186,32 @@ python monomi.py --import spiderfoot.csv --ports --ai
 # Save raw results as JSON
 python monomi.py example.com --json results.json
 
+# Export the report as Markdown, HTML and a findings CSV (see below)
+python monomi.py example.com --email --takeover --export all
+
 # Plain output, no colors (also honors the NO_COLOR env var)
 python monomi.py example.com --no-color
 ```
+
+### Exporting reports
+
+`--export` saves the scan as files in `reports/`: `md` (the full report as Markdown), `html` (one self-contained page that opens offline; print it to get a PDF) and `csv` (one row per finding, for ticketing systems and spreadsheets). Use `all`, or pick some with commas:
+
+```bash
+python monomi.py example.com --email --takeover --export all
+python monomi.py example.com --ports --export html,csv
+```
+
+Exports are built by code, so they don't need `--ai`. Each has the summary, "fix this first", the findings (every fact with an owner, worst attack path first), the attack paths and the evidence they cite. A finding's severity is the worst attack path it's part of; findings in no path have none. With `--ai`, Claude's summary goes at the top, labeled as AI-written.
+
+To export a scan again later without scanning, save it with `--json` and use the `report` command. It uses the evidence saved in the file, so the IDs an AI summary cites still match:
+
+```bash
+python monomi.py example.com --takeover --json scans/example.json
+python monomi.py report scans/example.json --format html
+```
+
+Everything from the scanned domain is escaped in the HTML, which also carries a strict Content-Security-Policy (no scripts, nothing loaded from outside), and CSV cells starting with `=`, `+`, `-` or `@` get a `'` in front so spreadsheets can't run them as formulas.
 
 ### Example output
 
@@ -311,6 +335,7 @@ monomi/
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── evidence.py           # evidence list, owners, citation check, Evidence section
 ├── paths.py              # attack paths built from the evidence, "fix this first"
+├── report.py             # report exports: Markdown, HTML, findings CSV (--export, monomi.py report)
 ├── dnscheck.py           # shared DNS helper: status words, DNS-over-HTTPS double-check
 ├── history.py            # scan history + change detection
 ├── ui.py                 # colored banner + terminal output
@@ -359,7 +384,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules (including golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident), the doctor checks (with fake network calls) and MCP setup (with fake config files, never your real one).
+The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules (including golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident), the doctor checks (with fake network calls), the report exports (HTML escaping, CSV formula guard) and MCP setup (with fake config files, never your real one).
 
 ## Roadmap
 
@@ -386,9 +411,9 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.9: MCP summary replies with full results saved to a file, `hosts_file` input and batches, shared crt.sh / Cert Spotter pacing, saved per-domain source copies as a fallback, crt.sh "behind" status, Google as a second DNS-over-HTTPS server with one retry and a `servfail` status, Vercel counted as shared edge
 
 - [x] v1.9.1: runs on Windows without WSL (Windows file locking for pacing, install guide), email check falls back to DNS-over-HTTPS when port 53 fails
+- [x] v1.9.2: report exports (`--export`: Markdown, HTML, findings CSV; `monomi.py report` for saved scans), setup check (`monomi.py doctor`), one-command MCP setup (`monomi.py mcp setup`)
 
 **Next**
-- [ ] v1.9.2: report exports (Markdown, HTML, findings CSV); done so far: `monomi doctor` setup check, `monomi mcp setup`
 - [ ] v1.10: finds more: subfinder import and a free passive DNS source for subdomain breadth, a "go around the CDN" attack path, next-check suggestions, security header and exposed API spec checks over MCP
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
