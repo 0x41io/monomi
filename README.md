@@ -41,6 +41,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
 - **JSON export** for use in other tools
 - **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
+- **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, changing only Monomi's entry and backing up the old file first (see [MCP server mode](#mcp-server-mode))
 - **MCP server mode (passive-only):** run Monomi as an MCP server so AI agents can call its checks directly. Seven tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
 ## Installation
@@ -54,6 +55,7 @@ python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python monomi.py doctor         # check the setup
+python monomi.py mcp setup      # optional: add Monomi to the Claude app
 ```
 
 ### Installing on Windows
@@ -68,6 +70,7 @@ python -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python monomi.py doctor         # check the setup
+python monomi.py mcp setup      # optional: add Monomi to the Claude app
 ```
 
 If something goes wrong:
@@ -106,6 +109,7 @@ It checks, in about 10 seconds:
 - **Claude API:** whether `ANTHROPIC_API_KEY` is set (only its first 7 characters are ever shown), whether the API accepts it (one free call that lists models, no tokens used), and which model `--ai` would use
 - **DNS:** system DNS and public DNS on port 53, and DNS-over-HTTPS (Cloudflare and Google). A VPN's DNS can drop lookups under load, and doctor says so when port 53 fails
 - **Sources:** crt.sh (website and database), Cert Spotter (how much of the free hourly quota is used, or when a cooldown ends), Shodan InternetDB, Amazon's IP range list and the Tor exit list
+- **MCP:** whether the Claude desktop app's config has Monomi in it and points at this copy of Monomi (read-only; `python monomi.py mcp setup` fixes it)
 
 ```
 Setup
@@ -131,7 +135,10 @@ Sources
   [+] AWS IP ranges (cached 16h ago)
   [+] Tor exit list reachable (for --investigate-ip)
 
-13 ok · 1 warning · 0 problems: ready to scan
+MCP
+  [+] Claude app config points at this Monomi
+
+14 ok · 1 warning · 0 problems: ready to scan
 ```
 
 Each line is `[+]` ok, `[!]` a warning (a feature is weaker or off, but scans still work) or `[x]` a problem, and every warning or problem comes with a one-line fix. The exit code is 1 if anything failed, so scripts can check it. Doctor sends one request to each source, through the same rate-limit pacing scans use, and nothing to any scan target.
@@ -245,7 +252,19 @@ check_takeover(hosts_file="<that file>", domain="example.com")
 check_ports(hosts_file="<that file>")
 ```
 
-Add Monomi to your MCP client's config:
+### Setting it up
+
+For the Claude desktop app, one command does it:
+
+```bash
+python monomi.py mcp setup
+```
+
+It shows the change and asks before writing (`--yes` skips the question). Only the `monomi` entry is added or updated: other MCP servers and settings stay as they are, the old config is backed up next to it (`claude_desktop_config.json.bak-<date>-<time>`), and a config that isn't valid JSON is never overwritten. On Windows it updates every copy of the config the app may read. Run from WSL, it sets the app up to start Monomi inside your WSL distro (`wsl.exe -d <distro> -e ...`).
+
+Then fully quit the Claude app, not just its window (Windows: right-click its tray icon > Quit; macOS: Cmd+Q), open it again, and ask Claude to run Monomi's `ping` tool. `python monomi.py doctor` also checks the entry. Run setup again after moving the Monomi folder or rebuilding the venv.
+
+**Other MCP clients:** `python monomi.py mcp setup --print` prints the entry for this machine. It looks like this:
 
 ```json
 {
@@ -277,7 +296,7 @@ Certificate Transparency (CT) is a public log of every TLS certificate issued by
 ```
 monomi/
 ├── monomi.py             # CLI entry point
-├── doctor.py             # setup check: packages, API key, DNS, sources (monomi.py doctor)
+├── doctor.py             # setup check: packages, API key, DNS, sources, MCP (monomi.py doctor)
 ├── analysis.py           # Claude analysis layer
 ├── enrich.py             # DNS + ASN/provider enrichment
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
@@ -285,6 +304,7 @@ monomi/
 ├── headers.py            # security headers check (reads the --fingerprint response)
 ├── categorize.py         # rule-based hostname categories
 ├── mcp_server.py         # MCP server mode (7 passive tools)
+├── mcp_setup.py          # adds Monomi to the Claude app's MCP config (monomi.py mcp setup)
 ├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
 ├── takeover.py           # dangling CNAME / subdomain takeover check (--takeover)
 ├── threatintel.py        # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
@@ -339,7 +359,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules (including golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident) and the doctor checks (with fake network calls).
+The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules (including golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident), the doctor checks (with fake network calls) and MCP setup (with fake config files, never your real one).
 
 ## Roadmap
 
@@ -368,7 +388,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.9.1: runs on Windows without WSL (Windows file locking for pacing, install guide), email check falls back to DNS-over-HTTPS when port 53 fails
 
 **Next**
-- [ ] v1.9.2: report exports (Markdown, HTML, findings CSV), `monomi doctor` (API keys, source reachability), `monomi mcp setup`
+- [ ] v1.9.2: report exports (Markdown, HTML, findings CSV); done so far: `monomi doctor` setup check, `monomi mcp setup`
 - [ ] v1.10: finds more: subfinder import and a free passive DNS source for subdomain breadth, a "go around the CDN" attack path, next-check suggestions, security header and exposed API spec checks over MCP
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
