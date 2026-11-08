@@ -1,0 +1,57 @@
+{
+  "target": "private.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "app.private.test",
+        "jenkins.private.test",
+        "private.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "app.private.test",
+    "jenkins.private.test",
+    "private.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "private.test": {
+        "ips": [
+          "192.0.2.30"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "app.private.test": {
+        "ips": [
+          "10.0.0.5"
+        ],
+        "dns": "live",
+        "private_ips": [
+          "10.0.0.5"
+        ],
+        "provider": null
+      },
+      "jenkins.private.test": {
+        "ips": [
+          "10.0.0.5"
+        ],
+        "dns": "live",
+        "private_ips": [
+          "10.0.0.5"
+        ],
+        "provider": null
+      }
+    },
+    "private_ip_hosts": [
+      "app.private.test",
+      "jenkins.private.test"
+    ],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

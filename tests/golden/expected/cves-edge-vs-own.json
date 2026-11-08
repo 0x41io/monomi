@@ -1,0 +1,127 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "cves.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "www.cves.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "cves.test resolves to 203.0.113.10 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "cves.test"
+    },
+    {
+      "id": "E4",
+      "fact": "www.cves.test resolves to 198.51.100.40 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "www.cves.test"
+    },
+    {
+      "id": "E5",
+      "fact": "203.0.113.10 (cves.test) has open ports: 80, 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E6",
+      "fact": "Shodan InternetDB lists 2 CVE(s) for 203.0.113.10 (cves.test), matched from software version banners: CVE-2099-0001, CVE-2099-0002",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "cves",
+      "host": "203.0.113.10"
+    }
+  ],
+  "paths": {
+    "paths": [
+      {
+        "title": "Exploit known flaws on 203.0.113.10",
+        "severity": "Medium",
+        "strength": "Lead",
+        "steps": [
+          {
+            "text": "203.0.113.10 shows software versions or matching CVEs",
+            "evidence": [
+              "E6"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "An attacker checks whether the running version really has those flaws and tries public exploits",
+            "evidence": [
+              "E6"
+            ],
+            "label": "Lead"
+          }
+        ],
+        "outcome": "Server compromise, if the version is really vulnerable",
+        "fix": [
+          "E6"
+        ],
+        "id": "P1"
+      }
+    ],
+    "fix_first": {
+      "evidence": "E6",
+      "fact": "Shodan InternetDB lists 2 CVE(s) for 203.0.113.10 (cves.test), matched from software version banners: CVE-2099-0001, CVE-2099-0002",
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "closes": [
+        "P1"
+      ]
+    },
+    "more": 0
+  }
+}

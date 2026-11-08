@@ -1,0 +1,76 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "dev.edge.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "edge.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "dev.edge.test resolves to 198.51.100.20 (Vercel)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "dev.edge.test"
+    },
+    {
+      "id": "E4",
+      "fact": "edge.test resolves to 198.51.100.20 (Vercel)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "edge.test"
+    },
+    {
+      "id": "E5",
+      "fact": "dev.edge.test is live and its name puts it in the 'non-production' category (label 'dev' matched rule word 'dev')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "dev.edge.test"
+    }
+  ],
+  "paths": {
+    "paths": [],
+    "fix_first": null,
+    "more": 0
+  }
+}

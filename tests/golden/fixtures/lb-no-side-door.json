@@ -1,0 +1,130 @@
+{
+  "target": "lb.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "api.lb.test",
+        "app.lb.test",
+        "blog.lb.test",
+        "docs.lb.test",
+        "help.lb.test",
+        "lb.test",
+        "news.lb.test",
+        "shop.lb.test",
+        "staging.lb.test",
+        "store.lb.test",
+        "www.lb.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "api.lb.test",
+    "app.lb.test",
+    "blog.lb.test",
+    "docs.lb.test",
+    "help.lb.test",
+    "lb.test",
+    "news.lb.test",
+    "shop.lb.test",
+    "staging.lb.test",
+    "store.lb.test",
+    "www.lb.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "staging.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "www.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "app.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "api.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "shop.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "blog.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "docs.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "help.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "news.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      },
+      "store.lb.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

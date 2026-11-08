@@ -1,0 +1,124 @@
+{
+  "target": "clean.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "api.clean.test",
+        "clean.test",
+        "www.clean.test"
+      ]
+    }
+  },
+  "errors": {
+    "crt.sh": "crt.sh gave up after 3 tries (200s budget): HTTP 502"
+  },
+  "subdomains": [
+    "api.clean.test",
+    "clean.test",
+    "www.clean.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "clean.test": {
+        "ips": [
+          "198.51.100.60"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      },
+      "www.clean.test": {
+        "ips": [
+          "198.51.100.60"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      },
+      "api.clean.test": {
+        "ips": [
+          "198.51.100.61"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "198.51.100.60": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [],
+        "tags": [
+          "cdn"
+        ],
+        "cpes": [],
+        "hosts": [
+          "clean.test",
+          "www.clean.test"
+        ],
+        "provider": "Cloudflare",
+        "shared_edge": true,
+        "risky": []
+      },
+      "198.51.100.61": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [],
+        "tags": [
+          "cdn"
+        ],
+        "cpes": [],
+        "hosts": [
+          "api.clean.test"
+        ],
+        "provider": "Cloudflare",
+        "shared_edge": true,
+        "risky": []
+      }
+    },
+    "nothing_seen": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "email": {
+    "spf": {
+      "record": "v=spf1 -all",
+      "issues": []
+    },
+    "dmarc": {
+      "record": "v=DMARC1; p=reject",
+      "policy": "reject",
+      "issues": []
+    },
+    "dkim": {
+      "record": "selector1",
+      "selectors": [
+        "selector1"
+      ],
+      "issues": []
+    },
+    "verdict": {
+      "verdict": "protected",
+      "summary": "DMARC p=reject tells receivers to bounce failing mail, so spoofed mail is stopped",
+      "notes": []
+    },
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "takeover": {
+    "leads": [],
+    "stale": [],
+    "checked": 3,
+    "errors": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

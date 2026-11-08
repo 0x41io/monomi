@@ -1,0 +1,40 @@
+{
+  "target": "edge.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "dev.edge.test",
+        "edge.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "dev.edge.test",
+    "edge.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "edge.test": {
+        "ips": [
+          "198.51.100.20"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Vercel"
+      },
+      "dev.edge.test": {
+        "ips": [
+          "198.51.100.20"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Vercel"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

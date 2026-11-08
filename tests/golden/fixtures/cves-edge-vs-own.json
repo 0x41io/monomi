@@ -1,0 +1,81 @@
+{
+  "target": "cves.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "cves.test",
+        "www.cves.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "cves.test",
+    "www.cves.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "cves.test": {
+        "ips": [
+          "203.0.113.10"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "www.cves.test": {
+        "ips": [
+          "198.51.100.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "203.0.113.10": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [
+          "CVE-2099-0001",
+          "CVE-2099-0002"
+        ],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "cves.test"
+        ],
+        "provider": "DigitalOcean",
+        "shared_edge": false,
+        "risky": []
+      },
+      "198.51.100.40": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [
+          "CVE-2099-0003"
+        ],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "www.cves.test"
+        ],
+        "provider": "Cloudflare",
+        "shared_edge": true,
+        "risky": []
+      }
+    },
+    "nothing_seen": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

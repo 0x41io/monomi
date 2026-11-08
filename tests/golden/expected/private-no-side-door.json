@@ -1,0 +1,132 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "app.private.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "jenkins.private.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "private.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "app.private.test resolves to 10.0.0.5 (unknown provider)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "app.private.test"
+    },
+    {
+      "id": "E5",
+      "fact": "jenkins.private.test resolves to 10.0.0.5 (unknown provider)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "jenkins.private.test"
+    },
+    {
+      "id": "E6",
+      "fact": "private.test resolves to 192.0.2.30 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "private.test"
+    },
+    {
+      "id": "E7",
+      "fact": "app.private.test points to private/internal IP(s) in public DNS: 10.0.0.5",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E8",
+      "fact": "jenkins.private.test points to private/internal IP(s) in public DNS: 10.0.0.5",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E9",
+      "fact": "jenkins.private.test is live and its name puts it in the 'internal-tools' category (label 'jenkins' matched rule word 'jenkins')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "jenkins.private.test"
+    }
+  ],
+  "paths": {
+    "paths": [],
+    "fix_first": null,
+    "more": 0
+  }
+}

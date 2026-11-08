@@ -1,0 +1,164 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "api.clean.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "clean.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "www.clean.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "api.clean.test resolves to 198.51.100.61 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "api.clean.test"
+    },
+    {
+      "id": "E5",
+      "fact": "clean.test resolves to 198.51.100.60 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "clean.test"
+    },
+    {
+      "id": "E6",
+      "fact": "www.clean.test resolves to 198.51.100.60 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "www.clean.test"
+    },
+    {
+      "id": "E7",
+      "fact": "clean.test SPF record: v=spf1 -all",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E8",
+      "fact": "_dmarc.clean.test DMARC record: v=DMARC1; p=reject",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E9",
+      "fact": "clean.test has DKIM keys under selector(s): selector1",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E10",
+      "fact": "Email spoofing verdict for clean.test (worked out by code from the DMARC policy): protected, DMARC p=reject tells receivers to bounce failing mail, so spoofed mail is stopped",
+      "sources": [
+        {
+          "name": "DNS TXT lookups (SPF, DMARC, DKIM)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "email admin"
+      ],
+      "kind": "email_protected",
+      "host": "clean.test"
+    },
+    {
+      "id": "E11",
+      "fact": "Takeover check: none of 3 hostnames has a CNAME pointing to a name that doesn't exist",
+      "sources": [
+        {
+          "name": "DNS CNAME lookups (takeover check)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    }
+  ],
+  "paths": {
+    "paths": [],
+    "fix_first": null,
+    "more": 0
+  }
+}
