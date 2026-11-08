@@ -11,6 +11,7 @@ to facts someone has to act on (which source found a hostname has none).
 """
 
 import csv
+import html
 import io
 
 import evidence
@@ -181,3 +182,135 @@ def to_csv(results: dict) -> str:
                first.get("collected_at") or first.get("imported_at") or ""]
         writer.writerow([csv_safe(v) for v in row])
     return out.getvalue()
+
+
+# ---------- HTML ----------
+
+# One self-contained page: no scripts, no outside fonts or files, so it
+# opens offline and can be emailed. The CSP tag blocks scripts and outside
+# requests even if escaping were ever missed somewhere.
+CSP = "default-src 'none'; style-src 'unsafe-inline'"
+STYLE = """
+body { font: 15px/1.5 system-ui, sans-serif; color: #111; background: #fff;
+       max-width: 1100px; margin: 2em auto; padding: 0 1em; }
+h1 { font-family: ui-monospace, monospace; letter-spacing: .02em; }
+h2 { border-bottom: 2px solid #111; padding-bottom: .2em; margin-top: 2em; }
+.meta, .note { color: #555; font-size: .9em; }
+table { border-collapse: collapse; width: 100%; font-size: .9em; }
+th, td { border: 1px solid #111; padding: .35em .5em; text-align: left;
+         vertical-align: top; }
+th { background: #111; color: #fff; }
+.sev { font-weight: bold; padding: 0 .4em; border: 1px solid #111; white-space: nowrap; }
+.High { background: #111; color: #fff; }
+.Low { color: #555; border-color: #999; }
+.fix { border: 2px solid #111; padding: .6em .8em; }
+.ai { white-space: pre-wrap; border-left: 4px solid #111; padding-left: 1em; }
+ol li { margin: .2em 0; }
+code, .id { font-family: ui-monospace, monospace; }
+a { color: #111; }
+@media print { body { margin: 0; max-width: none; } a { text-decoration: none; } }
+"""
+
+
+def esc(value) -> str:
+    """Text from the scan, made safe for HTML (quotes too, for attributes)."""
+    return html.escape(str(value), quote=True)
+
+
+def id_links(ids) -> str:
+    """'E8, E9' as links to the evidence list at the bottom."""
+    return ", ".join(f'<a class="id" href="#{esc(i)}">{esc(i)}</a>' for i in ids)
+
+
+def badge(severity: str) -> str:
+    return f'<span class="sev {esc(severity)}">{esc(severity)}</span>' if severity else ""
+
+
+def to_html(results: dict, generated) -> str:
+    """The whole report as one HTML page, same content as the Markdown."""
+    target = results["target"]
+    s = summary(results)
+    found = findings(results)
+    built = results["paths"]
+    ai = results.get("ai_report")
+    out = ['<!DOCTYPE html>', '<html lang="en"><head><meta charset="utf-8">',
+           f'<meta http-equiv="Content-Security-Policy" content="{CSP}">',
+           '<meta name="viewport" content="width=device-width, initial-scale=1">',
+           f"<title>mønømi report: {esc(target)}</title>",
+           f"<style>{STYLE}</style></head><body>",
+           f"<h1>[mønømi] {esc(target)}</h1>",
+           f'<p class="meta">Generated {generated:%Y-%m-%d %H:%M} · sources: '
+           f"{esc(', '.join(s['sources']) or 'none')} · "
+           f"{plural(s['hostnames'], 'hostname')}"
+           + (f" · AI summary: {esc(ai['model'])}" if ai else "") + "</p>",
+           "<h2>Summary</h2><ul>",
+           f"<li>{plural(s['hostnames'], 'hostname')} found</li>",
+           f"<li>{plural(s['findings'], 'finding')} to fix, {path_counts(s)}</li>"]
+    if s["more_paths"]:
+        out.append(f"<li>{s['more_paths']} lower-ranked path(s) left out</li>")
+    for source, why in s["problems"].items():
+        out.append(f"<li>{esc(source)} had a problem: {esc(why)}</li>")
+    out.append("</ul>")
+    fix = s["fix_first"]
+    if fix:
+        owners = ", ".join(fix["owners"]) or "unknown"
+        out.append(f'<p class="fix"><strong>Fix this first</strong> '
+                   f"({id_links([fix['evidence']])}, owner: {esc(owners)}, closes "
+                   f"{esc(', '.join(fix['closes']))}): {esc(fix['fact'])}</p>")
+
+    if ai:
+        out += ["<h2>AI summary</h2>",
+                f'<p class="note">Written by Claude ({esc(ai["model"])}). Every claim '
+                "should cite evidence listed below; the findings, attack paths and "
+                "evidence after this section are built by code.</p>",
+                f'<div class="ai">{esc(ai["text"].strip())}</div>']
+
+    out.append("<h2>Findings</h2>")
+    if found:
+        out.append("<table><tr><th>ID</th><th>Severity</th><th>Host</th><th>Finding</th>"
+                   "<th>Owner</th><th>Attack paths</th></tr>")
+        for f in found:
+            paths_cell = ", ".join(f["paths"]) + (" (fix first)" if f["fix_first"] else "")
+            out.append(f"<tr><td>{id_links([f['id']])}</td><td>{badge(f['severity'])}</td>"
+                       f"<td>{esc(f['host'])}</td><td>{esc(f['finding'])}</td>"
+                       f"<td>{esc(', '.join(f['owners']))}</td><td>{esc(paths_cell)}</td></tr>")
+        out.append("</table>")
+    else:
+        out.append("<p><em>Nothing to fix was found in this scan.</em></p>")
+
+    out += ["<h2>Attack paths (built by code)</h2>",
+            '<p class="note">Worked out by monomi\'s code from the evidence below, not by '
+            "the AI. A path shows how an attack would most likely go, not proof that it "
+            "works.</p>"]
+    if not built["paths"]:
+        out.append("<p><em>No attack path found in this scan's evidence.</em></p>")
+    for p in built["paths"]:
+        out.append(f"<h3>{esc(p['id'])}: {esc(p['title'])} {badge(p['severity'])}</h3>"
+                   f'<p class="note">weakest step: {esc(p["strength"])}</p><ol>')
+        for st in p["steps"]:
+            out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
+                       f"[{id_links(st['evidence'])}]</li>")
+        out.append(f"</ol><p>Result: {esc(p['outcome'])}</p>")
+
+    # Same evidence as the Markdown: everything a finding, path or the AI cites
+    cites = " ".join(f"[{f['id']}]" for f in found)
+    cites += " ".join(f"[{', '.join(st['evidence'])}]"
+                      for p in built["paths"] for st in p["steps"])
+    if fix:
+        cites += f" [{fix['evidence']}]"
+    if ai:
+        cites += ai["text"]
+    listed = evidence.cited_ids(cites)
+    out += ["<h2>Evidence</h2>",
+            '<p class="note">Facts collected by monomi\'s code, not written by the AI. '
+            "Every citation above points to one of these.</p><ul>"]
+    for e in results["evidence"]:
+        if e["id"] not in listed:
+            continue
+        sources = "; ".join(evidence.describe_source(src) for src in e["sources"])
+        owners = (f"<br>Owner: {esc(', '.join(e['owners']))}" if e.get("owners") else "")
+        out.append(f'<li id="{esc(e["id"])}"><strong class="id">{esc(e["id"])}</strong>: '
+                   f'{esc(e["fact"])}<br><span class="note">Source: {esc(sources)}</span>'
+                   f"{owners}</li>")
+    out += ["</ul>", "</body></html>"]
+    return "\n".join(out) + "\n"

@@ -139,3 +139,46 @@ def test_csv_cells_cant_run_as_formulas(start):
 
 def test_csv_with_no_findings_is_just_the_header():
     assert rows(report.to_csv(made_up([]))) == [report.CSV_COLUMNS]
+
+
+# ---------- HTML ----------
+
+EVIL = '<script>alert("x")</script>'
+
+
+def test_html_is_one_safe_page(lab):
+    page = report.to_html(lab, WHEN)
+    assert page.startswith("<!DOCTYPE html>")
+    assert f'content="{report.CSP}"' in page
+    for outside in ("<script", "src=", "<link", "@import", "url("):
+        assert outside not in page  # nothing runs, nothing loads from outside
+    for heading in ("Summary", "Findings", "Attack paths (built by code)", "Evidence"):
+        assert f"<h2>{heading}</h2>" in page
+
+
+def test_html_links_citations_to_the_evidence(lab):
+    page = report.to_html(lab, WHEN)
+    assert '<a class="id" href="#E8">E8</a>' in page  # cited by path P2
+    assert '<li id="E8">' in page
+    assert '<li id="E1">' not in page                 # cited by nothing
+    assert '<span class="sev High">High</span>' in page
+
+
+def test_html_escapes_everything_from_the_target():
+    page = report.to_html(made_up([(EVIL + " has no SPF record", ["DNS admin"], EVIL)]), WHEN)
+    assert EVIL not in page
+    assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;" in page
+
+
+def test_html_escapes_the_ai_text(lab):
+    lab["ai_report"] = {"text": EVIL + " [E26]", "model": "claude-test"}
+    page = report.to_html(lab, WHEN)
+    assert EVIL not in page
+    assert "<h2>AI summary</h2>" in page
+    assert '<li id="E26">' in page
+
+
+def test_html_no_findings():
+    page = report.to_html(made_up([]), WHEN)
+    assert "Nothing to fix was found in this scan." in page
+    assert "No attack path found" in page
