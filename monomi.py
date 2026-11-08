@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from collectors import certspotter, crtsh, crtsh_db, saved
 from common import is_hostname, now_utc
 from importers import spiderfoot
+import doctor
 import emailauth
 import enrich
 import evidence
@@ -725,6 +726,10 @@ def run_investigate(raw_ips: list[str], json_file: str | None, ai: bool) -> int:
 
 
 def main() -> int:
+    # "doctor" is a command, not a domain (a domain always has a dot)
+    if sys.argv[1:2] == ["doctor"]:
+        return doctor.main(sys.argv[2:])
+
     parser = build_parser()
     args = parser.parse_args()
     if args.no_color:
