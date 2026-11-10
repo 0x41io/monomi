@@ -62,8 +62,9 @@ def test_lab_gives_email_and_side_door_paths():
     assert side["severity"] == "Medium"
     assert side["strength"] == "Lead"  # the version step needs checking
     assert [s["label"] for s in side["steps"]] == ["Observed", "Observed", "Inference", "Lead"]
-    assert side["missing"] == ("nothing shows a way into this host yet "
-                               "(no risky open service or known CVE on 198.51.100.7)")
+    # The lab scan never asked Shodan, and the lead says so instead of "none found"
+    assert side["missing"] == ("nothing shows a way into this host yet (open services and known CVEs "
+                               "on 198.51.100.7 weren't looked up: --ports wasn't run)")
     # No separate "known flaws" path for an IP the side door already covers
     assert not any(t.startswith("Exploit") for t in titles)
 
@@ -341,7 +342,7 @@ def test_a_version_with_no_matched_cve_is_a_lead():
     (lead,) = other_leads(out)
     assert lead["id"] == "L2" and lead["severity"] == "Low"  # after the surer CDN lead
     assert lead["title"] == "Check whether the software on 198.51.100.7 has known flaws"
-    assert lead["missing"] == ("no known CVE is matched to 198.51.100.7 in this scan, "
+    assert lead["missing"] == ("known CVEs for 198.51.100.7 weren't looked up (--ports wasn't run), "
                                "so the versions are unverified")
     assert [s["label"] for s in lead["steps"]] == ["Observed", "Lead"]
 
@@ -559,3 +560,15 @@ def test_cdn_lead_in_a_big_scan_cites_only_the_hosts_it_names():
     (lead,) = cdn_lead(out)
     assert "and 18 more" in lead["title"]  # 21 hosts behind the CDN, 3 named
     assert len(lead["steps"][0]["evidence"]) == 3
+
+
+def test_missing_line_says_none_found_only_when_shodan_was_asked():
+    results = lab_results()
+    results["exposure"] = {"ips": {}, "nothing_seen": {"198.51.100.7": {"hosts": ["lab", "staging"]}}}
+    out, ev = run(results)
+    assert side_doors(out)[0]["missing"] == ("nothing shows a way into this host yet "
+                                             "(no risky open service or known CVE on 198.51.100.7)")
+    results["enrichment"]["hosts"].pop("staging")  # now the version lead, also after a Shodan lookup
+    out, ev = run(results)
+    (lead,) = other_leads(out)
+    assert lead["missing"] == "no known CVE is matched to 198.51.100.7 in this scan, so the versions are unverified"

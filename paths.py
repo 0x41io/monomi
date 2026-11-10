@@ -177,6 +177,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
 
     exp = results.get("exposure") or {}
     exp_ips = exp.get("ips", {})
+    # A lead's "missing" line must not say "none found" when nobody looked
+    looked = "exposure" in results
 
     # C. Services that usually shouldn't face the internet
     for r in kinds.get("risky_service", []):
@@ -252,7 +254,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                          [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
                           for r in names])
             lead["missing"] = (f"nothing shows a way into {'this host' if one else 'these hosts'} yet "
-                               f"(no risky open service or known CVE on {where})")
+                               + (f"(no risky open service or known CVE on {where})" if looked else
+                                  f"(open services and known CVEs on {where} weren't looked up: --ports wasn't run)"))
             leads.append(lead)
             continue
         # One action per risky host: each one is its own door, so all of them
@@ -280,7 +283,9 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                      _step("An attacker looks those versions up for known flaws", leaks, "Lead")]
             lead = _path(f"Check whether the software on {ip} has known flaws", "Low", steps,
                          "Server compromise, if the version is really vulnerable", action)
-            lead["missing"] = f"no known CVE is matched to {ip} in this scan, so the versions are unverified"
+            lead["missing"] = (f"no known CVE is matched to {ip} in this scan" if looked else
+                               f"known CVEs for {ip} weren't looked up (--ports wasn't run)"
+                               ) + ", so the versions are unverified"
             leads.append(lead)
             continue
         steps = [_step(f"{ip} shows software versions or matching CVEs", cves + leaks, "Observed"),
