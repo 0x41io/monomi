@@ -588,13 +588,15 @@ def show_paths(results: dict) -> None:
             print()
         info("Leads to investigate (not attack paths: each is missing something that would make it one):")
         print()
-    for p in leads:
+    for i, p in enumerate(leads):
+        if i:
+            print()  # between leads, not after the last one (the caller adds its own gap)
         print(f"    {p['id']}  {ui.paint('LEAD', ui.BOLD, ui.GREY)}  {ui.safe(p['title'])}")
         for n, s in enumerate(p["steps"], 1):
             print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
         print(f"        Missing: {ui.safe(p['missing'])}")
-        print()
     if built.get("more_leads"):
+        print()
         info(f"{built['more_leads']} more lead(s) not shown.")
 
 

@@ -278,6 +278,15 @@
             "owners": [
               "server / infrastructure admin"
             ]
+          },
+          {
+            "what": "Upgrade or patch the server software on 192.0.2.40",
+            "evidence": [
+              "E15"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
           }
         ],
         "id": "P1"
@@ -308,6 +317,15 @@
           "what": "Take ct-uat3.sidedoor.test off the internet or restrict who can reach it",
           "evidence": [
             "E13"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        },
+        {
+          "what": "Upgrade or patch the server software on 192.0.2.40",
+          "evidence": [
+            "E15"
           ],
           "owners": [
             "server / infrastructure admin"

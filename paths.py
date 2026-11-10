@@ -14,6 +14,8 @@ A side door (a risky-named host on the same server as production) is only
 an attack path when something on that server gives a way in: a risky open
 service or a known CVE. Without one it is a lead (L1, L2...): worth a look,
 listed after the attack paths, with a "missing" line that names the gap.
+The same bar goes for software versions: a version a server shows is only
+an attack path once a known CVE is matched to it; until then it is a lead.
 Leads are never part of "fix this first".
 
 Each path also lists its actions: the real fixes that close it. One action
@@ -243,24 +245,36 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         # One action per risky host: each one is its own door, so all of them
         # must be dealt with. The version leaks only back the last step up.
         # The action says what to do; why the name is risky stays in the evidence.
+        actions = [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
+                   for r in names]
+        if cves:
+            # The CVE is on the server itself, so closing the doors isn't enough
+            actions.append(_action(leaks, f"Upgrade or patch the server software on {where}"))
         paths.append(_path(f"Use {who} as a side door into {where}", "Medium", steps,
-                           f"Access to the server that also runs {shared[0]}",
-                           [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
-                            for r in names]))
+                           f"Access to the server that also runs {shared[0]}", actions))
 
-    # D. Known-vulnerable versions (IPs already covered by a side door are skipped)
+    # D. Known-vulnerable versions (IPs already covered by a side door are skipped).
+    # A matched CVE makes it an attack path; a version on its own is only a lead.
     for ip in sorted({e["host"] for e in kinds.get("cves", [])}
                      | {ip for e in kinds.get("version_leak", []) for ip in ips_of.get(e["host"], [])}):
         if ip in edge or ip in side_door_ips:
             continue
         cves = [e for e in kinds.get("cves", []) if e["host"] == ip]
         leaks = [e for e in kinds.get("version_leak", []) if ip in ips_of.get(e["host"], [])]
+        action = [_action(cves + leaks, f"Upgrade or patch the server software on {ip}")]
+        if not cves:
+            steps = [_step(f"{ip} shows which software versions it runs", leaks, "Observed"),
+                     _step("An attacker looks those versions up for known flaws", leaks, "Lead")]
+            lead = _path(f"Check whether the software on {ip} has known flaws", "Low", steps,
+                         "Server compromise, if the version is really vulnerable", action)
+            lead["missing"] = f"no known CVE is matched to {ip} in this scan, so the versions are unverified"
+            leads.append(lead)
+            continue
         steps = [_step(f"{ip} shows software versions or matching CVEs", cves + leaks, "Observed"),
                  _step("An attacker checks whether the running version really has those flaws "
                        "and tries public exploits", cves + leaks, "Lead")]
-        paths.append(_path(f"Exploit known flaws on {ip}", "Medium" if cves else "Low", steps,
-                           "Server compromise, if the version is really vulnerable",
-                           [_action(cves + leaks, f"Upgrade or patch the server software on {ip}")]))
+        paths.append(_path(f"Exploit known flaws on {ip}", "Medium", steps,
+                           "Server compromise, if the version is really vulnerable", action))
 
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
     more = max(0, len(paths) - MAX_PATHS)
@@ -268,7 +282,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     for i, p in enumerate(paths, 1):
         p["id"] = f"P{i}"
     # Leads: never above Medium, surest first, and no part in fix_first
-    leads.sort(key=lambda p: LABEL_RANK[p["strength"]])
+    leads.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
     more_leads = max(0, len(leads) - MAX_PATHS)
     leads = leads[:MAX_PATHS]
     for i, p in enumerate(leads, 1):
@@ -333,8 +347,8 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
     """Give a scan saved before v1.10 its actions, keeping its paths and IDs.
 
     Old paths had "fix": a flat list of evidence IDs. Risky-name facts
-    become one action each, version facts on a side door are dropped (they
-    only back a step up), other version facts become one upgrade action.
+    become one action each. Version facts become one upgrade action, except
+    on a side door with no matched CVE, where they only back a step up.
     """
     built.setdefault("leads", [])       # saved before the Lead tier: its side
     built.setdefault("more_leads", 0)   # doors stay the paths they were saved as
@@ -347,9 +361,9 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
         rest = [f for f in facts if f not in versions]
         p["actions"] = [_action([f], f"Take {f['host']} off the internet or restrict who can reach it"
                                 if f.get("kind") == "risky_name" else None) for f in rest]
-        if versions and not rest:
+        if versions and (not rest or any(f.get("kind") == "cves" for f in versions)):
             where = p["title"].rsplit(" ", 1)[-1]
-            p["actions"] = [_action(versions, f"Upgrade or patch the server software on {where}")]
+            p["actions"].append(_action(versions, f"Upgrade or patch the server software on {where}"))
     built["fix_first"] = _fix_first(built["paths"])
     return built
 

@@ -128,8 +128,9 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
     side = out["paths"][0]
     assert side["steps"][0]["text"].startswith("dev and staging are live")
     assert len(side["steps"][0]["evidence"]) == 2  # both risky-name facts
-    # Two risky hosts = two actions; the version leaks only back a step up
-    assert [a["evidence"] for a in side["actions"]] == [[e] for e in side["steps"][0]["evidence"]]
+    # Two risky hosts = two actions, plus the upgrade: the CVE is on the server itself
+    assert [a["evidence"] for a in side["actions"][:2]] == [[e] for e in side["steps"][0]["evidence"]]
+    assert side["actions"][2]["evidence"] == side["steps"][-1]["evidence"]
     fix = out["fix_first"]
     assert fix["actions"] == side["actions"]
     assert fix["closes"] == ["P1"]
@@ -137,7 +138,8 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
     # The fix says what to do, not why the name matched a rule
     assert [a["what"] for a in fix["actions"]] == [
         "Take dev off the internet or restrict who can reach it",
-        "Take staging off the internet or restrict who can reach it"]
+        "Take staging off the internet or restrict who can reach it",
+        "Upgrade or patch the server software on 198.51.100.7"]
 
 
 def test_paths_are_capped():
@@ -291,19 +293,19 @@ def test_one_host_never_closes_a_three_host_side_door():
     out, ev = run(three_side_doors())
     assert len(out["paths"]) == 1
     fix = out["fix_first"]
-    assert len(fix["actions"]) == 3
-    assert [a["evidence"] for a in fix["actions"]] == [[e] for e in out["paths"][0]["steps"][0]["evidence"]]
-    assert fix["closes"] == ["P1"]  # all three together
+    assert len(fix["actions"]) == 4  # three hosts + the server upgrade
+    assert [a["evidence"] for a in fix["actions"][:3]] == [[e] for e in out["paths"][0]["steps"][0]["evidence"]]
+    assert fix["closes"] == ["P1"]  # all four together
     assert fix["partial"] == [] and fix["still_required_actions"] == []
 
 
 def test_a_fix_that_closes_alone_beats_a_group():
-    # Email (one action, closes P1) wins over the side door's two actions
+    # Email (one action, closes P1) wins over the side door's three actions
     results = lab_results()
     results["subdomains"].append("dev")
     results["enrichment"]["hosts"]["dev"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
     out, ev = run(with_cves(results))
-    assert [len(p["actions"]) for p in out["paths"]] == [1, 2]
+    assert [len(p["actions"]) for p in out["paths"]] == [1, 3]
     fix = out["fix_first"]
     assert len(fix["actions"]) == 1 and fix["closes"] == ["P1"]
 
@@ -313,12 +315,28 @@ def test_known_flaws_are_one_upgrade_action():
     results["enrichment"]["hosts"].pop("staging")  # no side door, so rule D builds the path
     results["subdomains"].remove("staging")
     results["email"]["verdict"]["verdict"] = "protected"
-    out, ev = run(results)
+    out, ev = run(with_cves(results))
     (path,) = out["paths"]
-    assert path["title"] == "Exploit known flaws on 198.51.100.7"
+    assert path["title"] == "Exploit known flaws on 198.51.100.7" and path["severity"] == "Medium"
     (action,) = path["actions"]
     assert action["what"] == "Upgrade or patch the server software on 198.51.100.7"
     assert action["evidence"] == path["steps"][0]["evidence"]
+    assert out["leads"] == []
+
+
+def test_a_version_with_no_matched_cve_is_a_lead():
+    results = lab_results()
+    results["enrichment"]["hosts"].pop("staging")
+    results["subdomains"].remove("staging")
+    results["email"]["verdict"]["verdict"] = "protected"
+    out, ev = run(results)
+    assert out["paths"] == [] and out["fix_first"] is None
+    (lead,) = out["leads"]
+    assert lead["id"] == "L1" and lead["severity"] == "Low"
+    assert lead["title"] == "Check whether the software on 198.51.100.7 has known flaws"
+    assert lead["missing"] == ("no known CVE is matched to 198.51.100.7 in this scan, "
+                               "so the versions are unverified")
+    assert [s["label"] for s in lead["steps"]] == ["Observed", "Lead"]
 
 
 def test_partial_is_recorded_when_an_action_is_in_two_paths():
@@ -336,11 +354,11 @@ def test_fix_first_wording_never_says_one_of_several_closes():
     from paths import fix_first_parts, paths_appendix
     out, ev = run(three_side_doors())
     t = fix_first_parts(out["fix_first"])
-    assert t["label"] == "Fix these 3 first"
+    assert t["label"] == "Fix these 4 first"
     assert t["closes"] == "together they close P1"
-    assert len(t["ids"]) == 3 and t["owners"] == "server / infrastructure admin"
+    assert len(t["ids"]) >= 4 and t["owners"] == "server / infrastructure admin"
     text = paths_appendix(out)
-    assert "**Fix these 3 first**" in text and "together they close P1" in text
+    assert "**Fix these 4 first**" in text and "together they close P1" in text
     assert "Fix this first" not in text
 
 
@@ -351,8 +369,8 @@ def test_terminal_shows_a_group_fix(capsys):
     results["paths"] = out
     show_paths(results)
     text = capsys.readouterr().out
-    assert "Fix these 3 first (server / infrastructure admin): Take dev off the internet" in text
-    assert "matched rule word" not in text.split("Fix these 3 first")[1]
+    assert "Fix these 4 first (server / infrastructure admin): Take dev off the internet" in text
+    assert "matched rule word" not in text.split("Fix these 4 first")[1]
     assert "-> together they close P1" in text
 
 
@@ -362,11 +380,12 @@ def test_old_saved_paths_get_actions():
     path = out["paths"][0]
     leaks = path["steps"][-1]["evidence"]
     # What v1.9 saved: a flat "fix" list (names + leaks) and a one-fact fix_first
-    old = {"paths": [dict(path, fix=[e for a in path["actions"] for e in a["evidence"]] + leaks)],
+    names = path["steps"][0]["evidence"]
+    old = {"paths": [dict(path, fix=names + leaks)],
            "fix_first": {"evidence": "E1", "fact": "x", "owners": [], "closes": ["P1"]}, "more": 0}
     del old["paths"][0]["actions"]
     new = upgrade_saved(old, ev)
-    assert new["paths"][0]["actions"] == path["actions"]  # leaks dropped
+    assert new["paths"][0]["actions"] == path["actions"]  # hosts + the upgrade (a CVE is matched)
     assert "fix" not in new["paths"][0]
     assert new["fix_first"] == out["fix_first"]
     assert upgrade_saved(out, ev) is out  # already new: left alone
@@ -446,3 +465,14 @@ def test_leads_are_capped():
     out, _ = run(results)
     assert len(out["leads"]) == 10 and out["more_leads"] == 3
     assert [p["id"] for p in out["leads"]][:2] == ["L1", "L2"]
+
+
+def test_old_saved_side_door_without_a_cve_drops_the_version_facts():
+    from paths import upgrade_saved
+    out, ev = run(lab_results())
+    lead = out["leads"][0]  # v1.9 saved this as a path, with the leaks in "fix"
+    names, leaks = lead["steps"][0]["evidence"], lead["steps"][-1]["evidence"]
+    old_path = {k: v for k, v in lead.items() if k not in ("actions", "missing")}
+    old = {"paths": [dict(old_path, id="P1", fix=names + leaks)], "fix_first": None, "more": 0}
+    new = upgrade_saved(old, ev)
+    assert [a["evidence"] for a in new["paths"][0]["actions"]] == [[e] for e in names]

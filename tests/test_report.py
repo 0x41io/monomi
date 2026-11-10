@@ -262,7 +262,7 @@ GROUP = Path(__file__).parent / "golden" / "fixtures" / "side-door-three-hosts.j
 @pytest.fixture
 def group(monkeypatch):
     """Three test hosts on one production server with a known CVE: an attack
-    path (not a lead) that no single fix closes."""
+    path (not a lead) that no single fix closes (three hosts + the upgrade)."""
     monkeypatch.setattr(evidence, "now_utc", lambda: "2000-01-01T00:00:00Z")
     results = json.loads(GROUP.read_text(encoding="utf-8"))
     results["evidence"] = evidence.build_evidence(results)
@@ -273,20 +273,20 @@ def group(monkeypatch):
 def test_group_fix_flags_every_finding_in_it(group):
     found = report.findings(group)
     ids = [e for a in group["paths"]["fix_first"]["actions"] for e in a["evidence"]]
-    assert len(ids) == 3
+    assert ids == ["E11", "E12", "E13", "E15"]  # three hosts + the CVE fact (the upgrade)
     assert [f["id"] for f in found if f["fix_first"]] == ids
-    assert [f["id"] for f in found[:3]] == ids  # on top, in order
+    assert [f["id"] for f in found[:4]] == ids  # on top, in order
 
 
 def test_group_fix_wording_in_every_format(group):
     md = report.to_markdown(group, WHEN)
-    assert "- **Fix these 3 first** (E11, E12, E13, together they close P1)" in md
+    assert "- **Fix these 4 first** (E11, E12, E13, E15, together they close P1)" in md
     page = report.to_html(group, WHEN)
-    assert "<strong>Fix these 3 first</strong>" in page
+    assert "<strong>Fix these 4 first</strong>" in page
     assert "together they close P1" in page
     assert "Fix this first" not in md and "Fix this first" not in page
     rows = list(csv.DictReader(io.StringIO(report.to_csv(group))))
-    assert [r["id"] for r in rows if r["fix_first"] == "yes"] == ["E11", "E12", "E13"]
+    assert [r["id"] for r in rows if r["fix_first"] == "yes"] == ["E11", "E12", "E13", "E15"]
 
 
 def test_load_scan_upgrades_paths_saved_before_actions(lab, tmp_path):
