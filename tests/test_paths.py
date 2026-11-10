@@ -115,9 +115,12 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
     side = out["paths"][0]
     assert side["steps"][0]["text"].startswith("dev and staging are live")
     assert len(side["steps"][0]["evidence"]) == 2  # both risky-name facts
+    # Two risky hosts = two actions; the version leaks only back a step up
+    assert [a["evidence"] for a in side["actions"]] == [[e] for e in side["steps"][0]["evidence"]]
     fix = out["fix_first"]
+    assert fix["actions"] == side["actions"]
     assert fix["closes"] == ["P1"]
-    assert fix["owners"] == ["server / infrastructure admin"]
+    assert fix["actions"][0]["owners"] == ["server / infrastructure admin"]
 
 
 def test_paths_are_capped():
@@ -250,3 +253,100 @@ def test_vercel_ip_is_never_a_side_door():
         results["enrichment"]["hosts"][h] = {"ips": ["216.150.1.1"], "provider": "AWS"}
     out, ev = run(results)
     assert side_doors(out) == []
+
+
+# ---------- fix groups (v1.10) ----------
+
+def three_side_doors():
+    """Three test hosts on the production server, email protected: one path."""
+    results = lab_results()
+    for h in ("dev", "uat"):
+        results["subdomains"].append(h)
+        results["enrichment"]["hosts"][h] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
+    results["email"]["verdict"]["verdict"] = "protected"
+    return results
+
+
+def test_one_host_never_closes_a_three_host_side_door():
+    # The bug from the field: "fix one host, closes P1" on a three-host path
+    out, ev = run(three_side_doors())
+    assert len(out["paths"]) == 1
+    fix = out["fix_first"]
+    assert len(fix["actions"]) == 3
+    assert [a["evidence"] for a in fix["actions"]] == [[e] for e in out["paths"][0]["steps"][0]["evidence"]]
+    assert fix["closes"] == ["P1"]  # all three together
+    assert fix["partial"] == [] and fix["still_required_actions"] == []
+
+
+def test_a_fix_that_closes_alone_beats_a_group():
+    # Email (one action, closes P1) wins over the side door's two actions
+    results = lab_results()
+    results["subdomains"].append("dev")
+    results["enrichment"]["hosts"]["dev"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
+    out, ev = run(results)
+    assert [len(p["actions"]) for p in out["paths"]] == [1, 2]
+    fix = out["fix_first"]
+    assert len(fix["actions"]) == 1 and fix["closes"] == ["P1"]
+
+
+def test_known_flaws_are_one_upgrade_action():
+    results = lab_results()
+    results["enrichment"]["hosts"].pop("staging")  # no side door, so rule D builds the path
+    results["subdomains"].remove("staging")
+    results["email"]["verdict"]["verdict"] = "protected"
+    out, ev = run(results)
+    (path,) = out["paths"]
+    assert path["title"] == "Exploit known flaws on 198.51.100.7"
+    (action,) = path["actions"]
+    assert action["what"] == "Upgrade or patch the server software on 198.51.100.7"
+    assert action["evidence"] == path["steps"][0]["evidence"]
+
+
+def test_partial_is_recorded_when_an_action_is_in_two_paths():
+    from paths import _fix_first
+    a = {"what": "fix a", "evidence": ["E1"], "owners": ["DNS admin"]}
+    b = {"what": "fix b", "evidence": ["E2"], "owners": ["app owner"]}
+    built = [{"id": "P1", "actions": [a, b]}, {"id": "P2", "actions": [a]}]
+    fix = _fix_first(built)
+    assert fix["actions"] == [a] and fix["closes"] == ["P2"]
+    assert fix["partial"] == [{"path": "P1", "of": 2}]
+    assert fix["still_required_actions"] == [b]
+
+
+def test_fix_first_wording_never_says_one_of_several_closes():
+    from paths import fix_first_parts, paths_appendix
+    out, ev = run(three_side_doors())
+    t = fix_first_parts(out["fix_first"])
+    assert t["label"] == "Fix these 3 first"
+    assert t["closes"] == "together they close P1"
+    assert len(t["ids"]) == 3 and t["owners"] == "server / infrastructure admin"
+    text = paths_appendix(out)
+    assert "**Fix these 3 first**" in text and "together they close P1" in text
+    assert "Fix this first" not in text
+
+
+def test_terminal_shows_a_group_fix(capsys):
+    from monomi import show_paths
+    results = three_side_doors()
+    out, ev = run(results)
+    results["paths"] = out
+    show_paths(results)
+    text = capsys.readouterr().out
+    assert "Fix these 3 first (server / infrastructure admin)" in text
+    assert "-> together they close P1" in text
+
+
+def test_old_saved_paths_get_actions():
+    from paths import upgrade_saved
+    out, ev = run(three_side_doors())
+    path = out["paths"][0]
+    leaks = path["steps"][-1]["evidence"]
+    # What v1.9 saved: a flat "fix" list (names + leaks) and a one-fact fix_first
+    old = {"paths": [dict(path, fix=[e for a in path["actions"] for e in a["evidence"]] + leaks)],
+           "fix_first": {"evidence": "E1", "fact": "x", "owners": [], "closes": ["P1"]}, "more": 0}
+    del old["paths"][0]["actions"]
+    new = upgrade_saved(old, ev)
+    assert new["paths"][0]["actions"] == path["actions"]  # leaks dropped
+    assert "fix" not in new["paths"][0]
+    assert new["fix_first"] == out["fix_first"]
+    assert upgrade_saved(out, ev) is out  # already new: left alone

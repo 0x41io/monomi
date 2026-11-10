@@ -54,10 +54,12 @@ def findings(results: dict) -> list[dict]:
     in no path get none, since there are no per-finding severity rules.
     """
     built = results["paths"]
-    fix = built.get("fix_first") or {}
+    fix = built.get("fix_first") or {"actions": []}
+    fix_ids = {eid for a in fix["actions"] for eid in a["evidence"]}
     in_paths = {}
     for p in built["paths"]:
-        cited = {eid for s in p["steps"] for eid in s["evidence"]} | set(p["fix"])
+        cited = ({eid for s in p["steps"] for eid in s["evidence"]}
+                 | {eid for a in p["actions"] for eid in a["evidence"]})
         for eid in cited:
             in_paths.setdefault(eid, []).append(p)
 
@@ -74,7 +76,7 @@ def findings(results: dict) -> list[dict]:
             "owners": e["owners"],
             "paths": [p["id"] for p in ps],
             "severity": worst,
-            "fix_first": e["id"] == fix.get("evidence"),
+            "fix_first": e["id"] in fix_ids,
             "sources": e["sources"],
         })
     rank = {s: i for i, s in enumerate(SEVERITIES)}
@@ -138,8 +140,8 @@ def to_markdown(results: dict, generated) -> str:
         lines.append(f"- {s['more_paths']} lower-ranked path(s) left out")
     fix = s["fix_first"]
     if fix:
-        lines.append(f"- **Fix this first** ({fix['evidence']}, closes "
-                     f"{', '.join(fix['closes'])}): {fix['fact']}")
+        t = paths.fix_first_parts(fix)
+        lines.append(f"- **{t['label']}** ({', '.join(t['ids'])}, {t['closes']}): {t['what']}")
     for source, why in s["problems"].items():
         lines.append(f"- {source} had a problem: {why}")
 
@@ -259,10 +261,10 @@ def to_html(results: dict, generated) -> str:
     out.append("</ul>")
     fix = s["fix_first"]
     if fix:
-        owners = ", ".join(fix["owners"]) or "unknown"
-        out.append(f'<p class="fix"><strong>Fix this first</strong> '
-                   f"({id_links([fix['evidence']])}, owner: {esc(owners)}, closes "
-                   f"{esc(', '.join(fix['closes']))}): {esc(fix['fact'])}</p>")
+        t = paths.fix_first_parts(fix)
+        out.append(f'<p class="fix"><strong>{esc(t["label"])}</strong> '
+                   f"({id_links(t['ids'])}, owner: {esc(t['owners'])}, "
+                   f"{esc(t['closes'])}): {esc(t['what'])}</p>")
 
     if ai:
         out += ["<h2>AI summary</h2>",
@@ -303,7 +305,7 @@ def to_html(results: dict, generated) -> str:
     cites += " ".join(f"[{', '.join(st['evidence'])}]"
                       for p in built["paths"] for st in p["steps"])
     if fix:
-        cites += f" [{fix['evidence']}]"
+        cites += f" [{', '.join(paths.fix_first_parts(fix)['ids'])}]"
     if ai:
         cites += ai["text"]
     listed = evidence.cited_ids(cites)
@@ -379,7 +381,8 @@ def load_scan(path: str) -> dict:
 
     Evidence and attack paths saved with the scan are used as they are, so
     the IDs an AI summary cites still match. Older saves without them get
-    them built now.
+    them built now. Paths saved before v1.10 keep their IDs and steps and
+    get their actions (and a corrected "fix this first") added.
     """
     with open(path, encoding="utf-8-sig") as f:
         results = json.load(f)
@@ -390,6 +393,7 @@ def load_scan(path: str) -> dict:
     if "evidence" not in results or "paths" not in results:
         results["evidence"] = evidence.build_evidence(results)
         results["paths"] = paths.build_paths(results, results["evidence"])
+    paths.upgrade_saved(results["paths"], results["evidence"])
     return results
 
 

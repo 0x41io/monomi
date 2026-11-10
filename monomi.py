@@ -577,8 +577,8 @@ def show_paths(results: dict) -> None:
         info(f"{built['more']} lower-ranked path(s) not shown.")
     fix = built["fix_first"]
     if fix:
-        owners = ", ".join(fix["owners"]) or "unknown"
-        warn(f"Fix this first ({owners}): {ui.safe(fix['fact'])} -> closes {', '.join(fix['closes'])}")
+        t = paths.fix_first_parts(fix)
+        warn(f"{t['label']} ({t['owners']}): {ui.safe(t['what'])} -> {t['closes']}")
 
 
 def write_ai_report(results: dict) -> None:

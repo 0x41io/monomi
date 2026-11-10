@@ -1,0 +1,287 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "ct-uat.sidedoor.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "ct-uat2.sidedoor.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "ct-uat3.sidedoor.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "ct.sidedoor.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E5",
+      "fact": "sidedoor.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E6",
+      "fact": "ct-uat.sidedoor.test resolves to 192.0.2.40 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct-uat.sidedoor.test"
+    },
+    {
+      "id": "E7",
+      "fact": "ct-uat2.sidedoor.test resolves to 192.0.2.40 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct-uat2.sidedoor.test"
+    },
+    {
+      "id": "E8",
+      "fact": "ct-uat3.sidedoor.test resolves to 192.0.2.40 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct-uat3.sidedoor.test"
+    },
+    {
+      "id": "E9",
+      "fact": "ct.sidedoor.test resolves to 192.0.2.40 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct.sidedoor.test"
+    },
+    {
+      "id": "E10",
+      "fact": "sidedoor.test resolves to 192.0.2.40 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "sidedoor.test"
+    },
+    {
+      "id": "E11",
+      "fact": "ct-uat.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'ct-uat' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "ct-uat.sidedoor.test"
+    },
+    {
+      "id": "E12",
+      "fact": "ct-uat2.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat2' of label 'ct-uat2' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "ct-uat2.sidedoor.test"
+    },
+    {
+      "id": "E13",
+      "fact": "ct-uat3.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat3' of label 'ct-uat3' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "ct-uat3.sidedoor.test"
+    }
+  ],
+  "paths": {
+    "paths": [
+      {
+        "title": "Use ct-uat.sidedoor.test, ct-uat2.sidedoor.test and ct-uat3.sidedoor.test as a side door into 192.0.2.40",
+        "severity": "Medium",
+        "strength": "Inference",
+        "steps": [
+          {
+            "text": "ct-uat.sidedoor.test, ct-uat2.sidedoor.test and ct-uat3.sidedoor.test are live and named like non-production hosts",
+            "evidence": [
+              "E11",
+              "E12",
+              "E13"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "They are on the same IP (192.0.2.40) as ct.sidedoor.test and sidedoor.test",
+            "evidence": [
+              "E6",
+              "E7",
+              "E8",
+              "E9",
+              "E10"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "Non-production sites are often less protected, so ct-uat.sidedoor.test, ct-uat2.sidedoor.test and ct-uat3.sidedoor.test are likely first targets, and getting in there may mean getting into the same server",
+            "evidence": [
+              "E11",
+              "E12",
+              "E13"
+            ],
+            "label": "Inference"
+          }
+        ],
+        "outcome": "Access to the server that also runs ct.sidedoor.test",
+        "actions": [
+          {
+            "what": "ct-uat.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'ct-uat' matched rule word 'uat')",
+            "evidence": [
+              "E11"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          },
+          {
+            "what": "ct-uat2.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat2' of label 'ct-uat2' matched rule word 'uat')",
+            "evidence": [
+              "E12"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          },
+          {
+            "what": "ct-uat3.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat3' of label 'ct-uat3' matched rule word 'uat')",
+            "evidence": [
+              "E13"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          }
+        ],
+        "id": "P1"
+      }
+    ],
+    "fix_first": {
+      "actions": [
+        {
+          "what": "ct-uat.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'ct-uat' matched rule word 'uat')",
+          "evidence": [
+            "E11"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        },
+        {
+          "what": "ct-uat2.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat2' of label 'ct-uat2' matched rule word 'uat')",
+          "evidence": [
+            "E12"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        },
+        {
+          "what": "ct-uat3.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat3' of label 'ct-uat3' matched rule word 'uat')",
+          "evidence": [
+            "E13"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        }
+      ],
+      "closes": [
+        "P1"
+      ],
+      "partial": [],
+      "still_required_actions": []
+    },
+    "more": 0
+  }
+}

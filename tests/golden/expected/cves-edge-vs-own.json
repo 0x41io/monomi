@@ -106,21 +106,37 @@
           }
         ],
         "outcome": "Server compromise, if the version is really vulnerable",
-        "fix": [
-          "E6"
+        "actions": [
+          {
+            "what": "Upgrade or patch the server software on 203.0.113.10",
+            "evidence": [
+              "E6"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          }
         ],
         "id": "P1"
       }
     ],
     "fix_first": {
-      "evidence": "E6",
-      "fact": "Shodan InternetDB lists 2 CVE(s) for 203.0.113.10 (cves.test), matched from software version banners: CVE-2099-0001, CVE-2099-0002",
-      "owners": [
-        "server / infrastructure admin"
+      "actions": [
+        {
+          "what": "Upgrade or patch the server software on 203.0.113.10",
+          "evidence": [
+            "E6"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        }
       ],
       "closes": [
         "P1"
-      ]
+      ],
+      "partial": [],
+      "still_required_actions": []
     },
     "more": 0
   }

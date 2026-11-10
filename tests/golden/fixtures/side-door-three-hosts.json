@@ -1,0 +1,70 @@
+{
+  "target": "sidedoor.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "ct-uat.sidedoor.test",
+        "ct-uat2.sidedoor.test",
+        "ct-uat3.sidedoor.test",
+        "ct.sidedoor.test",
+        "sidedoor.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "ct-uat.sidedoor.test",
+    "ct-uat2.sidedoor.test",
+    "ct-uat3.sidedoor.test",
+    "ct.sidedoor.test",
+    "sidedoor.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "ct-uat.sidedoor.test": {
+        "ips": [
+          "192.0.2.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "ct-uat2.sidedoor.test": {
+        "ips": [
+          "192.0.2.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "ct-uat3.sidedoor.test": {
+        "ips": [
+          "192.0.2.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "ct.sidedoor.test": {
+        "ips": [
+          "192.0.2.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "sidedoor.test": {
+        "ips": [
+          "192.0.2.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

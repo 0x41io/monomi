@@ -157,7 +157,10 @@ ending with "(see P2)" instead of repeating the path's reasoning.
 the findings in this scan chain into a way in." Then one sentence on which \
 checks ran. Never invent a path to fill the section.
 - If "fix_first" is set, start section 5 with it as "**Fix this first**", \
-with its owners, citing its evidence ID, and say which paths it closes.
+with its owners, citing its evidence IDs, and say which paths it closes. \
+When it lists more than one action, head it "**Fix these N first**", list \
+every action, and say the path is closed only when all of them are done. \
+Never say one action closes a path unless "closes" says so.
 
 Evidence and labels (the most important rules):
 - The data includes "evidence": numbered facts (E1, E2, ...) collected by \

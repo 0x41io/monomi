@@ -250,3 +250,51 @@ def test_report_command_bad_files(tmp_path, capsys):
     assert "isn't valid JSON" in capsys.readouterr().out
     assert report.main([str(tmp_path / "missing.json"), "--no-color"]) == 1
     assert "No such file" in capsys.readouterr().out
+
+
+# ---------- fix groups (v1.10) ----------
+
+GROUP = Path(__file__).parent / "golden" / "fixtures" / "side-door-three-hosts.json"
+
+
+@pytest.fixture
+def group(monkeypatch):
+    """Three test hosts on one production server: no single fix closes P1."""
+    monkeypatch.setattr(evidence, "now_utc", lambda: "2000-01-01T00:00:00Z")
+    results = json.loads(GROUP.read_text(encoding="utf-8"))
+    results["evidence"] = evidence.build_evidence(results)
+    results["paths"] = paths.build_paths(results, results["evidence"])
+    return results
+
+
+def test_group_fix_flags_every_finding_in_it(group):
+    found = report.findings(group)
+    ids = [e for a in group["paths"]["fix_first"]["actions"] for e in a["evidence"]]
+    assert len(ids) == 3
+    assert [f["id"] for f in found if f["fix_first"]] == ids
+    assert [f["id"] for f in found[:3]] == ids  # on top, in order
+
+
+def test_group_fix_wording_in_every_format(group):
+    md = report.to_markdown(group, WHEN)
+    assert "- **Fix these 3 first** (E11, E12, E13, together they close P1)" in md
+    page = report.to_html(group, WHEN)
+    assert "<strong>Fix these 3 first</strong>" in page
+    assert "together they close P1" in page
+    assert "Fix this first" not in md and "Fix this first" not in page
+    rows = list(csv.DictReader(io.StringIO(report.to_csv(group))))
+    assert [r["id"] for r in rows if r["fix_first"] == "yes"] == ["E11", "E12", "E13"]
+
+
+def test_load_scan_upgrades_paths_saved_before_actions(lab, tmp_path):
+    for p in lab["paths"]["paths"]:
+        steps = [e for s in p["steps"] for e in s["evidence"]]
+        p["fix"] = [e for a in p.pop("actions") for e in a["evidence"]] + steps[-1:]
+    lab["paths"]["fix_first"] = {"evidence": "E26", "fact": "x", "owners": [], "closes": ["P1"]}
+    saved = tmp_path / "old.json"
+    saved.write_text(json.dumps(lab), encoding="utf-8")
+    loaded = report.load_scan(str(saved))
+    assert [p["id"] for p in loaded["paths"]["paths"]] == ["P1", "P2"]
+    assert all("actions" in p for p in loaded["paths"]["paths"])
+    assert loaded["paths"]["fix_first"]["closes"] == ["P1"]
+    report.to_html(loaded, WHEN)  # renders without the old keys

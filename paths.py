@@ -9,6 +9,10 @@ as strong as its weakest step. The AI only writes the paths up in plain
 English, so the same scan always gives the same paths, whatever the model.
 
 No path is ever made up: if nothing chains, the answer is "no path found".
+
+Each path also lists its actions: the real fixes that close it. One action
+is one job for one owner and holds the evidence IDs it deals with. A path is
+only closed when every one of its actions is done.
 """
 
 import re
@@ -53,14 +57,28 @@ def _step(text, facts, label):
     return {"text": text, "evidence": [f["id"] for f in facts], "label": label}
 
 
-def _path(title, severity, steps, outcome, fix):
+def _owners(facts):
+    """Every owner of these facts, each named once, in the order first seen."""
+    seen = []
+    for f in facts:
+        seen += [o for o in f.get("owners", []) if o not in seen]
+    return seen
+
+
+def _action(facts, what=None):
+    """One real fix: what to do, the evidence it deals with, and who owns it."""
+    return {"what": what or facts[0]["fact"], "evidence": [f["id"] for f in facts],
+            "owners": _owners(facts)}
+
+
+def _path(title, severity, steps, outcome, actions):
     return {
         "title": title,
         "severity": severity,
         "strength": max((s["label"] for s in steps), key=LABEL_RANK.get),
         "steps": steps,
         "outcome": outcome,
-        "fix": [f["id"] for f in fix],
+        "actions": actions,
     }
 
 
@@ -91,6 +109,8 @@ def _edge_ips(results):
 
 def build_paths(results: dict, evidence: list[dict]) -> dict:
     """Chain evidence into attack paths. Returns {"paths", "fix_first", "more"}."""
+    # Each rule ends with the path's actions (see _action). Evidence that
+    # only backs a step up, like the email facts in rule A, is in no action.
     kinds = _by_kind(evidence)
     target = results.get("target", "")
     spoof = kinds.get("email_spoofable", []) + kinds.get("email_partial", [])
@@ -108,7 +128,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             steps.append(_step(f"They send email that appears to come from {target}, "
                                f"linking to {host}", spoof, "Inference"))
         paths.append(_path(f"Take over {host}", "High", steps,
-                           f"Phishing pages or stolen cookies on a real {target} subdomain", [lead]))
+                           f"Phishing pages or stolen cookies on a real {target} subdomain", [_action([lead])]))
     for lead in kinds.get("dangling_unknown", []):
         host = lead["host"]
         steps = [
@@ -117,7 +137,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                   f"and controls what {host} serves", [lead], "Lead"),
         ]
         paths.append(_path(f"Take over {host} through an expired name", "Medium", steps,
-                           f"Phishing pages on a real {target} subdomain", [lead]))
+                           f"Phishing pages on a real {target} subdomain", [_action([lead])]))
 
     # B. Email impersonation
     for v in spoof:
@@ -129,7 +149,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                   "to staff, customers or partners", [v], "Inference"),
         ]
         paths.append(_path(f"Send email as {target}", "High" if spoofable else "Medium", steps,
-                           "Stolen passwords, payments or malware through trusted-looking email", [v]))
+                           "Stolen passwords, payments or malware through trusted-looking email", [_action([v])]))
 
     exp = results.get("exposure") or {}
     exp_ips = exp.get("ips", {})
@@ -145,7 +165,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                   "against those services directly", [r], "Inference"),
         ]
         paths.append(_path(f"Attack the exposed services on {ip}", "High", steps,
-                           "Direct access to the server or its data", [r]))
+                           "Direct access to the server or its data", [_action([r])]))
 
     # Which IPs each live host is on, for D and E
     enr = results.get("enrichment") or {}
@@ -194,8 +214,11 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             steps.append(_step("The server shows software versions an attacker can match "
                                "to public exploits (versions must be verified)", leaks, "Lead"))
         side_door_ips.update(ips)
+        # One action per risky host: each one is its own door, so all of them
+        # must be dealt with. The version leaks only back the last step up.
         paths.append(_path(f"Use {who} as a side door into {where}", "Medium", steps,
-                           f"Access to the server that also runs {shared[0]}", names + leaks))
+                           f"Access to the server that also runs {shared[0]}",
+                           [_action([r]) for r in names]))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped)
     for ip in sorted({e["host"] for e in kinds.get("cves", [])}
@@ -208,27 +231,89 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                  _step("An attacker checks whether the running version really has those flaws "
                        "and tries public exploits", cves + leaks, "Lead")]
         paths.append(_path(f"Exploit known flaws on {ip}", "Medium" if cves else "Low", steps,
-                           "Server compromise, if the version is really vulnerable", cves + leaks))
+                           "Server compromise, if the version is really vulnerable",
+                           [_action(cves + leaks, f"Upgrade or patch the server software on {ip}")]))
 
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
     more = max(0, len(paths) - MAX_PATHS)
     paths = paths[:MAX_PATHS]
     for i, p in enumerate(paths, 1):
         p["id"] = f"P{i}"
-    return {"paths": paths, "fix_first": _fix_first(paths, evidence), "more": more}
+    return {"paths": paths, "fix_first": _fix_first(paths), "more": more}
 
 
-def _fix_first(paths, evidence):
-    """The one fix that closes the most paths (ties go to the more severe path)."""
-    counts = {}
+def _fix_first(paths):
+    """What to fix first, as a list of actions.
+
+    An action closes a path on its own only when it is that path's only
+    action. The single action that closes the most paths wins (ties go to
+    the more severe path). When no single action closes any path, the answer
+    is every action of the most severe path: together they close it.
+
+    "closes" = paths closed by doing everything in "actions". "partial" =
+    paths the chosen action is only one part of ({"path": "P1", "of": 3}),
+    and "still_required_actions" = the other actions those paths need.
+    """
+    closes, partial, by_key = {}, {}, {}
     for p in paths:  # already sorted most severe first
-        for eid in p["fix"]:
-            counts.setdefault(eid, []).append(p["id"])
-    if not counts:
+        for a in p["actions"]:
+            key = tuple(a["evidence"])
+            by_key.setdefault(key, a)
+            if len(p["actions"]) == 1:
+                closes.setdefault(key, []).append(p["id"])
+            else:
+                partial.setdefault(key, []).append({"path": p["id"], "of": len(p["actions"])})
+    if closes:
+        best = max(closes, key=lambda key: len(closes[key]))  # first one wins a tie
+        part_of = {x["path"] for x in partial.get(best, [])}
+        others = [a for p in paths if p["id"] in part_of
+                  for a in p["actions"] if tuple(a["evidence"]) != best]
+        return {"actions": [by_key[best]], "closes": closes[best],
+                "partial": partial.get(best, []), "still_required_actions": others}
+    top = next((p for p in paths if p["actions"]), None)
+    if not top:
         return None
-    best = max(counts, key=lambda eid: len(counts[eid]))  # first one wins a tie
-    fact = next(e for e in evidence if e["id"] == best)
-    return {"evidence": best, "fact": fact["fact"], "owners": fact["owners"], "closes": counts[best]}
+    return {"actions": top["actions"], "closes": [top["id"]],
+            "partial": [], "still_required_actions": []}
+
+
+def fix_first_parts(fix: dict) -> dict:
+    """The pieces of the "Fix this first" line, the same in every output.
+
+    Several actions are never worded as if one of them closes the path:
+    the label counts them and the text says they close it together.
+    """
+    actions = fix["actions"]
+    one = len(actions) == 1
+    return {
+        "label": "Fix this first" if one else f"Fix these {len(actions)} first",
+        "ids": [eid for a in actions for eid in a["evidence"]],
+        "owners": ", ".join(_owners(actions)) or "unknown",
+        "closes": ("closes " if one else "together they close ") + ", ".join(fix["closes"]),
+        "what": "; ".join(a["what"] for a in actions),
+    }
+
+
+def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
+    """Give a scan saved before v1.10 its actions, keeping its paths and IDs.
+
+    Old paths had "fix": a flat list of evidence IDs. Risky-name facts
+    become one action each, version facts on a side door are dropped (they
+    only back a step up), other version facts become one upgrade action.
+    """
+    if all("actions" in p for p in built["paths"]):
+        return built
+    by_id = {e["id"]: e for e in evidence}
+    for p in built["paths"]:
+        facts = [by_id[eid] for eid in p.pop("fix", []) if eid in by_id]
+        versions = [f for f in facts if f.get("kind") in ("cves", "version_leak")]
+        rest = [f for f in facts if f not in versions]
+        p["actions"] = [_action([f]) for f in rest]
+        if versions and not rest:
+            where = p["title"].rsplit(" ", 1)[-1]
+            p["actions"] = [_action(versions, f"Upgrade or patch the server software on {where}")]
+    built["fix_first"] = _fix_first(built["paths"])
+    return built
 
 
 def check_paths(report: str, built: dict) -> tuple[list[str], list[str]]:
@@ -259,7 +344,7 @@ def paths_appendix(built: dict) -> str:
         lines.append(f"- {built['more']} lower-ranked path(s) left out")
     fix = built.get("fix_first")
     if fix:
-        owners = ", ".join(fix["owners"]) or "unknown"
-        lines += ["", f"**Fix this first** ({fix['evidence']}, owner: {owners}, "
-                      f"closes {', '.join(fix['closes'])}): {fix['fact']}"]
+        t = fix_first_parts(fix)
+        lines += ["", f"**{t['label']}** ({', '.join(t['ids'])}, owner: {t['owners']}, "
+                      f"{t['closes']}): {t['what']}"]
     return "\n".join(lines) + "\n"

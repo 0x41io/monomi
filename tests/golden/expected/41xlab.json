@@ -425,8 +425,17 @@
           }
         ],
         "outcome": "Stolen passwords, payments or malware through trusted-looking email",
-        "fix": [
-          "E26"
+        "actions": [
+          {
+            "what": "Email spoofing verdict for 41xlab.com (worked out by code from the DMARC policy): spoofable, DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes",
+            "evidence": [
+              "E26"
+            ],
+            "owners": [
+              "DNS admin",
+              "email admin"
+            ]
+          }
         ],
         "id": "P1"
       },
@@ -470,25 +479,47 @@
           }
         ],
         "outcome": "Access to the server that also runs 41xlab.com",
-        "fix": [
-          "E15",
-          "E16",
-          "E17",
-          "E18"
+        "actions": [
+          {
+            "what": "dev.41xlab.com is live and its name puts it in the 'non-production' category (label 'dev' matched rule word 'dev')",
+            "evidence": [
+              "E15"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          },
+          {
+            "what": "staging.41xlab.com is live and its name puts it in the 'non-production' category (label 'staging' matched rule word 'staging')",
+            "evidence": [
+              "E16"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          }
         ],
         "id": "P2"
       }
     ],
     "fix_first": {
-      "evidence": "E26",
-      "fact": "Email spoofing verdict for 41xlab.com (worked out by code from the DMARC policy): spoofable, DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes",
-      "owners": [
-        "DNS admin",
-        "email admin"
+      "actions": [
+        {
+          "what": "Email spoofing verdict for 41xlab.com (worked out by code from the DMARC policy): spoofable, DMARC doesn't enforce, so mail pretending to be this domain can still reach inboxes",
+          "evidence": [
+            "E26"
+          ],
+          "owners": [
+            "DNS admin",
+            "email admin"
+          ]
+        }
       ],
       "closes": [
         "P1"
-      ]
+      ],
+      "partial": [],
+      "still_required_actions": []
     },
     "more": 0
   }
