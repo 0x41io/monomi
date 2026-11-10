@@ -26,6 +26,7 @@ import evidence
 import mcp_setup
 import paths
 import report
+import suggest
 import fingerprint
 import history
 import internetdb
@@ -600,6 +601,21 @@ def show_paths(results: dict) -> None:
         info(f"{built['more_leads']} more lead(s) not shown.")
 
 
+def show_next_checks(results: dict, cves_saved: bool = False) -> None:
+    """Checks worth running next, with the reason from this scan. Never runs one."""
+    checks = suggest.next_checks(results, cves_saved)
+    results["next_checks"] = checks  # saved with --json, so a script or agent can read them
+    if not checks:
+        return
+    print()
+    info("Next checks worth running (suggestions only: nothing runs unless you add the flag):")
+    print()
+    width = max(len(c["flag"]) for c in checks)
+    for c in checks:
+        active = "ACTIVE, sends requests to the target: " if c["active"] else ""
+        print(f"    {c['flag']:<{width}}  {active}{ui.safe(c['why'])}")
+
+
 def write_ai_report(results: dict) -> None:
     """--ai: have Claude write the report, save it to reports/, and show it in the terminal."""
     print()
@@ -861,6 +877,7 @@ def main() -> int:
     results["evidence"] = evidence.build_evidence(results)
     results["paths"] = paths.build_paths(results, results["evidence"])
     show_paths(results)
+    show_next_checks(results, cves_saved=bool(args.cves))
     if args.ai:
         write_ai_report(results)
     if args.export:
