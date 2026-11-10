@@ -356,3 +356,67 @@ def test_check_takeover_from_hosts_file(monkeypatch, tmp_path):
     assert seen["hosts"] == ["a"]
     assert result["rejected"][0]["host"] == "bad host"
     assert result["batch"]["next_start"] is None
+
+def test_find_subdomains_includes_next_checks(monkeypatch):
+    """find_subdomains attaches next_checks; enrich is suggested when hosts exist."""
+    def fake_collect(results, domain, **kwargs):
+        results["sources"] = {"crtsh": {"subdomains": ["app", "www"], "subdomain_count": 2,
+                                         "collected_at": "2026-01-01T00:00:00Z"}}
+        results["errors"] = {}
+    monkeypatch.setattr(mcp_server, "collect_ct", fake_collect)
+    monkeypatch.setattr(mcp_server, "categorize_all", lambda hosts, domain: {})
+    result = mcp_server.find_subdomains("lab.invalid", detail="summary")
+    assert "next_checks" in result
+    flags = [c["flag"] for c in result["next_checks"]]
+    assert "--enrich" in flags
+    assert "--email" in flags
+    full = mcp_server.find_subdomains("lab.invalid", detail="full")
+    assert full["next_checks"] == result["next_checks"]
+
+
+def test_enrich_hosts_suppresses_enrich_suggests_ports(monkeypatch):
+    """After enrich, --enrich is gone and --ports appears when own IPs exist."""
+    def fake_enrich(hosts):
+        return {
+            "hosts": {"app": {"ips": ["192.0.2.10"], "provider": "Example", "private_ips": []}},
+            "providers": {"Example": 1},
+            "resolved": 1,
+            "unique_ips": 1,
+            "not_resolving": {},
+            "private_ip_hosts": [],
+        }
+    monkeypatch.setattr(mcp_server, "enrich", fake_enrich)
+    monkeypatch.setattr(mcp_server, "owners", lambda *a: ["dns"])
+    result = mcp_server.enrich_hosts(["app.lab"], detail="summary")
+    flags = [c["flag"] for c in result["next_checks"]]
+    assert "--enrich" not in flags
+    assert "--ports" in flags
+
+
+def test_check_ports_suppresses_ports(monkeypatch):
+    """After check_ports, --ports is not re-suggested."""
+    def fake_enrich(hosts):
+        return {"hosts": {"app": {"ips": ["192.0.2.10"], "provider": "Example", "private_ips": []}},
+                "not_resolving": {}}
+    def fake_lookup(enr):
+        return {"ips": {"192.0.2.10": {"shared_edge": False, "vulns": [], "hosts": ["app.lab"],
+                                       "ports": [443], "risky": [], "provider": "Example"}},
+                "nothing_seen": {}, "checked": 1, "errors": 0, "skipped": 0,
+                "unique_cves": [], "risky": []}
+    monkeypatch.setattr(mcp_server, "enrich", fake_enrich)
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", fake_lookup)
+    monkeypatch.setattr(mcp_server, "owners", lambda *a: ["server"])
+    result = mcp_server.check_ports(["app.lab"], detail="summary")
+    flags = [c["flag"] for c in result["next_checks"]]
+    assert "--ports" not in flags
+
+
+def test_check_email_auth_includes_next_checks(monkeypatch):
+    def fake_check(domain):
+        return {"verdict": "ok", "spf": {}, "dmarc": {}, "dkim": {}}
+    monkeypatch.setattr(mcp_server, "check_email", fake_check)
+    monkeypatch.setattr(mcp_server, "owners", lambda *a: ["dns", "email"])
+    result = mcp_server.check_email_auth("lab.invalid")
+    assert "next_checks" in result
+    flags = [c["flag"] for c in result["next_checks"]]
+    assert "--email" not in flags

@@ -13,6 +13,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from monomi import clean_domain, collect_ct
+import suggest
 from categorize import categorize_all
 from emailauth import check_email
 from takeover import check_hosts
@@ -72,6 +73,18 @@ def finish(tool: str, full: dict, summary: dict, detail: str) -> dict:
     if detail == "full":
         return {"detail": "full", **full, "full_results_file": path}
     return {"detail": "summary", **summary, "full_results_file": path}
+
+
+def attach_next_checks(full: dict, summary: dict, results_for_suggest: dict) -> None:
+    """Add the deterministic next_checks list to both the full and summary dicts.
+    Suggestions only: nothing is run. Same list the CLI already shows.
+    Incomplete or unexpected shapes produce an empty list instead of failing the tool."""
+    try:
+        checks = suggest.next_checks(results_for_suggest)
+    except (AttributeError, KeyError, TypeError):
+        checks = []
+    full["next_checks"] = checks
+    summary["next_checks"] = checks
 
 
 def first(names, cap: int = LIST_CAP) -> list:
@@ -212,7 +225,9 @@ def find_subdomains(domain: str, detail: str = "summary") -> dict:
         },
         "errors": results["errors"],
     }
-    return finish("find_subdomains", full, subdomains_summary(full), detail)
+    summary = subdomains_summary(full)
+    attach_next_checks(full, summary, {"target": domain, "subdomains": hostnames})
+    return finish("find_subdomains", full, summary, detail)
 
 
 def subdomains_summary(full: dict) -> dict:
@@ -244,7 +259,9 @@ def check_email_auth(domain: str) -> dict:
     domain = clean_domain(domain)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_email(domain)
-    return {"domain": domain, "owners": owners("dns", "email"), **result}
+    out = {"domain": domain, "owners": owners("dns", "email"), **result}
+    out["next_checks"] = suggest.next_checks({"target": domain, "email": result})
+    return out
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
@@ -284,7 +301,9 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, **result}
-    return finish("check_takeover", full, takeover_summary(full), detail)
+    summary = takeover_summary(full)
+    attach_next_checks(full, summary, {"subdomains": checked, "takeover": result})
+    return finish("check_takeover", full, summary, detail)
 
 
 def takeover_summary(full: dict) -> dict:
@@ -332,7 +351,9 @@ def enrich_hosts(hostnames: list[str] | None = None, detail: str = "summary",
             entry["owners"] = owners("dns")
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, **result}
-    return finish("enrich_hosts", full, enrich_summary(full), detail)
+    summary = enrich_summary(full)
+    attach_next_checks(full, summary, {"subdomains": checked, "enrichment": result})
+    return finish("enrich_hosts", full, summary, detail)
 
 
 def enrich_summary(full: dict) -> dict:
@@ -415,7 +436,13 @@ def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
     full = {"summary": ports_summary(enrichment, exposure),
             "hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, "not_resolving": enrichment.get("not_resolving", {}), **exposure}
-    return finish("check_ports", full, ports_brief(full), detail)
+    summary = ports_brief(full)
+    attach_next_checks(full, summary, {
+        "subdomains": checked,
+        "enrichment": enrichment,
+        "exposure": exposure,
+    })
+    return finish("check_ports", full, summary, detail)
 
 
 def ports_brief(full: dict) -> dict:
