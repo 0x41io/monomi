@@ -64,8 +64,8 @@
       "owners": [
         "server / infrastructure admin"
       ],
-      "kind": null,
-      "host": null
+      "kind": "open_ports",
+      "host": "203.0.113.10"
     },
     {
       "id": "E6",
@@ -120,7 +120,53 @@
         "id": "P1"
       }
     ],
-    "leads": [],
+    "leads": [
+      {
+        "title": "Check whether www.cves.test can be reached around Cloudflare through 203.0.113.10",
+        "severity": "Low",
+        "strength": "Inference",
+        "steps": [
+          {
+            "text": "www.cves.test is behind Cloudflare, which filters traffic before it reaches the real server",
+            "evidence": [
+              "E4"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "cves.test points straight at 203.0.113.10, with no CDN in front, and a web server answers there",
+            "evidence": [
+              "E3",
+              "E5"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "If 203.0.113.10 is also the server behind www.cves.test, an attacker can send requests to it directly and skip Cloudflare's protection",
+            "evidence": [
+              "E4",
+              "E3"
+            ],
+            "label": "Inference"
+          }
+        ],
+        "outcome": "Attacks Cloudflare would have blocked reach the server",
+        "actions": [
+          {
+            "what": "Only accept web traffic on 203.0.113.10 from Cloudflare, or put its hosts behind Cloudflare too",
+            "evidence": [
+              "E3"
+            ],
+            "owners": [
+              "server / infrastructure admin",
+              "CDN / proxy admin"
+            ]
+          }
+        ],
+        "missing": "nothing shows that 203.0.113.10 is the server behind www.cves.test (a CDN hides its origin from outside)",
+        "id": "L1"
+      }
+    ],
     "fix_first": {
       "actions": [
         {

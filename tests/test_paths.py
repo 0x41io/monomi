@@ -54,8 +54,10 @@ def test_lab_gives_email_and_side_door_paths():
     titles = [p["title"] for p in out["paths"]]
     # A risky name on the production server, with no way in shown, is a lead (L1), not a path
     assert titles == ["Send email as lab"]
-    assert [p["title"] for p in out["leads"]] == ["Check whether staging is a side door into 198.51.100.7"]
-    assert [p["id"] for p in out["paths"] + out["leads"]] == ["P1", "L1"]
+    assert [p["title"] for p in out["leads"]] == [
+        "Check whether staging is a side door into 198.51.100.7",
+        "Check whether www can be reached around Cloudflare through 198.51.100.7"]
+    assert [p["id"] for p in out["paths"] + out["leads"]] == ["P1", "L1", "L2"]
     side = out["leads"][0]
     assert side["severity"] == "Medium"
     assert side["strength"] == "Lead"  # the version step needs checking
@@ -149,17 +151,17 @@ def test_paths_are_capped():
     out, _ = run(results)
     assert len(out["paths"]) == 10
     assert out["more"] == 3  # 12 takeovers + email = 13 (the side door is a lead)
-    assert len(out["leads"]) == 1 and out["more_leads"] == 0
+    assert len(out["leads"]) == 2 and out["more_leads"] == 0
 
 
 def test_check_paths_finds_left_out_and_made_up_paths():
     from paths import check_paths
-    out, _ = run(lab_results())  # P1 and lead L1
-    assert check_paths("### P1: email\n### L1: side door", out) == ([], [])
-    assert check_paths("### P1: email only", out) == (["L1"], [])
-    assert check_paths("### P1 ### L1 ### P2 ### L2", out) == ([], ["P2", "L2"])
+    out, _ = run(lab_results())  # P1 and leads L1, L2
+    assert check_paths("### P1: email\n### L1: side door\n### L2: CDN", out) == ([], [])
+    assert check_paths("### P1: email only", out) == (["L1", "L2"], [])
+    assert check_paths("### P1 ### L1 ### L2 ### P2 ### L3", out) == ([], ["P2", "L3"])
     # Words like HTTP2, SP1 or TLS1 aren't path or lead IDs
-    assert check_paths("P1 L1 over HTTP2, SP1, TLS1", out) == ([], [])
+    assert check_paths("P1 L1 L2 over HTTP2, SP1, TLS1", out) == ([], [])
 
 
 def test_appendix_lists_paths_and_fix_first():
@@ -216,6 +218,11 @@ def test_dangling_cname_under_cloud_provider_builds_no_path():
     assert fact["kind"] == "dangling_provider"
     assert "can-i-take-over-xyz" in fact["fact"]
     assert not any("oldapi" in p["title"] for p in out["paths"])
+
+
+def other_leads(out):
+    """Leads except "go around the CDN", which the lab always has (www is behind one)."""
+    return [p for p in out["leads"] if "reached around" not in p["title"]]
 
 
 def side_doors(out):
@@ -321,7 +328,7 @@ def test_known_flaws_are_one_upgrade_action():
     (action,) = path["actions"]
     assert action["what"] == "Upgrade or patch the server software on 198.51.100.7"
     assert action["evidence"] == path["steps"][0]["evidence"]
-    assert out["leads"] == []
+    assert other_leads(out) == []
 
 
 def test_a_version_with_no_matched_cve_is_a_lead():
@@ -331,8 +338,8 @@ def test_a_version_with_no_matched_cve_is_a_lead():
     results["email"]["verdict"]["verdict"] = "protected"
     out, ev = run(results)
     assert out["paths"] == [] and out["fix_first"] is None
-    (lead,) = out["leads"]
-    assert lead["id"] == "L1" and lead["severity"] == "Low"
+    (lead,) = other_leads(out)
+    assert lead["id"] == "L2" and lead["severity"] == "Low"  # after the surer CDN lead
     assert lead["title"] == "Check whether the software on 198.51.100.7 has known flaws"
     assert lead["missing"] == ("no known CVE is matched to 198.51.100.7 in this scan, "
                                "so the versions are unverified")
@@ -395,7 +402,7 @@ def test_old_saved_paths_get_actions():
 
 def test_side_door_is_a_lead_until_something_shows_a_way_in():
     out, ev = run(lab_results())
-    assert side_doors(out) == out["leads"] and len(out["leads"]) == 1
+    assert side_doors(out) == other_leads(out) and len(side_doors(out)) == 1
     # A lead is never part of "fix this first": only the email path is
     lead_ids = {e for a in out["leads"][0]["actions"] for e in a["evidence"]}
     fix_ids = {e for a in out["fix_first"]["actions"] for e in a["evidence"]}
@@ -404,7 +411,7 @@ def test_side_door_is_a_lead_until_something_shows_a_way_in():
 
 def test_known_cve_promotes_a_side_door_to_an_attack_path():
     out, ev = run(with_cves(lab_results()))
-    assert out["leads"] == []
+    assert other_leads(out) == []
     (door,) = side_doors(out)
     assert door["id"] == "P2" and door["title"] == "Use staging as a side door into 198.51.100.7"
     assert "missing" not in door
@@ -419,7 +426,7 @@ def test_risky_service_promotes_a_side_door_and_is_cited():
     results["exposure"] = {"ips": {"198.51.100.7": {"shared_edge": False, "hosts": ["lab"], "ports": [5432],
                                                     "tags": [], "risky": ["5432/PostgreSQL"], "vulns": []}}}
     out, ev = run(results)
-    assert out["leads"] == []
+    assert other_leads(out) == []
     (door,) = side_doors(out)
     risky = next(e["id"] for e in ev if e["kind"] == "risky_service")
     step = next(s for s in door["steps"] if "services open to the internet" in s["text"])
@@ -431,7 +438,7 @@ def test_web_ports_or_a_version_alone_never_promote():
     results["exposure"] = {"ips": {"198.51.100.7": {"shared_edge": False, "hosts": ["lab"], "ports": [80, 443],
                                                     "tags": [], "risky": [], "vulns": []}}}
     out, ev = run(results)
-    assert len(out["leads"]) == 1 and len(out["paths"]) == 1  # just the email path
+    assert len(other_leads(out)) == 1 and len(out["paths"]) == 1  # just the email path
 
 
 def test_only_leads_means_no_attack_path(capsys):
@@ -440,11 +447,11 @@ def test_only_leads_means_no_attack_path(capsys):
     results = lab_results()
     results["email"]["verdict"]["verdict"] = "protected"
     out, ev = run(results)
-    assert out["paths"] == [] and out["fix_first"] is None and len(out["leads"]) == 1
+    assert out["paths"] == [] and out["fix_first"] is None and len(out["leads"]) == 2
     results["paths"] = out
     show_paths(results)
     text = capsys.readouterr().out
-    assert "No attack path found, 1 lead to investigate." in text
+    assert "No attack path found, 2 leads to investigate." in text
     assert "L1  LEAD  Check whether staging is a side door" in text
     assert "Missing: nothing shows a way into this host yet" in text
     assert "Fix this first" not in text
@@ -463,7 +470,7 @@ def test_leads_are_capped():
             results["subdomains"].append(h)
             results["enrichment"]["hosts"][h] = {"ips": [ip], "provider": "DigitalOcean"}
     out, _ = run(results)
-    assert len(out["leads"]) == 10 and out["more_leads"] == 3
+    assert len(out["leads"]) == 10 and out["more_leads"] == 4  # 13 side doors + the CDN lead
     assert [p["id"] for p in out["leads"]][:2] == ["L1", "L2"]
 
 
@@ -476,3 +483,79 @@ def test_old_saved_side_door_without_a_cve_drops_the_version_facts():
     old = {"paths": [dict(old_path, id="P1", fix=names + leaks)], "fix_first": None, "more": 0}
     new = upgrade_saved(old, ev)
     assert [a["evidence"] for a in new["paths"][0]["actions"]] == [[e] for e in names]
+
+
+# ---------- Go around the CDN (v1.10) ----------
+
+def cdn_lead(out):
+    return [p for p in out["leads"] if "reached around" in p["title"]]
+
+
+def test_cdn_bypass_is_a_lead_that_names_what_is_missing():
+    out, ev = run(lab_results())
+    (lead,) = cdn_lead(out)
+    assert lead["title"] == "Check whether www can be reached around Cloudflare through 198.51.100.7"
+    assert lead["severity"] == "Low" and lead["strength"] == "Inference"
+    assert [s["label"] for s in lead["steps"]] == ["Observed", "Observed", "Inference"]
+    assert lead["steps"][0]["text"].startswith("www is behind Cloudflare")
+    assert lead["steps"][1]["text"].startswith("lab and staging point straight at 198.51.100.7")
+    assert lead["missing"] == ("nothing shows that 198.51.100.7 is the server behind www "
+                               "(a CDN hides its origin from outside)")
+    (action,) = lead["actions"]
+    assert action["what"].startswith("Only accept web traffic on 198.51.100.7 from Cloudflare")
+    assert action["owners"] == ["server / infrastructure admin", "CDN / proxy admin"]
+    # Never an attack path, never fix-first
+    assert not any("reached around" in p["title"] for p in out["paths"])
+    assert "L2" not in out["fix_first"]["closes"]
+
+
+def test_no_cdn_lead_unless_a_web_server_is_seen_on_the_own_ip():
+    results = lab_results()
+    results["fingerprint"]["hosts"] = {}  # nothing shows 198.51.100.7 answers web requests
+    out, ev = run(results)
+    assert cdn_lead(out) == []
+
+
+def test_open_web_ports_count_as_a_web_server():
+    results = lab_results()
+    results["fingerprint"]["hosts"] = {}
+    results["exposure"] = {"ips": {"198.51.100.7": {"shared_edge": False, "hosts": ["lab"], "ports": [22, 443],
+                                                    "tags": [], "risky": [], "vulns": []}}}
+    out, ev = run(results)
+    (lead,) = cdn_lead(out)
+    ports = next(e["id"] for e in ev if e["kind"] == "open_ports")
+    assert ports in lead["steps"][1]["evidence"]
+    results["exposure"]["ips"]["198.51.100.7"]["ports"] = [22, 25]  # no web port: no lead
+    out, ev = run(results)
+    assert cdn_lead(out) == []
+
+
+def test_no_cdn_lead_when_nothing_or_everything_is_behind_the_cdn():
+    results = lab_results()
+    results["enrichment"]["hosts"].pop("www")  # no host behind a CDN
+    out, ev = run(results)
+    assert cdn_lead(out) == []
+    results = lab_results()
+    for h in ("lab", "staging"):  # every host behind the CDN: no server to go around to
+        results["enrichment"]["hosts"][h] = {"ips": ["203.0.113.9"], "provider": "Cloudflare"}
+    out, ev = run(results)
+    assert cdn_lead(out) == []
+
+
+def test_cdn_lead_never_points_at_a_private_ip():
+    results = lab_results()
+    for h in ("lab", "staging"):
+        results["enrichment"]["hosts"][h] = {"ips": ["10.0.0.5"], "private_ips": ["10.0.0.5"], "provider": None}
+    out, ev = run(results)
+    assert cdn_lead(out) == []
+
+
+def test_cdn_lead_in_a_big_scan_cites_only_the_hosts_it_names():
+    results = lab_results()
+    for i in range(20):
+        results["subdomains"].append(f"shop{i}")
+        results["enrichment"]["hosts"][f"shop{i}"] = {"ips": ["203.0.113.9"], "provider": "Cloudflare"}
+    out, ev = run(results)
+    (lead,) = cdn_lead(out)
+    assert "and 18 more" in lead["title"]  # 21 hosts behind the CDN, 3 named
+    assert len(lead["steps"][0]["evidence"]) == 3

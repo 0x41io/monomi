@@ -68,8 +68,8 @@ def test_summary_counts(lab):
     assert s["sources"] == ["Cert Spotter", "hosts file"]
     # dev/staging share the lab's server, but nothing shows a way in: a lead
     assert s["paths"] == {"High": 1, "Medium": 0, "Low": 0}
-    assert s["leads"] == 1
-    assert report.path_counts(s) == "1 attack path (1 High), 1 lead to investigate"
+    assert s["leads"] == 2  # the side door, and going around Cloudflare
+    assert report.path_counts(s) == "1 attack path (1 High), 2 leads to investigate"
 
 
 # ---------- Markdown ----------
@@ -298,7 +298,7 @@ def test_load_scan_upgrades_paths_saved_before_actions(lab, tmp_path):
     saved.write_text(json.dumps(lab), encoding="utf-8")
     loaded = report.load_scan(str(saved))
     assert [p["id"] for p in loaded["paths"]["paths"]] == ["P1"]
-    assert [p["id"] for p in loaded["paths"]["leads"]] == ["L1"]
+    assert [p["id"] for p in loaded["paths"]["leads"]] == ["L1", "L2"]
     assert all("actions" in p for p in loaded["paths"]["paths"])
     assert loaded["paths"]["fix_first"]["closes"] == ["P1"]
     report.to_html(loaded, WHEN)  # renders without the old keys
@@ -307,10 +307,11 @@ def test_load_scan_upgrades_paths_saved_before_actions(lab, tmp_path):
 # ---------- Lead tier (v1.10) ----------
 
 def test_leads_show_in_every_format_but_never_as_fix_first(lab):
-    (lead,) = lab["paths"]["leads"]
-    assert lead["id"] == "L1"
+    lead, cdn = lab["paths"]["leads"]
+    assert (lead["id"], cdn["id"]) == ("L1", "L2")
     md = report.to_markdown(lab, WHEN)
-    assert "1 attack path (1 High), 1 lead to investigate" in md
+    assert "1 attack path (1 High), 2 leads to investigate" in md
+    assert "- **L2: Check whether www.41xlab" + COM + " can be reached around Cloudflare" in md
     assert "**Leads to investigate**" in md and "- **L1: Check whether" in md
     assert "  - Missing: nothing shows a way into these hosts yet" in md
     page = report.to_html(lab, WHEN)

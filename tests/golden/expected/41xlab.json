@@ -256,7 +256,7 @@
         }
       ],
       "owners": [],
-      "kind": null,
+      "kind": "web_tech",
       "host": "www.41xlab.com"
     },
     {
@@ -503,6 +503,57 @@
         ],
         "missing": "nothing shows a way into these hosts yet (no risky open service or known CVE on 64.227.89.72)",
         "id": "L1"
+      },
+      {
+        "title": "Check whether www.41xlab.com can be reached around Cloudflare through 64.227.89.72",
+        "severity": "Low",
+        "strength": "Inference",
+        "steps": [
+          {
+            "text": "www.41xlab.com is behind Cloudflare, which filters traffic before it reaches the real server",
+            "evidence": [
+              "E14"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "41xlab.com, dev.41xlab.com and staging.41xlab.com point straight at 64.227.89.72, with no CDN in front, and a web server answers there",
+            "evidence": [
+              "E8",
+              "E9",
+              "E13",
+              "E17"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "If 64.227.89.72 is also the server behind www.41xlab.com, an attacker can send requests to it directly and skip Cloudflare's protection",
+            "evidence": [
+              "E14",
+              "E8",
+              "E9",
+              "E13"
+            ],
+            "label": "Inference"
+          }
+        ],
+        "outcome": "Attacks Cloudflare would have blocked reach the server",
+        "actions": [
+          {
+            "what": "Only accept web traffic on 64.227.89.72 from Cloudflare, or put its hosts behind Cloudflare too",
+            "evidence": [
+              "E8",
+              "E9",
+              "E13"
+            ],
+            "owners": [
+              "server / infrastructure admin",
+              "CDN / proxy admin"
+            ]
+          }
+        ],
+        "missing": "nothing shows that 64.227.89.72 is the server behind www.41xlab.com (a CDN hides its origin from outside)",
+        "id": "L2"
       }
     ],
     "fix_first": {

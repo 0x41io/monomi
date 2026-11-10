@@ -118,7 +118,7 @@ def build_evidence(results: dict) -> list[dict]:
             fact = f"{ip} ({hosts}) has open ports: {ports}"
             if d["tags"]:
                 fact += f"; Shodan tags: {', '.join(d['tags'])}"
-            add(fact, shodan_source, ("server",))
+            add(fact, shodan_source, ("server",), kind="open_ports", host=ip)
             if d["risky"]:
                 add(f"{ip} ({hosts}) runs services that usually shouldn't face the internet: "
                     f"{', '.join(d['risky'])}", shodan_source, ("server",), kind="risky_service", host=ip)
@@ -148,7 +148,7 @@ def build_evidence(results: dict) -> list[dict]:
                 fact = f"{host} (HTTP {r['status']}) shows {t['tech']} in its response ({t['evidence']})"
                 if t["version"]:
                     fact += f"; exact version {t['version']} is exposed"
-                add(fact, fp_source, ("server",) if t["version"] else (), kind="version_leak" if t["version"] else None, host=host)
+                add(fact, fp_source, ("server",) if t["version"] else (), kind="version_leak" if t["version"] else "web_tech", host=host)
 
     # 6. Security headers missing or weak (from the same --fingerprint request)
     if fp:

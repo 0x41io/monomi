@@ -187,8 +187,8 @@
       "owners": [
         "server / infrastructure admin"
       ],
-      "kind": null,
-      "host": null
+      "kind": "open_ports",
+      "host": "192.0.2.40"
     },
     {
       "id": "E15",

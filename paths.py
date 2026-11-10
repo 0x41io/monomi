@@ -18,6 +18,11 @@ The same bar goes for software versions: a version a server shows is only
 an attack path once a known CVE is matched to it; until then it is a lead.
 Leads are never part of "fix this first".
 
+One lead is only ever a lead: "go around the CDN". Some hosts sit behind a
+CDN while others point straight at a web server of the target's own. If
+that server is also the CDN's origin, the CDN can be skipped, but a CDN
+hides its origin, so nothing seen from outside can show that.
+
 Each path also lists its actions: the real fixes that close it. One action
 is one job for one owner and holds the evidence IDs it deals with. A path is
 only closed when every one of its actions is done.
@@ -25,6 +30,7 @@ only closed when every one of its actions is done.
 
 import re
 from categorize import categorize
+from evidence import OWNERS
 from internetdb import SHARED_EDGE, edge_from_ip
 
 LABEL_RANK = {"Observed": 0, "Inference": 1, "Lead": 2}
@@ -34,6 +40,9 @@ MAX_PATHS = 10
 # More hosts than this on the same IPs = a shared load balancer or ingress,
 # not one server, so rule E builds no side door through it
 SHARED_INGRESS = 10
+
+# Open ports that mean "this IP answers web requests" (rule F)
+WEB_PORTS = {80, 443, 8080, 8443}
 
 # Rule E wording per hostname category: (one host, several hosts, why it's a soft target)
 SIDE_DOOR_WORDS = {
@@ -73,10 +82,14 @@ def _owners(facts):
     return seen
 
 
-def _action(facts, what=None):
-    """One real fix: what to do, the evidence it deals with, and who owns it."""
+def _action(facts, what=None, owners=None):
+    """One real fix: what to do, the evidence it deals with, and who owns it.
+
+    The owners come from the facts, unless the facts have none of their own
+    (a plain "resolves to" fact) and the rule names them.
+    """
     return {"what": what or facts[0]["fact"], "evidence": [f["id"] for f in facts],
-            "owners": _owners(facts)}
+            "owners": owners or _owners(facts)}
 
 
 def _path(title, severity, steps, outcome, actions):
@@ -275,6 +288,51 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                        "and tries public exploits", cves + leaks, "Lead")]
         paths.append(_path(f"Exploit known flaws on {ip}", "Medium", steps,
                            "Server compromise, if the version is really vulnerable", action))
+
+    # F. Go around the CDN: always a lead (see the top of this file). Built
+    # only when a server of the target's own is seen answering web requests.
+    hosts_of = {}  # the target's own public IPs -> hosts pointing straight at them
+    for h, h_ips in sorted(ips_of.items()):
+        for ip in h_ips:
+            if ip not in edge and ip not in private.get(h, []):
+                hosts_of.setdefault(ip, []).append(h)
+    fronted = sorted(h for h, h_ips in ips_of.items() if h_ips and all(ip in edge for ip in h_ips))
+    web = {}  # own IP -> facts showing it answers web requests
+    for e in kinds.get("open_ports", []):
+        if e["host"] in hosts_of and WEB_PORTS & set(exp_ips.get(e["host"], {}).get("ports", [])):
+            web.setdefault(e["host"], []).append(e)
+    for e in kinds.get("web_tech", []) + kinds.get("version_leak", []):
+        for ip in ips_of.get(e["host"], []):
+            if ip in hosts_of:
+                web.setdefault(ip, []).append(e)
+    if fronted and web:
+        own_ips = sorted(web)
+        direct = sorted({h for ip in own_ips for h in hosts_of[ip]})
+        vendors = {enr["hosts"][h].get("provider") for h in fronted} & SHARED_EDGE
+        cdn = vendors.pop() if len(vendors) == 1 else "the CDN"
+        where, who, straight = _names(own_ips), _names(fronted), _names(direct)
+        resolves = {e["host"]: e for e in kinds.get("resolves", [])}
+        # Cite the hosts the text names (up to 3 a side), not every host in a big scan
+        front_facts = [resolves[h] for h in fronted[:3] if h in resolves]
+        direct_facts = [resolves[h] for h in direct[:3] if h in resolves]
+        web_facts = [f for ip in own_ips[:3] for f in web[ip][:1]]
+        one, one_direct = len(fronted) == 1, len(direct) == 1
+        steps = [
+            _step(f"{who} {'is' if one else 'are'} behind {cdn}, which filters traffic before it "
+                  "reaches the real server", front_facts, "Observed"),
+            _step(f"{straight} {'points' if one_direct else 'point'} straight at {where}, with no CDN "
+                  "in front, and a web server answers there", direct_facts + web_facts, "Observed"),
+            _step(f"If {where} is also the server behind {who}, an attacker can send requests to it "
+                  f"directly and skip {cdn}'s protection", front_facts + direct_facts, "Inference"),
+        ]
+        lead = _path(f"Check whether {who} can be reached around {cdn} through {where}", "Low", steps,
+                     f"Attacks {cdn} would have blocked reach the server",
+                     [_action([resolves[h] for h in hosts_of[ip][:3] if h in resolves] or web[ip][:1],
+                              f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
+                              [OWNERS["server"], OWNERS["cdn"]]) for ip in own_ips[:3]])
+        lead["missing"] = (f"nothing shows that {where} is the server behind {who} "
+                           "(a CDN hides its origin from outside)")
+        leads.append(lead)
 
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
     more = max(0, len(paths) - MAX_PATHS)
