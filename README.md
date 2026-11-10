@@ -35,7 +35,9 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **AI analysis (optional):** Claude groups hosts by purpose (and by hosting provider when `--enrich` is on), flags names worth reviewing (High / Medium / Low), suggests defensive steps, and states the limits of the data
 - **Evidence-backed findings:** before the AI step, Monomi's code turns the collected data into a numbered evidence list (E1, E2, ...), each item a plain fact with its source and UTC collection time. Every finding in the AI report cites the evidence it rests on (e.g. `[E12, E194]`) and is labeled **Observed**, **Inference** or **Lead**. After the report is written, Monomi checks every citation and warns if the AI cited evidence that doesn't exist. Saved reports end with an **Evidence** section listing each cited item, written by code, not by the AI
 - **Attack paths:** Monomi's code chains findings into the ways an attacker would most likely try to get in: a claimable subdomain takeover (made worse when the domain's email is spoofable), email impersonation, services that shouldn't face the internet, known-vulnerable versions, and non-production hosts sharing a server with production. Every step cites evidence and is labeled Observed / Inference / Lead by code, and a path is only as strong as its weakest step. The paths print at the end of every scan that ran a check, with no AI needed. With `--ai`, Claude writes them up in a report section of their own, but can't add, drop or reorder a path or change a label, and Monomi checks the report afterwards. If nothing chains, the answer is "no attack path found", never an invented one
-- **Owners and "fix this first":** every finding carries the roles that would fix it (DNS admin, email admin, web app team, CDN / proxy admin, server / infrastructure admin, cloud / service account owner), worked out by code and never naming people. Recommendations start with their owner, and the report leads with the one fix that closes the most attack paths
+- **Leads, kept apart from attack paths:** something that looks like a way in but is missing a piece is a lead (L1, L2...), not an attack path, and it says what's missing. A test host on the production server is a lead until a risky open service or a known CVE shows a way into that server. A software version with no matched CVE is a lead. "Go around the CDN" (some hosts behind a CDN, others pointing straight at a web server of the target's own) is always a lead, since a CDN hides its origin. Leads are listed after the attack paths, never count as one, and never appear in "fix this first"
+- **Owners and "fix this first":** every finding carries the roles that would fix it (DNS admin, email admin, web app team, CDN / proxy admin, server / infrastructure admin, cloud / service account owner), worked out by code and never naming people. Recommendations start with their owner, and the report leads with the one fix that closes the most attack paths. When a path needs several fixes (three test hosts on one server), it lists all of them ("Fix these 3 first ... together they close P1") and never says one of them closes it
+- **Next checks:** every scan ends with the checks worth running next and the reason from that scan ("1 IP is a server of the target's own: `--ports` shows its open ports and known CVEs"). Suggestions only: nothing runs unless you add the flag, and `--fingerprint` is marked as active
 - **Known hostnames (`--hosts FILE`):** check hostnames you already know alongside the ones from certificate logs, one per line. Only the target domain and its subdomains are kept, so a file can't point Monomi outside the scan, and the file's hosts stay out of scan history
 - **Formatted terminal reports:** the AI report renders in the terminal with colored headings, real tables, and High / Medium / Low badges (via [rich](https://github.com/Textualize/rich); plain Markdown if rich isn't installed or `--no-color` is set)
 - **Saved reports:** each AI analysis is written to `reports/<domain>_<timestamp>.md`
@@ -334,7 +336,8 @@ monomi/
 ├── threatintel.py        # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── evidence.py           # evidence list, owners, citation check, Evidence section
-├── paths.py              # attack paths built from the evidence, "fix this first"
+├── paths.py              # attack paths and leads built from the evidence, "fix this first"
+├── suggest.py            # next checks worth running, from what the scan found
 ├── report.py             # report exports: Markdown, HTML, findings CSV (--export, monomi.py report)
 ├── dnscheck.py           # shared DNS helper: status words, DNS-over-HTTPS double-check
 ├── history.py            # scan history + change detection
@@ -373,7 +376,7 @@ monomi/
 - A saved source copy is only used when the live source fails, and it can be up to 30 days old: hosts added or removed since then won't show.
 - Some DNS providers (Cloudflare among them) never say a name doesn't exist, so a retired hostname on those zones shows as **no_address**, not **no_such_host**.
 - DNS answers are cached. Right after a DNS change, a name that was looked up before it existed can still read as **no_such_host** until the zone's negative-cache time runs out (often up to 30 minutes), and a deleted record can keep resolving until its TTL runs out.
-- Attack paths come from fixed rules applied to what the scan saw. A path shows how an attack would most likely go, not proof that it works, and "no attack path found" means no rule matched, not that the target is safe. Paths are only as complete as the checks that ran.
+- Attack paths come from fixed rules applied to what the scan saw. A path shows how an attack would most likely go, not proof that it works, and "no attack path found" means no rule matched, not that the target is safe. A lead is weaker still: a question to check, not a finding. Paths are only as complete as the checks that ran.
 
 ## Development
 
@@ -412,9 +415,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 
 - [x] v1.9.1: runs on Windows without WSL (Windows file locking for pacing, install guide), email check falls back to DNS-over-HTTPS when port 53 fails
 - [x] v1.9.2: report exports (`--export`: Markdown, HTML, findings CSV; `monomi.py report` for saved scans), setup check (`monomi.py doctor`), one-command MCP setup (`monomi.py mcp setup`)
+- [x] v1.10: fix groups (a path lists every fix it needs, and "fix this first" never says one fix closes a path that needs several), leads kept apart from attack paths (side doors, unverified versions, "go around the CDN"), next-check suggestions. In `--json`, a path's `fix` list is now `actions`, `fix_first` holds a list of actions, and `paths` gains `leads`
 
 **Next**
-- [ ] v1.10: finds more: subfinder import and a free passive DNS source for subdomain breadth, a "go around the CDN" attack path, next-check suggestions, security header and exposed API spec checks over MCP
+- [ ] v1.11: finds more: subfinder import and a free passive DNS source for subdomain breadth, next-check suggestions in the MCP tools, security header and exposed API spec checks over MCP
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
