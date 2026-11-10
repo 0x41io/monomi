@@ -216,7 +216,7 @@
         "outcome": "Access to the server that also runs ct.sidedoor.test",
         "actions": [
           {
-            "what": "ct-uat.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'ct-uat' matched rule word 'uat')",
+            "what": "Take ct-uat.sidedoor.test off the internet or restrict who can reach it",
             "evidence": [
               "E11"
             ],
@@ -225,7 +225,7 @@
             ]
           },
           {
-            "what": "ct-uat2.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat2' of label 'ct-uat2' matched rule word 'uat')",
+            "what": "Take ct-uat2.sidedoor.test off the internet or restrict who can reach it",
             "evidence": [
               "E12"
             ],
@@ -234,7 +234,7 @@
             ]
           },
           {
-            "what": "ct-uat3.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat3' of label 'ct-uat3' matched rule word 'uat')",
+            "what": "Take ct-uat3.sidedoor.test off the internet or restrict who can reach it",
             "evidence": [
               "E13"
             ],
@@ -249,7 +249,7 @@
     "fix_first": {
       "actions": [
         {
-          "what": "ct-uat.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'ct-uat' matched rule word 'uat')",
+          "what": "Take ct-uat.sidedoor.test off the internet or restrict who can reach it",
           "evidence": [
             "E11"
           ],
@@ -258,7 +258,7 @@
           ]
         },
         {
-          "what": "ct-uat2.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat2' of label 'ct-uat2' matched rule word 'uat')",
+          "what": "Take ct-uat2.sidedoor.test off the internet or restrict who can reach it",
           "evidence": [
             "E12"
           ],
@@ -267,7 +267,7 @@
           ]
         },
         {
-          "what": "ct-uat3.sidedoor.test is live and its name puts it in the 'non-production' category (part 'uat3' of label 'ct-uat3' matched rule word 'uat')",
+          "what": "Take ct-uat3.sidedoor.test off the internet or restrict who can reach it",
           "evidence": [
             "E13"
           ],

@@ -121,6 +121,10 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
     assert fix["actions"] == side["actions"]
     assert fix["closes"] == ["P1"]
     assert fix["actions"][0]["owners"] == ["server / infrastructure admin"]
+    # The fix says what to do, not why the name matched a rule
+    assert [a["what"] for a in fix["actions"]] == [
+        "Take dev off the internet or restrict who can reach it",
+        "Take staging off the internet or restrict who can reach it"]
 
 
 def test_paths_are_capped():
@@ -332,7 +336,8 @@ def test_terminal_shows_a_group_fix(capsys):
     results["paths"] = out
     show_paths(results)
     text = capsys.readouterr().out
-    assert "Fix these 3 first (server / infrastructure admin)" in text
+    assert "Fix these 3 first (server / infrastructure admin): Take dev off the internet" in text
+    assert "matched rule word" not in text.split("Fix these 3 first")[1]
     assert "-> together they close P1" in text
 
 

@@ -216,9 +216,11 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         side_door_ips.update(ips)
         # One action per risky host: each one is its own door, so all of them
         # must be dealt with. The version leaks only back the last step up.
+        # The action says what to do; why the name is risky stays in the evidence.
         paths.append(_path(f"Use {who} as a side door into {where}", "Medium", steps,
                            f"Access to the server that also runs {shared[0]}",
-                           [_action([r]) for r in names]))
+                           [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
+                            for r in names]))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped)
     for ip in sorted({e["host"] for e in kinds.get("cves", [])}
@@ -308,7 +310,8 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
         facts = [by_id[eid] for eid in p.pop("fix", []) if eid in by_id]
         versions = [f for f in facts if f.get("kind") in ("cves", "version_leak")]
         rest = [f for f in facts if f not in versions]
-        p["actions"] = [_action([f]) for f in rest]
+        p["actions"] = [_action([f], f"Take {f['host']} off the internet or restrict who can reach it"
+                                if f.get("kind") == "risky_name" else None) for f in rest]
         if versions and not rest:
             where = p["title"].rsplit(" ", 1)[-1]
             p["actions"] = [_action(versions, f"Upgrade or patch the server software on {where}")]

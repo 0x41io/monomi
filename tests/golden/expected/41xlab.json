@@ -481,7 +481,7 @@
         "outcome": "Access to the server that also runs 41xlab.com",
         "actions": [
           {
-            "what": "dev.41xlab.com is live and its name puts it in the 'non-production' category (label 'dev' matched rule word 'dev')",
+            "what": "Take dev.41xlab.com off the internet or restrict who can reach it",
             "evidence": [
               "E15"
             ],
@@ -490,7 +490,7 @@
             ]
           },
           {
-            "what": "staging.41xlab.com is live and its name puts it in the 'non-production' category (label 'staging' matched rule word 'staging')",
+            "what": "Take staging.41xlab.com off the internet or restrict who can reach it",
             "evidence": [
               "E16"
             ],
