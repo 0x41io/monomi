@@ -42,14 +42,26 @@ def run(results):
     return build_paths(results, ev), ev
 
 
+def with_cves(results, ip="198.51.100.7"):
+    """Shodan lists a known CVE on the server: what turns a side door lead into a path."""
+    results["exposure"] = {"ips": {ip: {"shared_edge": False, "hosts": ["lab"], "ports": [80, 443],
+                                        "tags": [], "risky": [], "vulns": ["CVE-2099-0001"]}}}
+    return results
+
+
 def test_lab_gives_email_and_side_door_paths():
     out, ev = run(lab_results())
     titles = [p["title"] for p in out["paths"]]
-    assert titles == ["Send email as lab", "Use staging as a side door into 198.51.100.7"]
-    assert [p["id"] for p in out["paths"]] == ["P1", "P2"]
-    side = out["paths"][1]
+    # A risky name on the production server, with no way in shown, is a lead (L1), not a path
+    assert titles == ["Send email as lab"]
+    assert [p["title"] for p in out["leads"]] == ["Check whether staging is a side door into 198.51.100.7"]
+    assert [p["id"] for p in out["paths"] + out["leads"]] == ["P1", "L1"]
+    side = out["leads"][0]
+    assert side["severity"] == "Medium"
     assert side["strength"] == "Lead"  # the version step needs checking
     assert [s["label"] for s in side["steps"]] == ["Observed", "Observed", "Inference", "Lead"]
+    assert side["missing"] == ("nothing shows a way into this host yet "
+                               "(no risky open service or known CVE on 198.51.100.7)")
     # No separate "known flaws" path for an IP the side door already covers
     assert not any(t.startswith("Exploit") for t in titles)
 
@@ -57,7 +69,8 @@ def test_lab_gives_email_and_side_door_paths():
 def test_every_step_cites_real_evidence():
     out, ev = run(lab_results())
     known = {e["id"] for e in ev}
-    for p in out["paths"]:
+    assert out["leads"]
+    for p in out["paths"] + out["leads"]:
         for s in p["steps"]:
             assert s["evidence"], (p["title"], s["text"])
             assert set(s["evidence"]) <= known
@@ -70,14 +83,14 @@ def test_clean_target_has_no_paths():
     results["fingerprint"]["hosts"] = {}
     results["email"]["verdict"]["verdict"] = "protected"
     out, _ = run(results)
-    assert out == {"paths": [], "fix_first": None, "more": 0}
+    assert out == {"paths": [], "leads": [], "fix_first": None, "more": 0, "more_leads": 0}
 
 
 def test_cdn_ip_is_never_a_side_door():
     results = lab_results()
     results["enrichment"]["hosts"]["staging"] = {"ips": ["203.0.113.9"], "provider": "Cloudflare"}
     out, _ = run(results)
-    assert not any("side door" in p["title"] for p in out["paths"])
+    assert side_doors(out) == []
 
 
 def test_takeover_path_chains_into_spoofed_email():
@@ -109,7 +122,7 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
     results["subdomains"].append("dev")
     results["enrichment"]["hosts"]["dev"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
     results["email"]["verdict"]["verdict"] = "protected"
-    out, ev = run(results)
+    out, ev = run(with_cves(results))
     # Only one side door per IP, so the leaks stay in one path: closes P1
     assert [p["title"] for p in out["paths"]] == ["Use dev and staging as a side door into 198.51.100.7"]
     side = out["paths"][0]
@@ -133,17 +146,18 @@ def test_paths_are_capped():
                                      "claimable": True, "collected_at": None} for i in range(12)]
     out, _ = run(results)
     assert len(out["paths"]) == 10
-    assert out["more"] == 4  # 12 takeovers + email + side door = 14
+    assert out["more"] == 3  # 12 takeovers + email = 13 (the side door is a lead)
+    assert len(out["leads"]) == 1 and out["more_leads"] == 0
 
 
 def test_check_paths_finds_left_out_and_made_up_paths():
     from paths import check_paths
-    out, _ = run(lab_results())  # P1 and P2
-    assert check_paths("### P1: email\n### P2: side door", out) == ([], [])
-    assert check_paths("### P1: email only", out) == (["P2"], [])
-    assert check_paths("### P1 ### P2 ### P3", out) == ([], ["P3"])
-    # Words like HTTP2 or SP1 aren't path IDs
-    assert check_paths("P1 P2 over HTTP2, SP1", out) == ([], [])
+    out, _ = run(lab_results())  # P1 and lead L1
+    assert check_paths("### P1: email\n### L1: side door", out) == ([], [])
+    assert check_paths("### P1: email only", out) == (["L1"], [])
+    assert check_paths("### P1 ### L1 ### P2 ### L2", out) == ([], ["P2", "L2"])
+    # Words like HTTP2, SP1 or TLS1 aren't path or lead IDs
+    assert check_paths("P1 L1 over HTTP2, SP1, TLS1", out) == ([], [])
 
 
 def test_appendix_lists_paths_and_fix_first():
@@ -203,7 +217,8 @@ def test_dangling_cname_under_cloud_provider_builds_no_path():
 
 
 def side_doors(out):
-    return [p for p in out["paths"] if "side door" in p["title"]]
+    """Side doors of either kind: attack paths and leads."""
+    return [p for p in out["paths"] + out["leads"] if "side door" in p["title"]]
 
 
 def test_private_ip_is_never_a_side_door():
@@ -268,7 +283,7 @@ def three_side_doors():
         results["subdomains"].append(h)
         results["enrichment"]["hosts"][h] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
     results["email"]["verdict"]["verdict"] = "protected"
-    return results
+    return with_cves(results)  # a known CVE on the server makes it an attack path
 
 
 def test_one_host_never_closes_a_three_host_side_door():
@@ -287,7 +302,7 @@ def test_a_fix_that_closes_alone_beats_a_group():
     results = lab_results()
     results["subdomains"].append("dev")
     results["enrichment"]["hosts"]["dev"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
-    out, ev = run(results)
+    out, ev = run(with_cves(results))
     assert [len(p["actions"]) for p in out["paths"]] == [1, 2]
     fix = out["fix_first"]
     assert len(fix["actions"]) == 1 and fix["closes"] == ["P1"]
@@ -355,3 +370,79 @@ def test_old_saved_paths_get_actions():
     assert "fix" not in new["paths"][0]
     assert new["fix_first"] == out["fix_first"]
     assert upgrade_saved(out, ev) is out  # already new: left alone
+
+
+# ---------- Lead tier (v1.10) ----------
+
+def test_side_door_is_a_lead_until_something_shows_a_way_in():
+    out, ev = run(lab_results())
+    assert side_doors(out) == out["leads"] and len(out["leads"]) == 1
+    # A lead is never part of "fix this first": only the email path is
+    lead_ids = {e for a in out["leads"][0]["actions"] for e in a["evidence"]}
+    fix_ids = {e for a in out["fix_first"]["actions"] for e in a["evidence"]}
+    assert out["fix_first"]["closes"] == ["P1"] and not lead_ids & fix_ids
+
+
+def test_known_cve_promotes_a_side_door_to_an_attack_path():
+    out, ev = run(with_cves(lab_results()))
+    assert out["leads"] == []
+    (door,) = side_doors(out)
+    assert door["id"] == "P2" and door["title"] == "Use staging as a side door into 198.51.100.7"
+    assert "missing" not in door
+    cve = next(e["id"] for e in ev if e["kind"] == "cves")
+    assert cve in door["steps"][-1]["evidence"]
+    # The IP is covered by the side door, so no second "known flaws" path
+    assert not any(p["title"].startswith("Exploit") for p in out["paths"])
+
+
+def test_risky_service_promotes_a_side_door_and_is_cited():
+    results = lab_results()
+    results["exposure"] = {"ips": {"198.51.100.7": {"shared_edge": False, "hosts": ["lab"], "ports": [5432],
+                                                    "tags": [], "risky": ["5432/PostgreSQL"], "vulns": []}}}
+    out, ev = run(results)
+    assert out["leads"] == []
+    (door,) = side_doors(out)
+    risky = next(e["id"] for e in ev if e["kind"] == "risky_service")
+    step = next(s for s in door["steps"] if "services open to the internet" in s["text"])
+    assert step["evidence"] == [risky] and step["label"] == "Observed"
+
+
+def test_web_ports_or_a_version_alone_never_promote():
+    results = lab_results()  # the lab already shows an nginx version
+    results["exposure"] = {"ips": {"198.51.100.7": {"shared_edge": False, "hosts": ["lab"], "ports": [80, 443],
+                                                    "tags": [], "risky": [], "vulns": []}}}
+    out, ev = run(results)
+    assert len(out["leads"]) == 1 and len(out["paths"]) == 1  # just the email path
+
+
+def test_only_leads_means_no_attack_path(capsys):
+    from monomi import show_paths
+    from paths import paths_appendix
+    results = lab_results()
+    results["email"]["verdict"]["verdict"] = "protected"
+    out, ev = run(results)
+    assert out["paths"] == [] and out["fix_first"] is None and len(out["leads"]) == 1
+    results["paths"] = out
+    show_paths(results)
+    text = capsys.readouterr().out
+    assert "No attack path found, 1 lead to investigate." in text
+    assert "L1  LEAD  Check whether staging is a side door" in text
+    assert "Missing: nothing shows a way into this host yet" in text
+    assert "Fix this first" not in text
+    md = paths_appendix(out)
+    assert "*No attack path found in this scan's evidence.*" in md
+    assert "**Leads to investigate**" in md and "- **L1: Check whether staging" in md
+    assert "  - Missing: nothing shows a way into this host yet" in md
+
+
+def test_leads_are_capped():
+    results = lab_results()
+    results["email"]["verdict"]["verdict"] = "protected"
+    for i in range(12):  # 12 more servers, each with production + a test host
+        ip = f"198.51.100.{100 + i}"
+        for h in (f"shop{i}", f"dev{i}"):
+            results["subdomains"].append(h)
+            results["enrichment"]["hosts"][h] = {"ips": [ip], "provider": "DigitalOcean"}
+    out, _ = run(results)
+    assert len(out["leads"]) == 10 and out["more_leads"] == 3
+    assert [p["id"] for p in out["leads"]][:2] == ["L1", "L2"]

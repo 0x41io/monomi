@@ -50,14 +50,15 @@ def host_of(e: dict, results: dict) -> str:
 def findings(results: dict) -> list[dict]:
     """Every evidence item with an owner, worst attack path first.
 
-    A finding's severity is the worst attack path it's part of; findings
-    in no path get none, since there are no per-finding severity rules.
+    A finding's severity is the worst attack path or lead it's part of;
+    findings in neither get none, since there are no per-finding severity
+    rules. Leads (L1...) are listed with the paths but never flagged fix-first.
     """
     built = results["paths"]
     fix = built.get("fix_first") or {"actions": []}
     fix_ids = {eid for a in fix["actions"] for eid in a["evidence"]}
     in_paths = {}
-    for p in built["paths"]:
+    for p in built["paths"] + built.get("leads", []):
         cited = ({eid for s in p["steps"] for eid in s["evidence"]}
                  | {eid for a in p["actions"] for eid in a["evidence"]})
         for eid in cited:
@@ -95,6 +96,7 @@ def summary(results: dict) -> dict:
         "findings": len(findings(results)),
         "paths": {s: sum(p["severity"] == s for p in built["paths"]) for s in SEVERITIES},
         "more_paths": built.get("more", 0),
+        "leads": len(built.get("leads", [])),
         "fix_first": built.get("fix_first"),
     }
 
@@ -104,12 +106,13 @@ def plural(n: int, word: str) -> str:
 
 
 def path_counts(s: dict) -> str:
-    """'2 attack paths (1 High, 1 Medium)' or 'no attack paths'."""
+    """'2 attack paths (1 High, 1 Medium), 1 lead to investigate' or 'no attack paths'."""
     total = sum(s["paths"].values())
+    leads = f", {plural(s['leads'], 'lead')} to investigate" if s.get("leads") else ""
     if not total:
-        return "no attack paths"
+        return "no attack paths" + leads
     parts = ", ".join(f"{n} {sev}" for sev, n in s["paths"].items() if n)
-    return f"{plural(total, 'attack path')} ({parts})"
+    return f"{plural(total, 'attack path')} ({parts})" + leads
 
 
 # ---------- Markdown ----------
@@ -299,11 +302,25 @@ def to_html(results: dict, generated) -> str:
             out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
                        f"[{id_links(st['evidence'])}]</li>")
         out.append(f"</ol><p>Result: {esc(p['outcome'])}</p>")
+    leads = built.get("leads", [])
+    if leads:
+        out += ["<h3>Leads to investigate</h3>",
+                '<p class="note">Not attack paths: each is missing something that '
+                "would make it one.</p>"]
+    for p in leads:
+        out.append(f"<h4>{esc(p['id'])}: {esc(p['title'])} {badge(p['severity'])}</h4>"
+                   f'<p class="note">weakest step: {esc(p["strength"])}</p><ol>')
+        for st in p["steps"]:
+            out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
+                       f"[{id_links(st['evidence'])}]</li>")
+        out.append(f"</ol><p>Missing: {esc(p['missing'])}</p>")
+    if built.get("more_leads"):
+        out.append(f"<p>{built['more_leads']} more lead(s) left out</p>")
 
     # Same evidence as the Markdown: everything a finding, path or the AI cites
     cites = " ".join(f"[{f['id']}]" for f in found)
     cites += " ".join(f"[{', '.join(st['evidence'])}]"
-                      for p in built["paths"] for st in p["steps"])
+                      for p in built["paths"] + leads for st in p["steps"])
     if fix:
         cites += f" [{', '.join(paths.fix_first_parts(fix)['ids'])}]"
     if ai:

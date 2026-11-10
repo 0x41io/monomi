@@ -174,6 +174,36 @@
       ],
       "kind": "risky_name",
       "host": "ct-uat3.sidedoor.test"
+    },
+    {
+      "id": "E14",
+      "fact": "192.0.2.40 (sidedoor.test) has open ports: 80, 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E15",
+      "fact": "Shodan InternetDB lists 1 CVE(s) for 192.0.2.40 (sidedoor.test), matched from software version banners: CVE-2099-0004",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "cves",
+      "host": "192.0.2.40"
     }
   ],
   "paths": {
@@ -181,7 +211,7 @@
       {
         "title": "Use ct-uat.sidedoor.test, ct-uat2.sidedoor.test and ct-uat3.sidedoor.test as a side door into 192.0.2.40",
         "severity": "Medium",
-        "strength": "Inference",
+        "strength": "Lead",
         "steps": [
           {
             "text": "ct-uat.sidedoor.test, ct-uat2.sidedoor.test and ct-uat3.sidedoor.test are live and named like non-production hosts",
@@ -211,6 +241,13 @@
               "E13"
             ],
             "label": "Inference"
+          },
+          {
+            "text": "The server shows software versions an attacker can match to public exploits (versions must be verified)",
+            "evidence": [
+              "E15"
+            ],
+            "label": "Lead"
           }
         ],
         "outcome": "Access to the server that also runs ct.sidedoor.test",
@@ -246,6 +283,7 @@
         "id": "P1"
       }
     ],
+    "leads": [],
     "fix_first": {
       "actions": [
         {
@@ -282,6 +320,7 @@
       "partial": [],
       "still_required_actions": []
     },
-    "more": 0
+    "more": 0,
+    "more_leads": 0
   }
 }

@@ -438,9 +438,11 @@
           }
         ],
         "id": "P1"
-      },
+      }
+    ],
+    "leads": [
       {
-        "title": "Use dev.41xlab.com and staging.41xlab.com as a side door into 64.227.89.72",
+        "title": "Check whether dev.41xlab.com and staging.41xlab.com are a side door into 64.227.89.72",
         "severity": "Medium",
         "strength": "Lead",
         "steps": [
@@ -499,7 +501,8 @@
             ]
           }
         ],
-        "id": "P2"
+        "missing": "nothing shows a way into these hosts yet (no risky open service or known CVE on 64.227.89.72)",
+        "id": "L1"
       }
     ],
     "fix_first": {
@@ -521,6 +524,7 @@
       "partial": [],
       "still_required_actions": []
     },
-    "more": 0
+    "more": 0,
+    "more_leads": 0
   }
 }

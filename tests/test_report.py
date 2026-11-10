@@ -66,8 +66,10 @@ def test_summary_counts(lab):
     s = report.summary(lab)
     assert s["hostnames"] == 7
     assert s["sources"] == ["Cert Spotter", "hosts file"]
-    assert s["paths"] == {"High": 1, "Medium": 1, "Low": 0}
-    assert report.path_counts(s) == "2 attack paths (1 High, 1 Medium)"
+    # dev/staging share the lab's server, but nothing shows a way in: a lead
+    assert s["paths"] == {"High": 1, "Medium": 0, "Low": 0}
+    assert s["leads"] == 1
+    assert report.path_counts(s) == "1 attack path (1 High), 1 lead to investigate"
 
 
 # ---------- Markdown ----------
@@ -87,7 +89,7 @@ def test_markdown_evidence_covers_every_citation(lab):
     md = report.to_markdown(lab, WHEN)
     for f in report.findings(lab):
         assert f"- **{f['id']}**:" in md
-    assert "- **E8**:" in md      # cited only by attack path P2
+    assert "- **E8**:" in md      # cited only by lead L1
     assert "- **E1**:" not in md  # cited by nothing
 
 
@@ -158,7 +160,7 @@ def test_html_is_one_safe_page(lab):
 
 def test_html_links_citations_to_the_evidence(lab):
     page = report.to_html(lab, WHEN)
-    assert '<a class="id" href="#E8">E8</a>' in page  # cited by path P2
+    assert '<a class="id" href="#E8">E8</a>' in page  # cited by lead L1
     assert '<li id="E8">' in page
     assert '<li id="E1">' not in page                 # cited by nothing
     assert '<span class="sev High">High</span>' in page
@@ -259,7 +261,8 @@ GROUP = Path(__file__).parent / "golden" / "fixtures" / "side-door-three-hosts.j
 
 @pytest.fixture
 def group(monkeypatch):
-    """Three test hosts on one production server: no single fix closes P1."""
+    """Three test hosts on one production server with a known CVE: an attack
+    path (not a lead) that no single fix closes."""
     monkeypatch.setattr(evidence, "now_utc", lambda: "2000-01-01T00:00:00Z")
     results = json.loads(GROUP.read_text(encoding="utf-8"))
     results["evidence"] = evidence.build_evidence(results)
@@ -294,7 +297,41 @@ def test_load_scan_upgrades_paths_saved_before_actions(lab, tmp_path):
     saved = tmp_path / "old.json"
     saved.write_text(json.dumps(lab), encoding="utf-8")
     loaded = report.load_scan(str(saved))
-    assert [p["id"] for p in loaded["paths"]["paths"]] == ["P1", "P2"]
+    assert [p["id"] for p in loaded["paths"]["paths"]] == ["P1"]
+    assert [p["id"] for p in loaded["paths"]["leads"]] == ["L1"]
     assert all("actions" in p for p in loaded["paths"]["paths"])
     assert loaded["paths"]["fix_first"]["closes"] == ["P1"]
     report.to_html(loaded, WHEN)  # renders without the old keys
+
+
+# ---------- Lead tier (v1.10) ----------
+
+def test_leads_show_in_every_format_but_never_as_fix_first(lab):
+    (lead,) = lab["paths"]["leads"]
+    assert lead["id"] == "L1"
+    md = report.to_markdown(lab, WHEN)
+    assert "1 attack path (1 High), 1 lead to investigate" in md
+    assert "**Leads to investigate**" in md and "- **L1: Check whether" in md
+    assert "  - Missing: nothing shows a way into these hosts yet" in md
+    page = report.to_html(lab, WHEN)
+    assert "<h3>Leads to investigate</h3>" in page and "<h4>L1: Check whether" in page
+    assert "<p>Missing: nothing shows a way into these hosts yet" in page
+    # The lead's findings name L1, keep its Medium, and are never fix-first
+    in_lead = [f for f in report.findings(lab) if f["paths"] == ["L1"]]
+    assert in_lead and all(f["severity"] == "Medium" and not f["fix_first"] for f in in_lead)
+    rows = list(csv.DictReader(io.StringIO(report.to_csv(lab))))
+    assert any(r["attack_paths"] == "L1" and r["fix_first"] == "" for r in rows)
+
+
+def test_scan_saved_before_the_lead_tier_still_exports(lab, tmp_path):
+    # v1.9 saved the side door as attack path P2 and had no "leads" at all
+    built = lab["paths"]
+    old_door = dict(built["leads"][0], id="P2")
+    del old_door["missing"]
+    built["paths"].append(old_door)
+    del built["leads"], built["more_leads"]
+    loaded = report.load_scan(saved_scan(tmp_path, lab))
+    assert [p["id"] for p in loaded["paths"]["paths"]] == ["P1", "P2"]  # kept as saved
+    assert loaded["paths"]["leads"] == []
+    assert "2 attack paths (1 High, 1 Medium)" in report.to_markdown(loaded, WHEN)
+    report.to_html(loaded, WHEN)

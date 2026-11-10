@@ -10,6 +10,12 @@ English, so the same scan always gives the same paths, whatever the model.
 
 No path is ever made up: if nothing chains, the answer is "no path found".
 
+A side door (a risky-named host on the same server as production) is only
+an attack path when something on that server gives a way in: a risky open
+service or a known CVE. Without one it is a lead (L1, L2...): worth a look,
+listed after the attack paths, with a "missing" line that names the gap.
+Leads are never part of "fix this first".
+
 Each path also lists its actions: the real fixes that close it. One action
 is one job for one owner and holds the evidence IDs it deals with. A path is
 only closed when every one of its actions is done.
@@ -108,13 +114,16 @@ def _edge_ips(results):
 
 
 def build_paths(results: dict, evidence: list[dict]) -> dict:
-    """Chain evidence into attack paths. Returns {"paths", "fix_first", "more"}."""
+    """Chain evidence into attack paths and leads.
+
+    Returns {"paths", "leads", "fix_first", "more", "more_leads"}.
+    """
     # Each rule ends with the path's actions (see _action). Evidence that
     # only backs a step up, like the email facts in rule A, is in no action.
     kinds = _by_kind(evidence)
     target = results.get("target", "")
     spoof = kinds.get("email_spoofable", []) + kinds.get("email_partial", [])
-    paths = []
+    paths, leads = [], []
 
     # A. Subdomain takeover: claim the deleted name, then serve pages on it
     for lead in kinds.get("takeover_lead", []):
@@ -208,12 +217,29 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             _step(f"{why}, so {who} {'is a likely first target' if one else 'are likely first targets'}, "
                   "and getting in there may mean getting into the same server", names, "Inference"),
         ]
+        # What promotes a side door to an attack path: a way into the server
+        # itself. Web ports alone don't count (every web server has them) and
+        # neither does a version on its own (unverified).
+        risky = [e for e in kinds.get("risky_service", []) if e["host"] in ips]
+        cves = [e for e in kinds.get("cves", []) if e["host"] in ips]
+        if risky:
+            steps.append(_step(f"{where} also has services open to the internet that usually "
+                               "shouldn't be", risky, "Observed"))
         leaks = [e for e in kinds.get("version_leak", []) if ips & set(ips_of.get(e["host"], []))]
-        leaks += [e for e in kinds.get("cves", []) if e["host"] in ips]
+        leaks += cves
         if leaks:
             steps.append(_step("The server shows software versions an attacker can match "
                                "to public exploits (versions must be verified)", leaks, "Lead"))
         side_door_ips.update(ips)
+        if not risky and not cves:
+            lead = _path(f"Check whether {who} {'is' if one else 'are'} a side door into {where}",
+                         "Medium", steps, f"Access to the server that also runs {shared[0]}",
+                         [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
+                          for r in names])
+            lead["missing"] = (f"nothing shows a way into {'this host' if one else 'these hosts'} yet "
+                               f"(no risky open service or known CVE on {where})")
+            leads.append(lead)
+            continue
         # One action per risky host: each one is its own door, so all of them
         # must be dealt with. The version leaks only back the last step up.
         # The action says what to do; why the name is risky stays in the evidence.
@@ -241,7 +267,14 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     paths = paths[:MAX_PATHS]
     for i, p in enumerate(paths, 1):
         p["id"] = f"P{i}"
-    return {"paths": paths, "fix_first": _fix_first(paths), "more": more}
+    # Leads: never above Medium, surest first, and no part in fix_first
+    leads.sort(key=lambda p: LABEL_RANK[p["strength"]])
+    more_leads = max(0, len(leads) - MAX_PATHS)
+    leads = leads[:MAX_PATHS]
+    for i, p in enumerate(leads, 1):
+        p["id"] = f"L{i}"
+    return {"paths": paths, "leads": leads, "fix_first": _fix_first(paths),
+            "more": more, "more_leads": more_leads}
 
 
 def _fix_first(paths):
@@ -303,6 +336,8 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
     become one action each, version facts on a side door are dropped (they
     only back a step up), other version facts become one upgrade action.
     """
+    built.setdefault("leads", [])       # saved before the Lead tier: its side
+    built.setdefault("more_leads", 0)   # doors stay the paths they were saved as
     if all("actions" in p for p in built["paths"]):
         return built
     by_id = {e["id"]: e for e in evidence}
@@ -320,10 +355,10 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
 
 
 def check_paths(report: str, built: dict) -> tuple[list[str], list[str]]:
-    """Path IDs the report left out, and IDs it made up (each sorted)."""
-    ids = {p["id"] for p in built["paths"]}
-    named = set(re.findall(r"\bP\d+\b", report))
-    order = lambda i: int(i[1:])
+    """Path and lead IDs the report left out, and IDs it made up (each sorted)."""
+    ids = {p["id"] for p in built["paths"] + built.get("leads", [])}
+    named = set(re.findall(r"\b[PL]\d+\b", report))
+    order = lambda i: (i[0] != "P", int(i[1:]))  # paths first, then leads
     return sorted(ids - named, key=order), sorted(named - ids, key=order)
 
 
@@ -345,6 +380,16 @@ def paths_appendix(built: dict) -> str:
         lines.append(f"  - Result: {p['outcome']}")
     if built.get("more"):
         lines.append(f"- {built['more']} lower-ranked path(s) left out")
+    if built.get("leads"):
+        lines += ["", "**Leads to investigate** (not attack paths: each is missing "
+                      "something that would make it one)", ""]
+    for p in built.get("leads", []):
+        lines.append(f"- **{p['id']}: {p['title']}** ({p['severity']}, weakest step: {p['strength']})")
+        for n, s in enumerate(p["steps"], 1):
+            lines.append(f"  {n}. {s['label']}: {s['text']} [{', '.join(s['evidence'])}]")
+        lines.append(f"  - Missing: {p['missing']}")
+    if built.get("more_leads"):
+        lines.append(f"- {built['more_leads']} more lead(s) left out")
     fix = built.get("fix_first")
     if fix:
         t = fix_first_parts(fix)

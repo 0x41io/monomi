@@ -120,6 +120,7 @@
         "id": "P1"
       }
     ],
+    "leads": [],
     "fix_first": {
       "actions": [
         {
@@ -138,6 +139,7 @@
       "partial": [],
       "still_required_actions": []
     },
-    "more": 0
+    "more": 0,
+    "more_leads": 0
   }
 }

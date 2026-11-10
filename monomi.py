@@ -562,9 +562,13 @@ def show_paths(results: dict) -> None:
     print()
     info("Attack paths (worked out by code: how an attack would most likely go, not proof):")
     print()
-    if not built["paths"]:
+    leads = built.get("leads", [])
+    if not built["paths"] and not leads:
         good("No attack path found: none of the findings chain into a way in.")
         return
+    if not built["paths"]:
+        good(f"No attack path found, {len(leads)} lead{'' if len(leads) == 1 else 's'} to investigate.")
+        print()
     colors = {"High": ui.RED, "Medium": ui.YELLOW, "Low": ui.GREY}
     for p in built["paths"]:
         badge = ui.paint(p["severity"].upper(), ui.BOLD, colors[p["severity"]])
@@ -579,6 +583,19 @@ def show_paths(results: dict) -> None:
     if fix:
         t = paths.fix_first_parts(fix)
         warn(f"{t['label']} ({t['owners']}): {ui.safe(t['what'])} -> {t['closes']}")
+    if leads:
+        if fix:
+            print()
+        info("Leads to investigate (not attack paths: each is missing something that would make it one):")
+        print()
+    for p in leads:
+        print(f"    {p['id']}  {ui.paint('LEAD', ui.BOLD, ui.GREY)}  {ui.safe(p['title'])}")
+        for n, s in enumerate(p["steps"], 1):
+            print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
+        print(f"        Missing: {ui.safe(p['missing'])}")
+        print()
+    if built.get("more_leads"):
+        info(f"{built['more_leads']} more lead(s) not shown.")
 
 
 def write_ai_report(results: dict) -> None:
@@ -623,11 +640,11 @@ def write_ai_report(results: dict) -> None:
         good("Every evidence ID the AI cited exists.")
     missing, made_up = paths.check_paths(summary, results["paths"])
     if missing:
-        warn(f"The AI left out attack path(s) {', '.join(missing)}. See the list at the end of the report.")
+        warn(f"The AI left out attack path(s) or lead(s) {', '.join(missing)}. See the list at the end of the report.")
     if made_up:
-        warn(f"The AI named attack path(s) that don't exist: {', '.join(made_up)}. Treat them with caution.")
+        warn(f"The AI named attack path(s) or lead(s) that don't exist: {', '.join(made_up)}. Treat them with caution.")
     if not missing and not made_up:
-        good("The report covers every attack path and adds none.")
+        good("The report covers every attack path and lead and adds none.")
 
 
 def export_reports(results: dict, formats: list[str]) -> None:

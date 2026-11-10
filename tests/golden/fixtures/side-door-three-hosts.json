@@ -66,5 +66,28 @@
     },
     "private_ip_hosts": [],
     "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "192.0.2.40": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [
+          "CVE-2099-0004"
+        ],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "sidedoor.test"
+        ],
+        "provider": "DigitalOcean",
+        "shared_edge": false,
+        "risky": []
+      }
+    },
+    "nothing_seen": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
   }
 }

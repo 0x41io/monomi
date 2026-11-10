@@ -156,6 +156,14 @@ ending with "(see P2)" instead of repeating the path's reasoning.
 - If "paths" is empty, section 4 is exactly: "No attack path found: none of \
 the findings in this scan chain into a way in." Then one sentence on which \
 checks ran. Never invent a path to fill the section.
+- "leads" holds leads (L1, L2...): things worth checking that are NOT attack \
+paths, because something is missing. After the paths (or after the "No \
+attack path found" sentence), if "leads" is not empty, add "**Leads to \
+investigate**" and for each lead write "### L1: <title> (lead)", its steps \
+like a path's, then one line "Missing: <missing>". Never call a lead an \
+attack path, never raise it above Medium, never count it among the paths, \
+and never put it in "Fix this first". If "more_leads" is above 0, say how \
+many leads were left out.
 - If "fix_first" is set, start section 5 with it as "**Fix this first**", \
 with its owners, citing its evidence IDs, and say which paths it closes. \
 When it lists more than one action, head it "**Fix these N first**", list \
@@ -288,7 +296,7 @@ def summarize(results: dict) -> tuple[str, str]:
         for e in ev[:MAX_EVIDENCE]
     ]
     payload["evidence_truncated"] = len(ev) > MAX_EVIDENCE
-    payload["attack_paths"] = results.get("paths", {"paths": [], "fix_first": None, "more": 0})
+    payload["attack_paths"] = results.get("paths", {"paths": [], "leads": [], "fix_first": None, "more": 0, "more_leads": 0})
     msg = client.messages.create(
         model=model,
         max_tokens=8000,
