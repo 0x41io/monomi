@@ -416,6 +416,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.9.1: runs on Windows without WSL (Windows file locking for pacing, install guide), email check falls back to DNS-over-HTTPS when port 53 fails
 - [x] v1.9.2: report exports (`--export`: Markdown, HTML, findings CSV; `monomi.py report` for saved scans), setup check (`monomi.py doctor`), one-command MCP setup (`monomi.py mcp setup`)
 - [x] v1.10: fix groups (a path lists every fix it needs, and "fix this first" never says one fix closes a path that needs several), leads kept apart from attack paths (side doors, unverified versions, "go around the CDN"), next-check suggestions. In `--json`, a path's `fix` list is now `actions`, `fix_first` holds a list of actions, and `paths` gains `leads`
+- [x] v1.10.1: next-check suggestions in MCP tool results (same list the CLI already shows; nothing runs unless the agent calls the tool)
 
 **Next**
 - [ ] v1.11: finds more: subfinder import and a free passive DNS source for subdomain breadth, next-check suggestions in the MCP tools, security header and exposed API spec checks over MCP
