@@ -1,6 +1,7 @@
 """Tests for doctor.py: every check's ok / warn / fail, with nothing real
 called (no real API, no real package list)."""
 
+import json
 import sys
 
 import anthropic
@@ -588,3 +589,68 @@ def test_mcp_check_writes_nothing(monkeypatch, tmp_path):
     doctor.check_mcp()
     assert (tmp_path / "a.json").read_text(encoding="utf-8") == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.json"]
+
+
+# ---------- active tools ----------
+
+ACTIVE = {**ENTRY, "args": ENTRY["args"] + ["--allow-active"]}
+
+
+def fake_log(monkeypatch, tmp_path, lines=None):
+    log = tmp_path / "active.log"
+    if lines is not None:
+        log.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    monkeypatch.setattr(doctor.mcp_setup, "ACTIVE_LOG", str(log))
+
+
+def test_mcp_entry_with_active_flag_still_points_at_this_monomi(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
+    [r] = doctor.check_mcp()
+    assert (r["status"], r["detail"]) == (OK, "Claude app config points at this Monomi")
+
+
+def test_active_off_is_ok(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert r["status"] == OK and "off" in r["detail"]
+
+
+def test_active_on_is_a_loud_warning(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert r["status"] == WARN and "ACTIVE tools are ON" in r["detail"]
+    assert "--no-active" in r["fix"]
+
+
+def test_active_on_in_either_copy_counts(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ENTRY),
+                                     "msix.json": config_with(ACTIVE)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert r["status"] == WARN and "msix.json" in r["detail"] and "standard.json" not in r["detail"]
+
+
+def test_active_log_shows_the_last_request(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    first = {"time": "2026-11-10T01:00:00+00:00", "tool": "fingerprint_hosts", "host": "app", "url": "x"}
+    last = {**first, "time": "2026-11-10T02:00:00+00:00", "host": "dev"}
+    fake_log(monkeypatch, tmp_path, [json.dumps(first), json.dumps(last)])
+    _, r = doctor.check_active()
+    assert r["detail"] == ("last active request 2026-11-10T02:00:00+00:00: fingerprint_hosts -> dev "
+                           "(2 requests in scans/active.log)")
+
+
+def test_active_log_with_a_broken_last_line_doesnt_crash(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    fake_log(monkeypatch, tmp_path, ['{"time": "t"}', "{half a li"])
+    _, r = doctor.check_active()
+    assert "unreadable" in r["detail"] and "2 requests" in r["detail"]
+
+
+def test_active_check_with_no_config_found(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {}, error=doctor.mcp_setup.SetupError("no %APPDATA%"))
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert r["status"] == OK

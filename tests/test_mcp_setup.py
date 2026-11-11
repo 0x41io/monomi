@@ -2,6 +2,7 @@
 Every test uses temporary folders, never a real Claude config."""
 
 import json
+import os
 import sys
 
 import pytest
@@ -203,7 +204,7 @@ def test_print_only(monkeypatch, capsys):
 def test_setup_error_is_shown_not_crashed(monkeypatch, capsys):
     def broken():
         raise SetupError("no folder")
-    monkeypatch.setattr(mcp_setup, "setup", lambda yes: broken())
+    monkeypatch.setattr(mcp_setup, "setup", lambda **kwargs: broken())
     assert mcp_setup.main(["setup", "--no-color"]) == 1
     assert "no folder" in capsys.readouterr().out
 
@@ -213,3 +214,92 @@ def test_monomi_mcp_setup_runs_it(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["monomi.py", "mcp", "setup", "--print"])
     assert monomi.main() == 0
     assert json.loads(capsys.readouterr().out)["mcpServers"][NAME] == ENTRY
+
+
+# ---------- active tools (--allow-active) ----------
+
+class Terminal:
+    """A fake sys.stdin: isatty() says whether a person is typing at a terminal."""
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+ACTIVE_ENTRY = {**ENTRY, "args": ENTRY["args"] + ["--allow-active"]}
+
+
+def test_with_active_adds_and_removes_the_flag_once():
+    on = mcp_setup.with_active(ENTRY, True)
+    assert on == ACTIVE_ENTRY and mcp_setup.is_active(on)
+    assert mcp_setup.with_active(on, True) == ACTIVE_ENTRY  # never added twice
+    assert mcp_setup.with_active(on, False) == ENTRY and not mcp_setup.is_active(ENTRY)
+    assert ENTRY["args"][-1] == "server"  # the original isn't changed
+    assert not mcp_setup.is_active(None)
+
+
+def test_log_path_matches_the_server():
+    import mcp_server
+    assert mcp_setup.ACTIVE_LOG == os.path.join(mcp_server.SCANS_DIR, "active.log")
+    with pytest.raises(mcp_server.ToolError, match=mcp_setup.ACTIVE_FLAG):
+        mcp_server.require_active("fingerprint_hosts")  # its refusal names the same flag
+
+
+def test_print_with_allow_active(monkeypatch, capsys):
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    assert mcp_setup.main(["setup", "--print", "--allow-active"]) == 0
+    assert json.loads(capsys.readouterr().out)["mcpServers"][NAME] == ACTIVE_ENTRY
+
+
+def test_plain_setup_keeps_active_on(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f)
+    assert mcp_setup.setup() == 0
+    assert f.read_text() == before  # re-running setup never quietly turns it off
+    out = capsys.readouterr().out
+    assert "already set up" in out and "active tools: ON" in out
+
+
+def test_no_active_turns_it_off(monkeypatch, tmp_path):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    fake_setup(monkeypatch, [f], f)
+    assert mcp_setup.main(["setup", "--no-active"]) == 0
+    assert json.loads(f.read_text())["mcpServers"][NAME] == ENTRY
+
+
+def test_allow_active_refused_without_a_terminal_even_with_yes(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, active=True) == 0
+    assert f.read_text() == before and not list(tmp_path.glob("*.bak-*"))
+    assert "typed by you at a terminal" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer", ["y", "", "no"])
+def test_allow_active_needs_the_full_word_yes(monkeypatch, tmp_path, answer):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer=answer)
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(active=True) == 0
+    assert f.read_text() == before
+
+
+def test_allow_active_typed_yes_writes_the_flag(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY, "other": {"command": "node"}}})
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.main(["setup", "--allow-active"]) == 0
+    data = json.loads(f.read_text())
+    assert data["mcpServers"] == {NAME: ACTIVE_ENTRY, "other": {"command": "node"}}
+    out = capsys.readouterr().out
+    assert "ACTIVE tools send requests" in out and "only takes effect after that restart" in out

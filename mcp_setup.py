@@ -4,6 +4,12 @@ monomi mcp setup: add Monomi to the Claude desktop app's MCP config.
     python monomi.py mcp setup          # show the change, ask, then write it
     python monomi.py mcp setup --yes    # write without asking
     python monomi.py mcp setup --print  # only print the entry (for other MCP clients)
+    python monomi.py mcp setup --allow-active  # also allow ACTIVE tools (asks you first)
+    python monomi.py mcp setup --no-active     # turn ACTIVE tools back off
+
+Without --allow-active or --no-active, setup keeps whatever the config has now.
+Turning active tools ON always asks you to type "yes" at a real terminal,
+even with --yes: an agent running commands for you can't turn them on.
 
 Safe by design: only the "monomi" entry changes (other servers and settings
 stay as they are), the old file is backed up first, a file that isn't valid
@@ -26,6 +32,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, "mcp_server.py")
 NAME = "monomi"            # the server's name in the config
 CONFIG = "claude_desktop_config.json"
+ACTIVE_FLAG = "--allow-active"  # mcp_server.py's flag that allows ACTIVE tools
+ACTIVE_LOG = os.path.join(HERE, "scans", "active.log")  # where mcp_server.py logs them
+ACTIVE_WARNING = (
+    "ACTIVE tools send requests to the target's own servers (today: fingerprint_hosts,\n"
+    "one homepage request per host). Any agent connected to Monomi in the Claude app\n"
+    "could then call them, so only scan targets you're allowed to test. Every request\n"
+    "is written to scans/active.log, and `python monomi.py doctor` shows the setting.")
 
 
 class SetupError(Exception):
@@ -49,6 +62,17 @@ def server_entry():
         args = (["-d", distro] if distro else []) + ["-e", sys.executable, SERVER]
         return {"command": "wsl.exe", "args": args}
     return {"command": sys.executable, "args": [SERVER]}
+
+
+def is_active(entry):
+    """Does this config entry start the server with active tools allowed?"""
+    return isinstance(entry, dict) and ACTIVE_FLAG in (entry.get("args") or [])
+
+
+def with_active(entry, on):
+    """A copy of the entry with --allow-active added (on) or removed (off)."""
+    args = [a for a in entry.get("args", []) if a != ACTIVE_FLAG]
+    return {**entry, "args": args + ([ACTIVE_FLAG] if on else [])}
 
 
 # ---------- Where the config is ----------
@@ -168,40 +192,68 @@ def ask(question):
         return False
 
 
-def setup(yes=False):
-    entry = server_entry()
+def confirm_active():
+    """Turning active tools on needs a person: a real terminal and the word "yes".
+    --yes never skips this, and piped input (how agents run commands) is refused."""
+    print(f"\n{ui.paint('Turning ACTIVE tools on', ui.BOLD, ui.YELLOW)}")
+    print(ACTIVE_WARNING)
+    if not sys.stdin.isatty():
+        ui.fail("Turning active tools on has to be typed by you at a terminal "
+                "(this input isn't one).")
+        return False
+    try:
+        return input('\nType "yes" to allow active tools: ').strip().lower() == "yes"
+    except EOFError:
+        return False
+
+
+def setup(yes=False, active=None):
+    """active: True = allow ACTIVE tools, False = turn them off, None = keep each config's setting."""
     found, standard = config_paths()
     targets = found or [standard]
     # Read every file first: if any is broken, nothing gets written anywhere
     configs = {path: load_config(path) for path in targets}
 
-    plans = {path: change(cfg, entry) for path, cfg in configs.items()}
-    for path, (status, old) in plans.items():
+    plans, turning_on = {}, False
+    for path, cfg in configs.items():
+        old = cfg.get("mcpServers", {}).get(NAME)
+        on = is_active(old) if active is None else active
+        entry = with_active(server_entry(), on)
+        plans[path] = (*change(cfg, entry), entry)
+        turning_on = turning_on or (on and not is_active(old))
+
+    for path, (status, old, entry) in plans.items():
         print(f"\n{ui.paint(path, ui.BOLD, ui.WHITE)}")
         if not os.path.exists(path):
             print("  no config yet: it will be created")
         print(f"  monomi: {status}")
+        print(f"  active tools: {'ON' if is_active(entry) else 'off'}")
         if status == "changing":
             show_entry("now:", old)
         if status != "unchanged":
             show_entry("will be:", entry)
 
-    to_write = [p for p, (status, _) in plans.items() if status != "unchanged"]
+    to_write = [p for p, (status, _, _) in plans.items() if status != "unchanged"]
     if not to_write:
         ui.good("Monomi is already set up in the Claude app. Nothing to change.")
         return 0
-    if not yes and not ask("\nWrite this? [y/N] "):
+    if turning_on:
+        if not confirm_active():
+            ui.info("Nothing was changed.")
+            return 0
+    elif not yes and not ask("\nWrite this? [y/N] "):
         ui.info("Nothing was changed.")
         return 0
 
     for path in to_write:
-        backup = write_config(path, with_entry(configs[path], entry))
+        backup = write_config(path, with_entry(configs[path], plans[path][2]))
         ui.good(f"Updated {path}")
         if backup:
             ui.info(f"Backup of the old file: {backup}")
     print("\nNext: fully quit the Claude app, not just its window (Windows: "
           "right-click its tray icon > Quit; macOS: Cmd+Q), open it again, "
-          "and ask Claude to run Monomi's ping tool.")
+          "and ask Claude to run Monomi's ping tool. A change to active tools "
+          "only takes effect after that restart.")
     return 0
 
 
@@ -213,6 +265,11 @@ def main(argv=None) -> int:
     parser.add_argument("--yes", action="store_true", help="write without asking")
     parser.add_argument("--print", dest="print_only", action="store_true",
                         help="only print the config entry (for other MCP clients)")
+    active = parser.add_mutually_exclusive_group()
+    active.add_argument("--allow-active", dest="active", action="store_const", const=True,
+                        help="also allow ACTIVE tools, which send requests to targets (asks you first)")
+    active.add_argument("--no-active", dest="active", action="store_const", const=False,
+                        help="turn ACTIVE tools off")
     parser.add_argument("--no-color", action="store_true",
                         help="plain output (also respects NO_COLOR)")
     args = parser.parse_args(argv)
@@ -220,10 +277,11 @@ def main(argv=None) -> int:
         ui.disable()
 
     if args.print_only:
-        print(json.dumps({"mcpServers": {NAME: server_entry()}}, indent=2))
+        entry = with_active(server_entry(), bool(args.active))
+        print(json.dumps({"mcpServers": {NAME: entry}}, indent=2))
         return 0
     try:
-        return setup(yes=args.yes)
+        return setup(yes=args.yes, active=args.active)
     except SetupError as e:
         ui.fail(str(e))
         return 1

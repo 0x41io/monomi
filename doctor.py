@@ -13,6 +13,7 @@ Exit code 1 if anything failed, so scripts can check it.
 
 import argparse
 import importlib.metadata
+import json
 import os
 import platform
 import re
@@ -510,13 +511,17 @@ MCP_STATES = ["unreadable", "broken", "different", "missing", "ok"]
 
 
 def mcp_state(path, entry):
-    """How one config file stands: one of MCP_STATES."""
+    """How one config file stands: one of MCP_STATES.
+    Whether active tools are on is its own check (check_active), so the
+    --allow-active flag doesn't make the entry count as "different"."""
     try:
         config = mcp_setup.load_config(path)
     except mcp_setup.SetupError:
         return "broken"
     except OSError:
         return "unreadable"
+    old = config.get("mcpServers", {}).get(mcp_setup.NAME)
+    entry = mcp_setup.with_active(entry, mcp_setup.is_active(old))
     status, _ = mcp_setup.change(config, entry)
     return {"new": "missing", "unchanged": "ok", "changing": "different"}[status]
 
@@ -560,11 +565,65 @@ def check_mcp():
                    f"Monomi isn't set up in the Claude app{where}", SETUP_FIX)]
 
 
+def active_configs(found):
+    """The config files that start Monomi with active tools allowed."""
+    on = []
+    for path in found:
+        try:
+            config = mcp_setup.load_config(path)
+        except (mcp_setup.SetupError, OSError):
+            continue  # check_mcp already reports broken or unreadable files
+        if mcp_setup.is_active(config.get("mcpServers", {}).get(mcp_setup.NAME)):
+            on.append(path)
+    return on
+
+
+def last_active_request(log=None):
+    """(how many requests scans/active.log holds, its last entry) or (0, None)."""
+    log = log or mcp_setup.ACTIVE_LOG
+    try:
+        with open(log, encoding="utf-8") as f:
+            lines = [line for line in f if line.strip()]
+    except OSError:
+        return 0, None
+    try:
+        return len(lines), json.loads(lines[-1]) if lines else None
+    except ValueError:
+        return len(lines), {"time": "?", "host": "?", "tool": "? (last line unreadable)"}
+
+
+def check_active():
+    """Are ACTIVE MCP tools turned on, and when did one last send a request?
+
+    On is a warning on purpose: it should never go unnoticed. Read-only.
+    """
+    try:
+        found, _ = mcp_setup.config_paths()
+    except mcp_setup.SetupError:
+        found = []
+    out = []
+    on = active_configs(found)
+    if on:
+        where = f" ({', '.join(on)})" if len(found) > 1 else ""
+        out.append(result(MCP, "active", WARN,
+                          "ACTIVE tools are ON: fingerprint_hosts can send requests to targets "
+                          f"(after a Claude app restart){where}",
+                          "python monomi.py mcp setup --no-active, to turn them off"))
+    else:
+        out.append(result(MCP, "active", OK, "ACTIVE tools are off (fingerprint_hosts refuses)"))
+    count, last = last_active_request()
+    if last:
+        out.append(result(MCP, "active_log", OK,
+                          f"last active request {last.get('time')}: {last.get('tool')} -> "
+                          f"{last.get('host')} ({plural(count, 'request')} in scans/active.log)"))
+    return out
+
+
 # ---------- Running and showing the checks ----------
 
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list, check_mcp]
+          check_tor_list, check_mcp, check_active]
 
 
 def run_all(checks=None):
