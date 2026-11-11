@@ -1,5 +1,6 @@
 import pytest
 
+import monomi
 from monomi import baseline_gaps, clean_domain, collect_ct, flag_silent_crtsh_failure, gap_reason
 
 
@@ -162,3 +163,49 @@ def test_gap_reason_failed_and_behind():
                           "crt.sh": "no certificates for this domain yet: the crt.sh database answered with 0"}}
     assert gap_reason(results, ["certspotter", "crt.sh"]) == \
         "certspotter failed and crt.sh is behind on the CT logs"
+
+
+# ---------- --exposed-files (ACTIVE) ----------
+
+def test_exposed_files_flag_parses():
+    args = monomi.build_parser().parse_args(["example.com", "--exposed-files"])
+    assert args.exposed_files is True
+
+
+def test_exposed_files_turns_on_enrich():
+    # mirror main()'s dependency: --exposed-files needs resolved hosts
+    args = monomi.build_parser().parse_args(["example.com", "--exposed-files"])
+    assert args.enrich is False
+    if args.exposed_files and not args.enrich:
+        args.enrich = True
+    assert args.enrich is True
+
+
+def test_run_exposed_stores_results_and_summarizes(monkeypatch, capsys):
+    spec = {"type": "OpenAPI", "version": "3.0.1",
+            "url": "https://staging/openapi.json", "endpoint_count": 3,
+            "method_count": 4, "servers": ["https://internal/"], "declares_auth": True}
+    smap = {"map_url": "https://app/a.js.map", "source_count": 2,
+            "sources": [], "has_source_content": True}
+    hosts = {
+        "staging": {"spec": spec, "source_maps": [], "collected_at": "t"},
+        "app": {"spec": None, "source_maps": [smap], "collected_at": "t"},
+    }
+    finding = {"hosts": hosts, "requested": ["staging", "app"],
+               "checked": 2, "requests": 10, "skipped": 0}
+    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment: finding)
+    results = {}
+    monomi.run_exposed(results, {"hosts": {}})
+    assert results["exposed_files"] is finding
+    out = capsys.readouterr().out
+    assert "OpenAPI spec" in out and "source map" in out
+    assert "source code" in out  # the embedded-code flag is shown
+    assert "1 API spec(s) and 1 source map(s)" in out
+
+
+def test_run_exposed_clean_says_nothing_found(monkeypatch, capsys):
+    empty = {"hosts": {}, "requested": ["a"], "checked": 1, "requests": 7, "skipped": 0}
+    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment: empty)
+    results = {}
+    monomi.run_exposed(results, {"hosts": {}})
+    assert "No exposed API specs or source maps" in capsys.readouterr().out

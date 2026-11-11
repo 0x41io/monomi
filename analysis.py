@@ -92,6 +92,16 @@ missing defenses.
 Cloudflare can usually add them in one place.
 - In Limitations, note headers were checked on each host's homepage only, \
 and hosts that redirected were not judged.
+If the evidence includes "exposed files (active GET)" items:
+- In section 3, list hosts serving a public API spec or JavaScript source \
+map. Treat an embedded-source-code source map, or a spec that names internal \
+servers or declares auth, as Medium; a plain spec or a names-only source map \
+as Low. Don't call an exposed file a vulnerability on its own; it is \
+information that shortcuts an attacker.
+- In section 5, say to stop serving these in production (or require auth), \
+and for source maps to drop sourcesContent from the build.
+- In Limitations, note only a fixed set of well-known paths and the homepage's \
+own scripts were checked, so absence is not proof.
 If the evidence includes "DNS TXT lookups (SPF, DMARC, DKIM)" items:
 - Base the email finding on the code's spoofing verdict item, citing it \
 with the SPF and DMARC items. "spoofable" is High (anyone can send mail \

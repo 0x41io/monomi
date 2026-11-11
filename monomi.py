@@ -28,6 +28,7 @@ import paths
 import report
 import suggest
 import fingerprint
+import exposed
 import history
 import internetdb
 import takeover
@@ -79,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ports", action="store_true", help="look up open ports and known CVEs in Shodan's InternetDB (passive; turns on --enrich)")
     parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
+    parser.add_argument("--exposed-files", action="store_true", help="ACTIVE: look for public API specs (OpenAPI/Swagger) and JS source maps on live hosts (turns on --enrich)")
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")           
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
@@ -414,6 +416,39 @@ def run_fingerprint(results: dict, enrichment: dict) -> None:
             print(f"    {header}: {n}/{pages}")
     elif pages:
         good(f"All {pages} hosts that served a page have the checked security headers.")
+
+
+def run_exposed(results: dict, enrichment: dict) -> None:
+    """--exposed-files: look for public API specs and JS source maps (ACTIVE)."""
+    print()
+    info("Checking for exposed API specs and source maps "
+         "(active: a few requests per live host)...")
+    ex = exposed.check_all(enrichment)
+    results["exposed_files"] = ex
+    if ex["skipped"]:
+        warn(f"Only the first {exposed.MAX_HOSTS} hosts were checked ({ex['skipped']} skipped).")
+    print()
+    specs = maps = 0
+    for host, f in sorted(ex["hosts"].items()):
+        s = f["spec"]
+        if s:
+            specs += 1
+            auth = ", declares auth" if s["declares_auth"] else ""
+            # host, url and server names come from the target: clean before printing
+            print(f"    {ui.safe(host)}  {ui.paint(s['type'] + ' spec', ui.YELLOW)} "
+                  f"at {ui.safe(s['url'])}  ({s['endpoint_count']} endpoints{auth})")
+            for srv in s["servers"]:
+                print(f"        names server: {ui.safe(srv)}")
+        for m in f["source_maps"]:
+            maps += 1
+            code = ui.paint(" + source code", ui.BOLD, ui.YELLOW) if m["has_source_content"] else ""
+            print(f"    {ui.safe(host)}  {ui.paint('source map', ui.YELLOW)} "
+                  f"at {ui.safe(m['map_url'])}  ({m['source_count']} files{code})")
+    if specs or maps:
+        good(f"{specs} API spec(s) and {maps} source map(s) exposed "
+             f"across {len(ex['hosts'])} host(s).")
+    else:
+        good(f"No exposed API specs or source maps on the {ex['checked']} host(s) checked.")
 
 
 def run_email(results: dict, domain: str) -> None:
@@ -807,6 +842,8 @@ def main() -> int:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
     if args.fingerprint and not args.enrich:
         args.enrich = True  # we only fingerprint hosts that resolve, which --enrich tells us
+    if args.exposed_files and not args.enrich:
+        args.enrich = True  # same: we only check hosts that resolve to a public IP
     if args.cves and not args.ports:
         warn("--cves only works together with --ports; ignoring it.")
 
@@ -859,6 +896,8 @@ def main() -> int:
             run_ports(results, data, args.cves)
         if args.fingerprint:
             run_fingerprint(results, data)
+        if args.exposed_files:
+            run_exposed(results, data)
     else:
         for sub in all_subs:
             print(f"    {sub}")

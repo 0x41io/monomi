@@ -185,3 +185,54 @@ def test_citations_count_in_brackets_with_other_text():
 def test_citations_ignore_lookalikes():
     # CVE IDs and words that merely contain an E and digits aren't citations
     assert cited_ids("[CVE-2024-1234] [see E2E tests] [TE5]") == set()
+
+
+# ---------- exposed files (--exposed-files) ----------
+
+def exposed_results():
+    """A scan that found a spec on one host and a source map on another."""
+    return {
+        "subdomains": ["staging", "app"],
+        "sources": {"certlog": {"source": "certlog", "subdomains": ["staging", "app"]}},
+        "exposed_files": {"hosts": {
+            "staging": {
+                "spec": {"type": "OpenAPI", "version": "3.0.1",
+                         "url": "https://staging/openapi.json", "endpoint_count": 3,
+                         "method_count": 4, "servers": ["https://internal-api.local/"],
+                         "declares_auth": True},
+                "source_maps": [], "collected_at": "t1"},
+            "app": {
+                "spec": None,
+                "source_maps": [{"map_url": "https://app/app.js.map", "source_count": 2,
+                                 "sources": ["src/app.ts", "src/secret.ts"],
+                                 "has_source_content": True}],
+                "collected_at": "t2"}}}}
+
+
+def test_exposed_spec_becomes_a_fact_owned_by_web_and_cdn():
+    ev = build_evidence(exposed_results())
+    owners = owners_of(ev, "serves a public OpenAPI spec")
+    assert owners == ["web app team", "CDN / proxy admin"]
+    [fact] = [e["fact"] for e in ev if e["kind"] == "exposed_spec"]
+    assert "3 endpoints, 4 methods" in fact
+    assert "internal-api.local" in fact and "declares an auth scheme" in fact
+
+
+def test_exposed_source_map_fact_flags_embedded_code():
+    ev = build_evidence(exposed_results())
+    assert owners_of(ev, "serves a JavaScript source map") == ["web app team"]
+    [fact] = [e["fact"] for e in ev if e["kind"] == "exposed_source_map"]
+    assert "2 source files" in fact and "source code is embedded" in fact
+
+
+def test_exposed_facts_never_contain_the_source_code():
+    # the map's sources list is in results, but the code is never put in a fact
+    ev = build_evidence(exposed_results())
+    assert all("secret.ts" not in e["fact"] for e in ev)  # file names stay out of facts too
+
+
+def test_no_exposed_section_without_findings():
+    results = exposed_results()
+    results["exposed_files"]["hosts"] = {}
+    kinds = {e["kind"] for e in build_evidence(results)}
+    assert "exposed_spec" not in kinds and "exposed_source_map" not in kinds

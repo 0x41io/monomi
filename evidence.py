@@ -159,6 +159,27 @@ def build_evidence(results: dict) -> list[dict]:
             problems = "; ".join(f"{i['header']} {i['problem']} ({i['detail']})" for i in r["header_issues"])
             add(f"{host} (HTTP {r['status']}) security headers: {problems}", hdr_source, ("web", "cdn"))
 
+    # 6b. Exposed developer files: API specs and source maps (from --exposed-files, ACTIVE)
+    ex = results.get("exposed_files")
+    if ex:
+        for host, f in ex["hosts"].items():
+            src = [{"name": "exposed files (active GET)", "collected_at": f.get("collected_at")}]
+            spec = f["spec"]
+            if spec:
+                fact = (f"{host} serves a public {spec['type']} spec at {spec['url']} "
+                        f"({spec['endpoint_count']} endpoints, {spec['method_count']} methods)")
+                if spec["servers"]:
+                    fact += f"; names server(s) {', '.join(spec['servers'][:3])}"
+                if spec["declares_auth"]:
+                    fact += "; declares an auth scheme"
+                add(fact, src, ("web", "cdn"), kind="exposed_spec", host=host)
+            for m in f["source_maps"]:
+                fact = (f"{host} serves a JavaScript source map at {m['map_url']} "
+                        f"({m['source_count']} source files)")
+                if m["has_source_content"]:
+                    fact += "; the original source code is embedded"
+                add(fact, src, ("web",), kind="exposed_source_map", host=host)
+
     # 7. Email spoofing protection (from --email, DNS lookups only)
     em = results.get("email")
     if em and "error" not in em:
