@@ -610,6 +610,11 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
     missing or weak security headers (HSTS, CSP, X-Frame-Options,
     X-Content-Type-Options, Referrer-Policy). Headers are only judged on
     real pages (HTTP 2xx); redirects are listed in "not_judged".
+    If HTTPS fails with a TLS error or is refused (not on a timeout), it
+    tries http://host/ once, a second request that is logged too; that
+    host's result keeps the HTTPS failure in "https_error" and gets an
+    "HTTPS broken" issue instead of an HSTS one ("requests_sent" counts
+    every request).
     Resolves the hostnames first; hosts without a public IP get no request
     and are listed in "not_requested". Version leaks and header issues
     have "owners": the roles that would fix them, never people.
@@ -640,10 +645,14 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
             if t["version"]:
                 t["owners"] = owners("server")
         for issue in r["header_issues"]:
-            issue["owners"] = owners("web", "cdn")
+            # broken HTTPS is a server/certificate fix; missing headers are the app's
+            if issue["header"] == "HTTPS":
+                issue["owners"] = owners("server", "cdn")
+            else:
+                issue["owners"] = owners("web", "cdn")
     requested = set(fp["hosts"]) | set(fp["errors"])
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
-            "batch": batch, "requests_sent": fp["checked"], "active_log": ACTIVE_LOG,
+            "batch": batch, "requests_sent": fp["requests"], "active_log": ACTIVE_LOG,
             "not_requested": sorted(set(checked) - requested),
             "hosts": fp["hosts"], "errors": fp["errors"]}
     summary = fingerprint_summary(full)
@@ -662,7 +671,8 @@ def fingerprint_summary(full: dict) -> dict:
                 leaks.append({"host": host, "tech": t["tech"], "version": t["version"],
                               "evidence": t["evidence"], "owners": t["owners"]})
         for issue in r["header_issues"]:
-            entry = by_header.setdefault(issue["header"], {"problems": Counter(), "hosts": []})
+            entry = by_header.setdefault(issue["header"], {"problems": Counter(), "hosts": [],
+                                                           "owners": issue["owners"]})
             entry["problems"][issue["problem"]] += 1
             entry["hosts"].append(host)
     not_judged = {h: r["status"] for h, r in hosts.items() if not 200 <= r["status"] < 300}
@@ -678,7 +688,7 @@ def fingerprint_summary(full: dict) -> dict:
         "version_leaks": leaks,
         "header_issues": {
             header: {"problems": dict(e["problems"]), "host_count": len(e["hosts"]),
-                     "hosts": first(e["hosts"]), "owners": owners("web", "cdn")}
+                     "hosts": first(e["hosts"]), "owners": e["owners"]}
             for header, e in sorted(by_header.items())},
         "not_judged": dict(sorted(not_judged.items())[:LIST_CAP]),
         "errors": dict(sorted(full["errors"].items())[:LIST_CAP]),

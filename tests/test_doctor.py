@@ -632,9 +632,29 @@ def test_copies_that_disagree_say_the_setting_is_unclear(monkeypatch, tmp_path):
     [r] = doctor.check_active()
     assert r["status"] == WARN
     assert "ACTIVE tools are ON" not in r["detail"]  # never a confident "ON"
-    on, off = r["detail"].split("off in")
-    assert "standard.json" in on and "data.json" in off and "unclear" in off
+    first, on, off = r["detail"].split("\n")
+    assert "disagree" in first and "unclear" in first
+    assert on.strip().startswith("ON:") and on.endswith("standard.json")
+    assert off.strip().startswith("off:") and off.endswith("data.json")
     assert "--allow-active" in r["fix"] and "--no-active" in r["fix"]
+
+
+def test_active_on_lists_each_file_on_its_own_line(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
+                                     "data.json": config_with(ACTIVE)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    first, *paths = r["detail"].split("\n")
+    assert first.endswith("(after a Claude app restart)")  # no paths squeezed in here
+    assert [p.split()[0] for p in paths] == ["in", "in"]
+    assert paths[0].endswith("standard.json") and paths[1].endswith("data.json")
+
+
+def test_one_config_file_gets_no_path_line(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert "\n" not in r["detail"]
 
 
 def test_active_on_in_every_copy_lists_them(monkeypatch, tmp_path):

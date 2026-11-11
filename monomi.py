@@ -386,15 +386,20 @@ def run_fingerprint(results: dict, enrichment: dict) -> None:
             name = ui.safe(t["tech"])  # headers come from the target: clean them first
             techs.append(ui.paint(name, ui.YELLOW) if t["version"] else name)
         line = ", ".join(techs) or "no clues"
+        if "https_error" in r:
+            line += f"  (plain HTTP only: HTTPS failed, {r['https_error']})"
         if "location" in r["headers"]:
             line += f"  -> {ui.safe(r['headers']['location'])}"
         print(f"    {host}  [{r['status']}]  {line}")
     print()
     versions = sum(1 for r in fp["hosts"].values() for t in r["techs"] if t["version"])
-    good(f"{len(fp['hosts'])}/{fp['checked']} hosts answered on HTTPS"
+    good(f"{len(fp['hosts'])}/{fp['checked']} hosts answered"
          + (f", {ui.paint(str(versions), ui.BOLD, ui.YELLOW)} leaked a software version (can be matched to CVEs)." if versions else "."))
+    plain = sorted(h for h, r in fp["hosts"].items() if "https_error" in r)
+    if plain:
+        warn(f"{len(plain)} host(s) only answered over plain HTTP (HTTPS failed): {', '.join(plain)}")
     if fp["errors"]:
-        info(f"{len(fp['errors'])} host(s) didn't answer on HTTPS (timeouts, TLS errors, refused).")
+        info(f"{len(fp['errors'])} host(s) didn't answer (timeouts, TLS errors, refused).")
     
     # Security headers: count how many real pages are missing each one
     counts = {}

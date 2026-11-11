@@ -50,15 +50,16 @@ TELLTALE_COOKIES = {
 MAX_HOSTS = 100
 
 
-def fetch_headers(host: str, timeout: int = 10, on_request=None) -> dict:
-    """Request https://host/ once and return what came back.
+def fetch_headers(host: str, timeout: int = 10, on_request=None,
+                  scheme: str = "https") -> dict:
+    """Request scheme://host/ once (https unless told otherwise) and return what came back.
 
     on_request(host, url), if given, is called right before the request
     is sent (the MCP server uses it to write the audit log).
     Returns {"host", "url", "status", "headers", "collected_at"}.
     Raises requests.RequestException if the host can't be reached.
     """
-    url = f"https://{host}/"
+    url = f"{scheme}://{host}/"
     if on_request:
         on_request(host, url)
     resp = requests.get(
@@ -120,12 +121,40 @@ def detect(result: dict) -> list[dict]:
     return found
 
 
+def _retry_on_http(error: Exception) -> bool:
+    """Is this HTTPS failure worth one try on plain HTTP?
+
+    Yes when the host answered but TLS broke (SSLError, e.g. a certificate
+    for another name) or nothing listens on 443 (refused): both fail fast.
+    No on timeouts: a second wait could push an MCP call past the app's
+    60s limit. Timeout is checked first because requests' ConnectTimeout
+    is both a Timeout and a ConnectionError.
+    """
+    if isinstance(error, requests.Timeout):
+        return False
+    return isinstance(error, requests.ConnectionError)  # SSLError is one too
+
+
 def _safe_fetch(host: str, timeout: int = 10, on_request=None):
-    """fetch_headers() that never crashes: returns (host, result, error)."""
+    """fetch_headers() that never crashes: returns (host, result, error, requests sent).
+
+    If HTTPS fails in a way plain HTTP might not (see _retry_on_http),
+    tries http://host/ once; that result keeps the HTTPS failure in
+    "https_error", so a site that only works without HTTPS is never
+    reported as if HTTPS were fine.
+    """
     try:
-        return host, fetch_headers(host, timeout=timeout, on_request=on_request), None
+        return host, fetch_headers(host, timeout=timeout, on_request=on_request), None, 1
     except requests.RequestException as e:
-        return host, None, type(e).__name__
+        https_error = type(e).__name__
+        if not _retry_on_http(e):
+            return host, None, https_error, 1
+    try:
+        result = fetch_headers(host, timeout=timeout, on_request=on_request, scheme="http")
+    except requests.RequestException as e:
+        return host, None, f"{https_error}; http: {type(e).__name__}", 2
+    result["https_error"] = https_error
+    return host, result, None, 2
 
 
 def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
@@ -135,7 +164,9 @@ def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
     on_request, max_hosts and timeout let the MCP server log every request,
     check fewer hosts per call and wait less per host (its calls must
     finish within the Claude app's 60s limit).
-    Returns {"hosts": {host: result + "techs"}, "checked", "errors", "skipped"}.
+    Returns {"hosts": {host: result + "techs"}, "checked", "requests",
+    "errors", "skipped"}. "requests" counts every request sent (an HTTP
+    retry is a second one), so it always matches the audit log.
     """
     hosts = sorted(
         host for host, e in enrichment["hosts"].items()
@@ -147,16 +178,18 @@ def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
     def fetch(host):
         return _safe_fetch(host, timeout=timeout, on_request=on_request)
 
-    found, errors = {}, {}
+    found, errors, sent = {}, {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, result, err in pool.map(fetch, hosts):
+        for host, result, err, n in pool.map(fetch, hosts):
+            sent += n
             if err:
                 errors[host] = err
                 continue
             result["techs"] = detect(result)
             result["header_issues"] = check_headers(result)
             found[host] = result
-    return {"hosts": found, "checked": len(hosts), "errors": errors, "skipped": skipped}
+    return {"hosts": found, "checked": len(hosts), "requests": sent,
+            "errors": errors, "skipped": skipped}
 
 
 if __name__ == "__main__":

@@ -53,3 +53,41 @@ def test_hsts_max_age_parsing():
     assert hsts_max_age('max-age="600"') == 600
     assert hsts_max_age("max-age=abc") is None
     assert hsts_max_age("includeSubDomains") is None
+
+
+# ---------- pages served over plain HTTP (HTTPS failed) ----------
+
+def plain_http(headers, https_error="SSLError"):
+    return check_headers({"status": 200, "headers": headers, "url": "http://dev/",
+                          "https_error": https_error})
+
+
+def test_plain_http_page_flags_https_broken_not_hsts():
+    # browsers ignore HSTS sent over HTTP, so "HSTS missing" would mislead
+    issues = {i["header"]: i for i in plain_http({})}
+    assert "Strict-Transport-Security" not in issues
+    assert issues["HTTPS"]["problem"] == "broken"
+    assert "SSLError" in issues["HTTPS"]["detail"] and "plain HTTP" in issues["HTTPS"]["detail"]
+
+
+def test_plain_http_page_still_gets_the_other_header_checks():
+    assert {i["header"] for i in plain_http({})} == {
+        "HTTPS", "Content-Security-Policy", "X-Frame-Options",
+        "X-Content-Type-Options", "Referrer-Policy"}
+
+
+def test_plain_http_with_hsts_header_still_says_https_broken():
+    issues = {i["header"]: i["problem"] for i in plain_http(GOOD)}
+    assert issues == {"HTTPS": "broken"}
+
+
+def test_https_page_is_judged_as_before():
+    result = {"status": 200, "headers": {}, "url": "https://app/"}
+    assert {i["header"] for i in check_headers(result)} == {
+        "Strict-Transport-Security", "Content-Security-Policy", "X-Frame-Options",
+        "X-Content-Type-Options", "Referrer-Policy"}
+
+
+def test_plain_http_redirect_isnt_judged():
+    assert check_headers({"status": 301, "headers": {}, "url": "http://dev/",
+                          "https_error": "SSLError"}) == []

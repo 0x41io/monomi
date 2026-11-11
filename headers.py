@@ -35,9 +35,16 @@ def check_headers(result: dict) -> list[dict]:
     def flag(header, problem, detail):
         issues.append({"header": header, "problem": problem, "detail": detail})
 
-    # 1. HSTS: tells browsers "always use HTTPS here"
+    # 1. HTTPS itself, then HSTS: tells browsers "always use HTTPS here".
+    # A page fetched over plain HTTP (because HTTPS failed) can't be judged
+    # on HSTS: browsers ignore HSTS sent over HTTP. The real problem there
+    # is that HTTPS doesn't work, so that's what gets flagged.
     hsts = headers.get("strict-transport-security")
-    if hsts is None:
+    if result.get("url", "").startswith("http://"):
+        flag("HTTPS", "broken",
+             f"HTTPS failed ({result.get('https_error', 'unknown error')}), "
+             "page only served over plain HTTP")
+    elif hsts is None:
         flag("Strict-Transport-Security", "missing",
              "browsers aren't told to always use HTTPS")
     else:

@@ -536,8 +536,8 @@ def fake_web(monkeypatch):
 
     def get(url, **kwargs):
         sent.append(url)
-        if url not in FAKE_SITES:
-            raise mcp_server.fingerprint.requests.ConnectionError("no answer")
+        if url not in FAKE_SITES:  # never answers = a timeout, so no HTTP retry
+            raise mcp_server.fingerprint.requests.ConnectTimeout("no answer")
         return FAKE_SITES[url]
     monkeypatch.setattr(mcp_server.fingerprint.requests, "get", get)
     return sent
@@ -595,7 +595,7 @@ def test_fingerprint_summary_leaks_headers_redirects_errors(monkeypatch):
     assert hsts == {"problems": {"missing": 1}, "host_count": 1, "hosts": ["app"],
                     "owners": ["web app team", "CDN / proxy admin"]}
     assert result["not_judged"] == {"www": 301}
-    assert result["errors"] == {"down": "ConnectionError"} and result["error_count"] == 1
+    assert result["errors"] == {"down": "ConnectTimeout"} and result["error_count"] == 1
     assert result["status_counts"] == {200: 1, 301: 1}
 
 
@@ -642,3 +642,41 @@ def test_main_reads_allow_active(monkeypatch, capsys):
     assert mcp_server.ALLOW_ACTIVE is True
     err = capsys.readouterr().err
     assert "active tools off" in err and "active tools ON" in err
+
+
+def fake_plain_http_host(monkeypatch):
+    """Like dev on the lab: HTTPS fails with a TLS error, plain HTTP works."""
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {"dev": {"ips": ["8.8.8.8"]}}})
+    sent = []
+
+    def get(url, **kwargs):
+        sent.append(url)
+        if url == "https://dev/":
+            raise mcp_server.fingerprint.requests.exceptions.SSLError("wrong certificate")
+        return FakeResponse(200, {"Server": "nginx/1.28.3 (Ubuntu)"})
+    monkeypatch.setattr(mcp_server.fingerprint.requests, "get", get)
+    return sent
+
+
+def test_fingerprint_falls_back_to_http_and_logs_both(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    sent = fake_plain_http_host(monkeypatch)
+    result = mcp_server.fingerprint_hosts(["dev"], detail="full")
+    assert sent == ["https://dev/", "http://dev/"]
+    assert result["requests_sent"] == 2  # requests, not hosts: matches the log
+    log = [json.loads(line) for line in (results_dir / "active.log").read_text().splitlines()]
+    assert [entry["url"] for entry in log] == sent
+    dev = result["hosts"]["dev"]
+    assert dev["url"] == "http://dev/" and dev["https_error"] == "SSLError"
+    assert result["errors"] == {}
+
+
+def test_broken_https_is_owned_by_server_and_cdn(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_plain_http_host(monkeypatch)
+    result = mcp_server.fingerprint_hosts(["dev"])
+    issues = result["header_issues"]
+    assert "Strict-Transport-Security" not in issues
+    assert issues["HTTPS"] == {"problems": {"broken": 1}, "host_count": 1, "hosts": ["dev"],
+                               "owners": ["server / infrastructure admin", "CDN / proxy admin"]}
+    assert issues["Content-Security-Policy"]["owners"] == ["web app team", "CDN / proxy admin"]

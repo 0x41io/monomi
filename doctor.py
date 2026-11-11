@@ -580,6 +580,11 @@ def active_configs(found):
     return on, off
 
 
+def config_lines(label, paths):
+    """One indented line per config file, under a result's detail line."""
+    return "".join(f"\n      {label} {path}" for path in paths)
+
+
 def last_active_request(log=None):
     """(how many requests scans/active.log holds, its last entry) or (0, None)."""
     log = log or mcp_setup.ACTIVE_LOG
@@ -607,13 +612,14 @@ def check_active():
     on, off = active_configs(found)
     if on and off:
         # The app reads only one copy, so we can't tell which setting it uses
+        files = config_lines("ON: ", on) + config_lines("off:", off)
         out.append(result(MCP, "active", WARN,
-                          f"ACTIVE tools: ON in {', '.join(on)}, off in {', '.join(off)}; "
-                          "the Claude app reads only one of them, so the setting is unclear",
+                          "ACTIVE tools: the config files disagree, and the Claude app reads "
+                          f"only one of them, so the setting is unclear{files}",
                           "python monomi.py mcp setup --allow-active or --no-active, "
                           "to make them match"))
     elif on:
-        where = f" ({', '.join(on)})" if len(found) > 1 else ""
+        where = config_lines("in", on) if len(found) > 1 else ""
         out.append(result(MCP, "active", WARN,
                           "ACTIVE tools are ON: fingerprint_hosts can send requests to targets "
                           f"(after a Claude app restart){where}",
