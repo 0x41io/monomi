@@ -59,7 +59,7 @@ def next_checks(results: dict, cves_saved: bool = False) -> list[dict]:
                 "this checks whether any points at something deleted that an attacker could claim")
         on_own = sorted({h for hs in own.values() for h in hs})
         if on_own and "fingerprint" not in results:
-            add("--fingerprint", None,
+            add("--fingerprint", "fingerprint_hosts",
                 f"{_count(len(on_own), 'host sits', 'hosts sit')} on the target's own servers: one homepage "
                 "request each shows the web server, its version and its security headers", active=True)
     if "email" not in results:

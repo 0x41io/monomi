@@ -48,13 +48,19 @@ TELLTALE_COOKIES = {
 
 # Cap on hosts per run: keeps the active check small and polite.
 MAX_HOSTS = 100
-def fetch_headers(host: str, timeout: int = 10) -> dict:
+
+
+def fetch_headers(host: str, timeout: int = 10, on_request=None) -> dict:
     """Request https://host/ once and return what came back.
 
+    on_request(host, url), if given, is called right before the request
+    is sent (the MCP server uses it to write the audit log).
     Returns {"host", "url", "status", "headers", "collected_at"}.
     Raises requests.RequestException if the host can't be reached.
     """
     url = f"https://{host}/"
+    if on_request:
+        on_request(host, url)
     resp = requests.get(
         url,
         headers={"User-Agent": USER_AGENT},
@@ -113,29 +119,37 @@ def detect(result: dict) -> list[dict]:
 
     return found
 
-def _safe_fetch(host: str):
+
+def _safe_fetch(host: str, timeout: int = 10, on_request=None):
     """fetch_headers() that never crashes: returns (host, result, error)."""
     try:
-        return host, fetch_headers(host), None
+        return host, fetch_headers(host, timeout=timeout, on_request=on_request), None
     except requests.RequestException as e:
         return host, None, type(e).__name__
 
 
-def fingerprint_all(enrichment: dict, workers: int = 8) -> dict:
+def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
+                    max_hosts: int = MAX_HOSTS, timeout: int = 10) -> dict:
     """Fingerprint every host from --enrich that has a public IP.
 
+    on_request, max_hosts and timeout let the MCP server log every request,
+    check fewer hosts per call and wait less per host (its calls must
+    finish within the Claude app's 60s limit).
     Returns {"hosts": {host: result + "techs"}, "checked", "errors", "skipped"}.
     """
     hosts = sorted(
         host for host, e in enrichment["hosts"].items()
         if any(ipaddress.ip_address(ip).is_global for ip in e["ips"])
     )
-    skipped = max(0, len(hosts) - MAX_HOSTS)
-    hosts = hosts[:MAX_HOSTS]
+    skipped = max(0, len(hosts) - max_hosts)
+    hosts = hosts[:max_hosts]
+
+    def fetch(host):
+        return _safe_fetch(host, timeout=timeout, on_request=on_request)
 
     found, errors = {}, {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, result, err in pool.map(_safe_fetch, hosts):
+        for host, result, err in pool.map(fetch, hosts):
             if err:
                 errors[host] = err
                 continue
@@ -143,6 +157,7 @@ def fingerprint_all(enrichment: dict, workers: int = 8) -> dict:
             result["header_issues"] = check_headers(result)
             found[host] = result
     return {"hosts": found, "checked": len(hosts), "errors": errors, "skipped": skipped}
+
 
 if __name__ == "__main__":
     import sys

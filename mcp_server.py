@@ -4,12 +4,19 @@ run Monomi's passive checks as tools.
 
 Run it with:  python mcp_server.py
 It talks over stdin/stdout, so it prints nothing and waits for an agent.
+
+Active tools (they send requests to the target's own servers) are off
+unless the server is started with --allow-active. Only the person who
+writes the Claude app's config can add that flag: an agent can't turn
+it on through any tool. Every active request is written to scans/active.log.
 """
+import argparse
 import contextlib
 import json
 import os
 import re
 import sys
+import threading
 from collections import Counter
 from datetime import datetime
 from monomi import clean_domain, collect_ct
@@ -19,11 +26,13 @@ from emailauth import check_email
 from takeover import check_hosts
 from enrich import enrich
 from evidence import OWNERS
+import fingerprint
 import internetdb
 import threatintel
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from common import now_utc
 
 # The server itself. "monomi" is the name agents will see.
 mcp = MCPServer("monomi")
@@ -37,6 +46,11 @@ TOTAL_BUDGET = 45  # whole find_subdomains call; leaves room under the Claude ap
 MAX_HOSTS = 200
 MAX_IPS = 10  # investigate_ip asks 4 sources per IP, one IP at a time
 MAX_PORT_HOSTS = 100  # check_ports also queries Shodan per IP, so it's slower
+# fingerprint_hosts: 30 hosts, 15 at a time, 8s each = at most ~16s of
+# requests, so it finishes well under the 60s limit even on slow hosts
+MAX_FP_HOSTS = 30
+FP_WORKERS = 15
+FP_TIMEOUT = 8
 
 
 def owners(*keys: str) -> list[str]:
@@ -81,13 +95,14 @@ def finish(tool: str, full: dict, summary: dict, detail: str) -> dict:
 # agent can pass "already_ran" to leave out the checks it already did.
 
 TOOL_NAMES = ("ping", "find_subdomains", "check_email_auth", "check_takeover",
-              "enrich_hosts", "check_ports", "investigate_ip")
+              "enrich_hosts", "check_ports", "investigate_ip", "fingerprint_hosts")
 FOLLOWS_FROM = {  # tool -> the suggest.py flags its own results can back up
     "find_subdomains": ("--enrich", "--email"),
     "check_email_auth": (),
     "check_takeover": (),
     "enrich_hosts": ("--ports", "--takeover", "--fingerprint"),
     "check_ports": ("--takeover", "--fingerprint", "--cves FILE"),
+    "fingerprint_hosts": ("--ports", "--takeover"),
 }
 NEXT_CHECKS_NOTE = ("Suggestions only, nothing was run. Based on this call's results only: "
                     "pass the tools you already called as already_ran to leave them out.")
@@ -126,6 +141,34 @@ def attach_next_checks(tool: str, full: dict, summary: dict, results_for_suggest
         out["next_checks_note"] = NEXT_CHECKS_NOTE
         if error:
             out["next_checks_error"] = error
+
+
+# --- Active tools ----------------------------------------------------------
+# Off unless the server was started with --allow-active (set in __main__).
+# The refusal happens in Monomi itself, so it holds even when the Claude
+# app is set to "Always allow" the tool.
+
+ALLOW_ACTIVE = False
+ACTIVE_LOG = os.path.join(SCANS_DIR, "active.log")
+_log_lock = threading.Lock()  # fingerprint requests run in parallel threads
+
+
+def require_active(tool: str) -> None:
+    """Refuse an active tool unless the server was started with --allow-active."""
+    if not ALLOW_ACTIVE:
+        raise ToolError(
+            f"{tool} is an ACTIVE check (it sends requests to the target's own servers) "
+            "and active checks are turned off, so nothing was sent. Only the person "
+            "running Monomi can turn them on: run `python monomi.py mcp setup --allow-active`, "
+            "then fully restart the Claude app (the setting is read when the server starts).")
+
+
+def log_request(tool: str, host: str, url: str) -> None:
+    """Add one line to scans/active.log for every active request, before it's sent."""
+    os.makedirs(os.path.dirname(ACTIVE_LOG), exist_ok=True)
+    line = json.dumps({"time": now_utc(), "tool": tool, "host": host, "url": url})
+    with _log_lock, open(ACTIVE_LOG, "a") as f:
+        f.write(line + "\n")
 
 
 def first(names, cap: int = LIST_CAP) -> list:
@@ -546,6 +589,105 @@ def ports_brief(full: dict) -> dict:
     }
 
 
+@mcp.tool(annotations=ToolAnnotations(
+    title="ACTIVE: fingerprint hosts",
+    readOnlyHint=False,     # it reaches out to the target, so not read-only...
+    destructiveHint=False,  # ...but a homepage GET changes nothing there
+    idempotentHint=True,
+    openWorldHint=True))
+def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary",
+                      hosts_file: str | None = None, start: int = 0,
+                      already_ran: list[str] | None = None) -> dict:
+    """ACTIVE: sends one normal homepage request (https://host/) to each
+    host with a public IP, the same request a browser makes. Unlike every
+    other Monomi tool, this contacts the target's own servers, so only use
+    it on targets you're allowed to test (in scope). It is off unless the
+    person running Monomi turned active checks on; if it's off, it refuses
+    and nothing is sent. Every request is written to scans/active.log.
+    From the response headers it reports the web software (Server,
+    X-Powered-By...), any exact version shown ("version leaks": match them
+    to CVEs, but a version alone is a lead, not proof of a flaw) and
+    missing or weak security headers (HSTS, CSP, X-Frame-Options,
+    X-Content-Type-Options, Referrer-Policy). Headers are only judged on
+    real pages (HTTP 2xx); redirects are listed in "not_judged".
+    Resolves the hostnames first; hosts without a public IP get no request
+    and are listed in "not_requested". Version leaks and header issues
+    have "owners": the roles that would fix them, never people.
+    Checks at most 30 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason.
+    detail="summary" (default): counts, every version leak, header issues
+    grouped by header (up to 20 hosts each) and failed requests; the full
+    per-host result is saved to "full_results_file". detail="full": everything in the reply.
+    Pass the hosts as "hostnames", or as "hosts_file": a file in Monomi's
+    scans folder, like the "full_results_file" from find_subdomains (.json)
+    or a .txt list with one host per line. A big file goes in batches of
+    30: call again with "start" set to the reply's batch.next_start
+    until it is null.
+    Results include "next_checks": checks worth running next, from this
+    call's results (suggestions only, nothing runs). Pass the tools you
+    already called as "already_ran" (e.g. ["check_takeover"]) to leave
+    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
+    """
+    ran = check_already_ran(already_ran)
+    require_active("fingerprint_hosts")  # before any lookup or request
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_FP_HOSTS)
+    with contextlib.redirect_stdout(sys.stderr):
+        enrichment = enrich(checked)
+        fp = fingerprint.fingerprint_all(
+            enrichment, workers=FP_WORKERS, max_hosts=MAX_FP_HOSTS, timeout=FP_TIMEOUT,
+            on_request=lambda host, url: log_request("fingerprint_hosts", host, url))
+    for r in fp["hosts"].values():
+        for t in r["techs"]:
+            if t["version"]:
+                t["owners"] = owners("server")
+        for issue in r["header_issues"]:
+            issue["owners"] = owners("web", "cdn")
+    requested = set(fp["hosts"]) | set(fp["errors"])
+    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
+            "batch": batch, "requests_sent": fp["checked"], "active_log": ACTIVE_LOG,
+            "not_requested": sorted(set(checked) - requested),
+            "hosts": fp["hosts"], "errors": fp["errors"]}
+    summary = fingerprint_summary(full)
+    attach_next_checks("fingerprint_hosts", full, summary, {
+        "subdomains": checked, "enrichment": enrichment, "fingerprint": fp}, ran)
+    return finish("fingerprint_hosts", full, summary, detail)
+
+
+def fingerprint_summary(full: dict) -> dict:
+    """fingerprint_hosts in short: counts, every version leak, header issues by header."""
+    hosts = full["hosts"]
+    leaks, by_header = [], {}
+    for host, r in sorted(hosts.items()):
+        for t in r["techs"]:
+            if t["version"]:
+                leaks.append({"host": host, "tech": t["tech"], "version": t["version"],
+                              "evidence": t["evidence"], "owners": t["owners"]})
+        for issue in r["header_issues"]:
+            entry = by_header.setdefault(issue["header"], {"problems": Counter(), "hosts": []})
+            entry["problems"][issue["problem"]] += 1
+            entry["hosts"].append(host)
+    not_judged = {h: r["status"] for h, r in hosts.items() if not 200 <= r["status"] < 300}
+    return {
+        "hosts_checked": full["hosts_checked"],
+        "hosts_skipped": full["hosts_skipped"],
+        "rejected": full["rejected"],
+        "batch": full["batch"],
+        "requests_sent": full["requests_sent"],
+        "active_log": full["active_log"],
+        "answered": len(hosts),
+        "status_counts": dict(Counter(r["status"] for r in hosts.values()).most_common()),
+        "version_leaks": leaks,
+        "header_issues": {
+            header: {"problems": dict(e["problems"]), "host_count": len(e["hosts"]),
+                     "hosts": first(e["hosts"]), "owners": owners("web", "cdn")}
+            for header, e in sorted(by_header.items())},
+        "not_judged": dict(sorted(not_judged.items())[:LIST_CAP]),
+        "errors": dict(sorted(full["errors"].items())[:LIST_CAP]),
+        "error_count": len(full["errors"]),
+        "not_requested_count": len(full["not_requested"]),
+        "not_requested": first(full["not_requested"]),
+    }
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def investigate_ip(ips: list[str]) -> dict:
     """Look into suspicious IP addresses (e.g. from logs or alerts): is each
@@ -576,5 +718,17 @@ def investigate_ip(ips: list[str]) -> dict:
             "rejected": rejected[:20], **results}
 
 
-if __name__ == "__main__":
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="Monomi MCP server (talks over stdin/stdout)")
+    parser.add_argument("--allow-active", action="store_true",
+                        help="allow ACTIVE tools (fingerprint_hosts), which send requests to targets")
+    args = parser.parse_args(argv)
+    global ALLOW_ACTIVE
+    ALLOW_ACTIVE = args.allow_active
+    # stderr, never stdout: stdout carries the MCP messages
+    print(f"monomi MCP server: active tools {'ON' if ALLOW_ACTIVE else 'off'}", file=sys.stderr)
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

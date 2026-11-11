@@ -11,8 +11,11 @@ import mcp_server
 
 @pytest.fixture(autouse=True)
 def results_dir(tmp_path, monkeypatch):
-    """Every test saves its full results in a temp folder, not the real scans/."""
+    """Every test saves its full results in a temp folder, not the real scans/,
+    and starts with active tools off (as the real server does)."""
     monkeypatch.setattr(mcp_server, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(mcp_server, "ACTIVE_LOG", str(tmp_path / "active.log"))
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", False)
     return tmp_path
 
 
@@ -450,7 +453,8 @@ def test_enrich_hosts_suggests_what_its_results_back_up(monkeypatch):
     result = mcp_server.enrich_hosts(hosts)
     assert flags(result) == ["--ports", "--takeover", "--fingerprint"]  # never --email
     fp = result["next_checks"][2]
-    assert fp["cli_only"] is True and fp["active"] is True
+    assert fp["mcp_tool"] == "fingerprint_hosts"
+    assert fp["cli_only"] is False and fp["active"] is True
     result = mcp_server.enrich_hosts(hosts, already_ran=["check_takeover"])
     assert flags(result) == ["--ports", "--fingerprint"]
 
@@ -459,7 +463,8 @@ def test_check_ports_marks_cves_cli_only(monkeypatch):
     hosts = fake_lab(monkeypatch, "cves-edge-vs-own.json")
     result = mcp_server.check_ports(hosts, already_ran=["enrich_hosts"])
     assert flags(result) == ["--fingerprint", "--cves FILE"]  # never --ports again
-    assert all(c["cli_only"] for c in result["next_checks"])
+    cli_only = {c["flag"]: c["cli_only"] for c in result["next_checks"]}
+    assert cli_only == {"--fingerprint": False, "--cves FILE": True}
 
 
 def test_full_chain_never_repeats_a_check(monkeypatch):
@@ -477,7 +482,7 @@ def test_full_chain_never_repeats_a_check(monkeypatch):
         for c in result["next_checks"]:
             assert c["mcp_tool"] not in ran + [tool], (tool, c["flag"])
         ran.append(tool)
-    assert flags(result) == ["--fingerprint"]  # only the CLI-only active check is left
+    assert flags(result) == ["--fingerprint"]  # only the active check is left
 
 
 def test_unknown_already_ran_refused_before_any_lookup(monkeypatch):
@@ -498,3 +503,142 @@ def test_suggest_failure_is_reported_not_hidden(monkeypatch, capsys):
     assert result["next_checks"] == []
     assert "KeyError" in result["next_checks_error"]
     assert "KeyError" in capsys.readouterr().err  # stderr, since stdout carries MCP
+
+
+# --- fingerprint_hosts (ACTIVE) ---------------------------------------------
+# requests.get is faked, so the real fetch_headers() and fingerprint_all()
+# run (including the audit-log hook) without touching the network.
+
+class FakeResponse:
+    def __init__(self, status, headers):
+        self.status_code = status
+        self.headers = headers
+
+    def close(self):
+        pass
+
+
+FAKE_SITES = {  # dotless test hostnames, so the chat app doesn't turn them into links
+    "https://app/": FakeResponse(200, {"Server": "nginx/1.24.0", "X-Frame-Options": "DENY",
+                                       "X-Content-Type-Options": "nosniff"}),
+    "https://www/": FakeResponse(301, {"Location": "https://app/", "Server": "nginx"}),
+}
+
+
+def fake_web(monkeypatch):
+    """Fake DNS and web: app and www are public, intranet is private, gone doesn't resolve,
+    down is public but never answers. Returns the list of URLs requested."""
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {
+        "app": {"ips": ["8.8.8.8"]}, "www": {"ips": ["8.8.8.8"]},
+        "intranet": {"ips": ["10.0.0.5"], "private_ips": ["10.0.0.5"]},
+        "gone": {"ips": []}, "down": {"ips": ["8.8.4.4"]}}})
+    sent = []
+
+    def get(url, **kwargs):
+        sent.append(url)
+        if url not in FAKE_SITES:
+            raise mcp_server.fingerprint.requests.ConnectionError("no answer")
+        return FAKE_SITES[url]
+    monkeypatch.setattr(mcp_server.fingerprint.requests, "get", get)
+    return sent
+
+
+HOSTS = ["app", "www", "intranet", "gone", "down"]
+
+
+def test_fingerprint_refused_when_active_is_off(monkeypatch, results_dir):
+    sent = fake_web(monkeypatch)
+    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
+        mcp_server.fingerprint_hosts(HOSTS)
+    assert sent == []
+    assert not (results_dir / "active.log").exists()
+
+
+def test_fingerprint_refusal_reason_reaches_the_client(monkeypatch):
+    fake_web(monkeypatch)
+    with pytest.raises(mcp_server.ToolError, match="--allow-active"):
+        asyncio.run(mcp_server.mcp.call_tool("fingerprint_hosts", {"hostnames": ["app"]}))
+
+
+def test_fingerprint_refused_before_any_lookup(monkeypatch):
+    def boom(hosts):
+        raise AssertionError("DNS lookup ran while active tools were off")
+    monkeypatch.setattr(mcp_server, "enrich", boom)
+    with pytest.raises(mcp_server.ToolError):
+        mcp_server.fingerprint_hosts(["app"])
+
+
+def test_fingerprint_only_requests_public_hosts_and_logs_each(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    sent = fake_web(monkeypatch)
+    result = mcp_server.fingerprint_hosts(HOSTS)
+    assert sorted(sent) == ["https://app/", "https://down/", "https://www/"]
+    assert result["requests_sent"] == 3
+    assert result["not_requested"] == ["gone", "intranet"]
+    log = [json.loads(line) for line in (results_dir / "active.log").read_text().splitlines()]
+    assert sorted(entry["url"] for entry in log) == sorted(sent)
+    assert {entry["tool"] for entry in log} == {"fingerprint_hosts"}
+    assert all(entry["time"] for entry in log)
+
+
+def test_fingerprint_summary_leaks_headers_redirects_errors(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_web(monkeypatch)
+    result = mcp_server.fingerprint_hosts(HOSTS)
+    assert result["version_leaks"] == [{
+        "host": "app", "tech": "nginx/1.24.0", "version": "1.24.0",
+        "evidence": "server: nginx/1.24.0", "owners": ["server / infrastructure admin"]}]
+    # app has X-Frame-Options and nosniff; www is a redirect, so it isn't judged
+    assert sorted(result["header_issues"]) == [
+        "Content-Security-Policy", "Referrer-Policy", "Strict-Transport-Security"]
+    hsts = result["header_issues"]["Strict-Transport-Security"]
+    assert hsts == {"problems": {"missing": 1}, "host_count": 1, "hosts": ["app"],
+                    "owners": ["web app team", "CDN / proxy admin"]}
+    assert result["not_judged"] == {"www": 301}
+    assert result["errors"] == {"down": "ConnectionError"} and result["error_count"] == 1
+    assert result["status_counts"] == {200: 1, 301: 1}
+
+
+def test_fingerprint_full_detail_has_owners_on_each_issue(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_web(monkeypatch)
+    result = mcp_server.fingerprint_hosts(HOSTS, detail="full")
+    app = result["hosts"]["app"]
+    assert all(i["owners"] == ["web app team", "CDN / proxy admin"] for i in app["header_issues"])
+    assert app["techs"][0]["owners"] == ["server / infrastructure admin"]
+
+
+def test_fingerprint_caps_hosts_per_call(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_web(monkeypatch)
+    many = [f"h{i:02d}" for i in range(45)]
+    result = mcp_server.fingerprint_hosts(many)
+    assert result["hosts_checked"] == 30 and result["batch"]["next_start"] == 30
+
+
+def test_fingerprint_never_suggests_itself(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_web(monkeypatch)
+    result = mcp_server.fingerprint_hosts(HOSTS)
+    assert "--fingerprint" not in flags(result)
+    assert flags(result) == ["--ports"]  # app/www/down sit on the target's own IPs
+    result = mcp_server.fingerprint_hosts(HOSTS, already_ran=["check_ports"])
+    assert flags(result) == []
+
+
+def test_fingerprint_tool_is_labeled_active():
+    tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+    fp = tools["fingerprint_hosts"].annotations
+    assert fp.read_only_hint is False and fp.destructive_hint is False and fp.open_world_hint is True
+    assert fp.title.startswith("ACTIVE")
+    assert tools["fingerprint_hosts"].description.lstrip().startswith("ACTIVE")
+
+
+def test_main_reads_allow_active(monkeypatch, capsys):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    mcp_server.main([])
+    assert mcp_server.ALLOW_ACTIVE is False
+    mcp_server.main(["--allow-active"])
+    assert mcp_server.ALLOW_ACTIVE is True
+    err = capsys.readouterr().err
+    assert "active tools off" in err and "active tools ON" in err
