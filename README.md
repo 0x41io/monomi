@@ -10,7 +10,7 @@
 
 Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, how an attacker would most likely get in, and who should fix what first.
 
-> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups, and `--fingerprint` is the one active check: a single homepage request per host. Only assess domains you own or have permission to review.
+> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups. Two optional checks are **active** — they contact the target's own servers: `--fingerprint` (one homepage request per host) and `--exposed-files` (a few requests per host to find public API specs and source maps). Both send an honest active User-Agent and only run when you ask for them. Only assess domains you own or have permission to review.
 ---
 
 ## Features
@@ -26,7 +26,8 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS. Hosts with no IPv4 address get a second DNS look that says why: **no_such_host** (the name doesn't exist, double-checked with two DNS-over-HTTPS servers, Cloudflare and Google), **dangling_cname** (a CNAME pointing to a deleted name), **ipv6_only**, **no_address** (the name exists but has no address, often a retired host), **conflicting** (system DNS and DNS-over-HTTPS disagree, so it's unknown), **servfail** (the DNS servers tried but couldn't get an answer, even after a retry: often a broken zone or a rate limit) or **lookup_failed**. Every check uses the same DNS helper and the same status words
 - **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs (Cloudflare, Fastly, Akamai, Imperva, Vercel, and AWS CloudFront, detected from [Amazon's published IP ranges](https://ip-ranges.amazonaws.com/ip-ranges.json)) so their ports aren't blamed on the target. Edge IPs are also caught from Shodan's service fingerprints (CPEs), which finds Cloudflare and Okta on IP ranges they don't own, and each one says why it was flagged (`edge_reason`). A hostname whose CNAME points to an edge service (CloudFront, Okta, Fastly, Akamai, Cloudflare, Imperva, Azure Front Door, Vercel) also marks its IPs as edge. Only IPs that matter get a row
 - **Hand-off to [kaidøku](https://github.com/0x41io/kaidoku) (`--cves FILE`):** saves every CVE found, ready for `python kaidoku.py --file FILE`
-- **Web tech + security headers (`--fingerprint`, active):** one homepage request per live host reads headers like Server and X-Powered-By to spot web servers, frameworks and exposed versions, and checks the same response for missing or weak security headers (HSTS, CSP, X-Frame-Options / frame-ancestors, X-Content-Type-Options, Referrer-Policy). Hosts that redirect aren't judged, and the header check makes no extra requests
+- **Web tech + security headers (`--fingerprint`, active):** one homepage request per live host reads headers like Server and X-Powered-By to spot web servers, frameworks and exposed versions, and checks the same response for missing or weak security headers (HSTS, CSP, X-Frame-Options / frame-ancestors, X-Content-Type-Options, Referrer-Policy). Hosts that redirect aren't judged, and the header check makes no extra requests. If HTTPS fails with a TLS error or is refused (not on a timeout), it retries once over plain HTTP and flags the broken HTTPS
+- **Exposed API specs and source maps (`--exposed-files`, active):** for each live host, checks a short list of well-known paths for a public OpenAPI/Swagger spec, and reads the homepage's own scripts for JavaScript source maps (`.map`). GET requests only — never POSTs, never follows a spec to call the API. A file counts only when it really parses as what it claims to be, so a site that returns a page for every path isn't mistaken for a spec. Reports a spec's endpoint count, any internal server names it lists and whether it declares auth; for a source map, how many source files it names and whether the original code is embedded (`sourcesContent`) — the code itself is never saved or shown. At most 13 requests per host
 - **Email spoofing check (`--email`):** looks up the domain's SPF, DMARC and DKIM records (DNS lookups only, nothing sent to the target's servers) and gives one verdict: **protected**, **partial** or **spoofable**. DMARC decides the verdict, so an SPF `~all` softfail isn't flagged when DMARC enforces. DKIM is checked under common selector names, and a key that isn't found is reported as "not confirmed", never "missing". If the system's DNS can't answer (WSL's DNS relay often times out on TXT lookups), Monomi retries with public DNS (Cloudflare, then Google)
 - **Subdomain takeover check (`--takeover`):** for every hostname, follows its CNAME and flags it if the target no longer exists (DNS lookups only). A dead target on a service that lets deleted names be claimed again (Azure App Service, Blob Storage, Traffic Manager, CDN and others, plus AWS Elastic Beanstalk) is a **takeover lead**; a dead target anywhere else is a **dangling CNAME** (worth checking, e.g. an expired domain someone could buy). A dead target on a service whose names can never be claimed again (AWS load balancers, CloudFront) is marked **stale**: an old DNS record worth cleaning up, not a takeover risk. A dead target inside the scanned domain itself is also **stale**, since only the domain's owner can create that name. Monomi never tries to claim anything, so leads stay leads
 - **IP threat-intel (`--investigate-ip`):** look into suspicious IPs from logs or alerts (up to 20 per run): is each one a Tor exit, VPN/proxy, hosting/cloud server or CDN edge? Checks the Tor Project's exit list, the network owner (ASN) via Team Cymru, reverse DNS and Shodan InternetDB, then Monomi's rules put labels on each IP, and every label names its source and reason. CVEs Shodan saw on a CDN edge IP come with a note that they most likely belong to another site behind it. Passive: asks public sources about the IP and never contacts the IP itself. Private and junk input is rejected with a reason. With `--ai`, Claude writes a verdict with a confidence level based on how many sources agree, cites the evidence, and never claims where a person is or who they are: a country is where the network is registered, not where its user is
@@ -45,7 +46,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **JSON export** for use in other tools
 - **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
 - **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, changing only Monomi's entry and backing up the old file first (see [MCP server mode](#mcp-server-mode))
-- **MCP server mode (passive-only):** run Monomi as an MCP server so AI agents can call its checks directly. Seven tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
+- **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) are off by default behind an `--allow-active` gate with an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
 ## Installation
 
@@ -164,6 +165,9 @@ python monomi.py example.com --ports --cves cves.txt
 # Fingerprint web servers (ACTIVE: one request per host; turns on --enrich)
 python monomi.py example.com --fingerprint
 
+# Look for exposed API specs and source maps (ACTIVE: a few requests per host; turns on --enrich)
+python monomi.py example.com --exposed-files
+
 # Check email spoofing protection (SPF, DMARC, DKIM; DNS lookups only)
 python monomi.py example.com --email
 
@@ -261,9 +265,11 @@ A report includes:
 
 ## MCP server mode
 
-Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI, and **passive-only**: no active scanning is exposed over MCP.
+Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI. The checks are **passive by default**; the two active checks are off unless you turn them on (see **Active tools** below).
 
-Tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hosts`, `check_ports`, `check_email_auth`, `check_takeover`, `investigate_ip` (suspicious IPs, up to 10 per call). Results with something to fix carry `owners`: the roles that would fix them.
+Passive tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hosts`, `check_ports`, `check_email_auth`, `check_takeover`, `investigate_ip` (suspicious IPs, up to 10 per call). Results with something to fix carry `owners`: the roles that would fix them.
+
+**Active tools (v1.11, off by default).** `fingerprint_hosts` and `check_exposed_files` contact the target's own servers, so they're gated: the MCP server refuses them unless it was started with `--allow-active`, and refuses before any lookup or request — so the gate holds even if the Claude app is set to always-allow the tool. Turn them on with `python monomi.py mcp setup --allow-active` (it makes you type `yes` at a real terminal, so an agent can't enable them for you), then fully restart the app. Every active request is written to `scans/active.log`, and `python monomi.py doctor` shows whether active tools are on and the last request sent. `check_exposed_files` never returns source code it finds, only that it's present.
 
 Every call is built to fit the Claude app's 60-second tool limit: `find_subdomains` gives its sources 45 seconds in total, returns whatever finished, and lists skipped sources in `errors`.
 
@@ -278,11 +284,11 @@ check_takeover(hosts_file="<that file>", domain="example.com")
 check_ports(hosts_file="<that file>")
 ```
 
-**Next checks over MCP (v1.10.2).** Every tool's reply has `next_checks`: the checks worth running next, each with the reason from that call. Suggestions only, nothing runs. An MCP call only sees its own results, never what the agent ran before, so each tool suggests only what its own results back up (`find_subdomains`: enrich and email; `enrich_hosts` and `check_ports`: ports, takeover, fingerprint, saving CVEs), and the agent passes the tools it already called as `already_ran` to leave those out. A misspelled name in `already_ran` is refused before any lookup runs. Checks only the CLI can run (`--fingerprint`, `--cves`) are marked `cli_only`. If the suggestions can't be worked out, `next_checks` is empty and `next_checks_error` says why.
+**Next checks over MCP (v1.10.2).** Every tool's reply has `next_checks`: the checks worth running next, each with the reason from that call. Suggestions only, nothing runs. An MCP call only sees its own results, never what the agent ran before, so each tool suggests only what its own results back up (`find_subdomains`: enrich and email; `enrich_hosts` and `check_ports`: ports, takeover, fingerprint; `fingerprint_hosts`: ports, takeover, exposed-files; `check_exposed_files`: ports, takeover), and the agent passes the tools it already called as `already_ran` to leave those out. Active checks in the list are marked `active: true`. A misspelled name in `already_ran` is refused before any lookup runs. Checks only the CLI can run (`--cves`) are marked `cli_only`. If the suggestions can't be worked out, `next_checks` is empty and `next_checks_error` says why.
 
 ```
-enrich_hosts(hosts_file="<that file>", already_ran=["find_subdomains", "check_takeover"])
-  -> next_checks: --ports (check_ports), --fingerprint (cli_only)
+fingerprint_hosts(hostnames=[...])
+  -> next_checks: --ports (check_ports), --exposed-files (check_exposed_files, active)
 ```
 
 ### Setting it up
@@ -335,8 +341,9 @@ monomi/
 ├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
 ├── fingerprint.py        # HTTP header fingerprinting (--fingerprint, active)
 ├── headers.py            # security headers check (reads the --fingerprint response)
+├── exposed.py            # exposed API specs + JS source maps (--exposed-files, active)
 ├── categorize.py         # rule-based hostname categories
-├── mcp_server.py         # MCP server mode (7 passive tools)
+├── mcp_server.py         # MCP server mode (7 passive tools + 2 active, gated)
 ├── mcp_setup.py          # adds Monomi to the Claude app's MCP config (monomi.py mcp setup)
 ├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
 ├── takeover.py           # dangling CNAME / subdomain takeover check (--takeover)
@@ -373,6 +380,7 @@ monomi/
 - A hostname appearing in CT logs doesn't mean it's currently live. `--enrich` shows which ones still have DNS records, but a DNS record doesn't prove a server is up.
 - AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
 - `--fingerprint` only sees the homepage of each host over HTTPS. Behind a CDN (Cloudflare, Vercel, Fastly) it mostly sees the CDN, not the origin server, and many servers hide their versions.
+- `--exposed-files` checks only a fixed list of well-known spec paths and the scripts the homepage itself links, so absence is not proof: a spec or source map behind a different path, a login, or a redirect won't be found. It reads JSON specs and `.map` files only (not YAML specs or Swagger UI HTML pages).
 - The security headers check only judges hosts that served a real page (HTTP 2xx), and only the homepage. Other pages can send different headers, and a missing header is a missing defense, not a confirmed vulnerability.
 - `--email` checks DKIM only under common selector names (Google, Microsoft 365, Mailchimp, SendGrid, Cloudflare and a few generic ones), because DNS can't list selectors. A domain using a custom selector will show DKIM as "not confirmed" even if it's set up.
 - `--takeover` only catches services where a deleted resource's name stops resolving in DNS. Services that answer for every name (GitHub Pages, S3, Heroku, Netlify) need an HTTP check to spot a takeover, and aren't covered yet.
@@ -426,8 +434,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.10.1: next-check suggestions in MCP tool results (same list the CLI already shows; nothing runs unless the agent calls the tool)
 - [x] v1.10.2: MCP next checks fixed: each tool suggests only what its own results back up, `already_ran` leaves out tools the agent already called, `cli_only` marks checks only the CLI can run, and a failure shows in `next_checks_error` instead of an empty list; version number fixed (v1.10.1 still reported 1.10.0)
 
+- [x] v1.11: active checks over MCP, off by default behind an `--allow-active` gate with an `scans/active.log` audit trail: `fingerprint_hosts` (web server, versions, security headers; retries over plain HTTP when HTTPS fails) and `check_exposed_files` (public OpenAPI/Swagger specs and JS source maps, CLI `--exposed-files`, source code never returned). `monomi.py doctor` reports the active-tools setting and finds the Claude config across Windows install layouts; active requests send an honest active User-Agent
+
 **Next**
-- [ ] v1.11: finds more: subfinder import and a free passive DNS source for subdomain breadth, security header and exposed API spec checks over MCP
+- [ ] v1.12: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
