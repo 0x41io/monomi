@@ -115,3 +115,14 @@ def test_fingerprint_all_counts_requests_not_hosts(monkeypatch):
     assert fp["checked"] == 1 and fp["requests"] == 2
     issues = {i["header"]: i["problem"] for i in fp["hosts"]["dev"]["header_issues"]}
     assert issues["HTTPS"] == "broken" and "Strict-Transport-Security" not in issues
+
+
+def test_fingerprint_sends_the_active_user_agent(monkeypatch):
+    seen = {}
+
+    def get(url, **kwargs):
+        seen["ua"] = kwargs["headers"]["User-Agent"]
+        return Answer()
+    monkeypatch.setattr(fingerprint.requests, "get", get)
+    fingerprint.fetch_headers("host")
+    assert "active security check" in seen["ua"]  # not the passive string

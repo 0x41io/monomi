@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-from common import USER_AGENT, now_utc
+from common import ACTIVE_USER_AGENT, now_utc
 from headers import check_headers
 
 # A version number like 2.4.41 or 7.4: digits, then one or more ".digits".
@@ -64,7 +64,7 @@ def fetch_headers(host: str, timeout: int = 10, on_request=None,
         on_request(host, url)
     resp = requests.get(
         url,
-        headers={"User-Agent": USER_AGENT},
+        headers={"User-Agent": ACTIVE_USER_AGENT},
         timeout=timeout,
         allow_redirects=False,
         stream=True,

@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 
 VERSION = "1.10.2"
 USER_AGENT = f"0x41-monomi/{VERSION} (passive OSINT research)"
+# Active checks (--fingerprint, --exposed-files) contact the target's own
+# servers, so they say so plainly: a site owner reading their logs should
+# see who came by and why, with a link, not a UA that claims to be passive.
+ACTIVE_USER_AGENT = f"0x41-monomi/{VERSION} (active security check; github.com/0x41io/monomi)"
 
 # Real hostnames only use letters, digits, dots, hyphens (and sometimes underscores).
 # Certificates can contain any text, so anything else is dropped: it protects the
