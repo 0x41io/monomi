@@ -111,20 +111,45 @@ def fake_windows(monkeypatch, tmp_path):
     standard = folders["APPDATA"] / "Claude" / mcp_setup.CONFIG
     msix = (folders["LOCALAPPDATA"] / "Packages" / "Claude_abc123" / "LocalCache"
             / "Roaming" / "Claude" / mcp_setup.CONFIG)
-    return standard, msix
+    # newer MSIX installs: lowercase folder name, as on a real machine
+    data = folders["LOCALAPPDATA"] / "Claude-Data" / "claude_abc123" / mcp_setup.CONFIG
+    return standard, msix, data
 
 
 def test_fresh_install_creates_the_standard_file(monkeypatch, tmp_path):
-    standard, msix = fake_windows(monkeypatch, tmp_path)
-    msix.parent.mkdir(parents=True)  # the MSIX folder exists, but no config in it
+    standard, msix, data = fake_windows(monkeypatch, tmp_path)
+    msix.parent.mkdir(parents=True)  # the MSIX folders exist, but no config in them
+    data.parent.mkdir(parents=True)
     assert mcp_setup.config_paths() == ([], str(standard))
 
 
 def test_both_windows_copies_are_found(monkeypatch, tmp_path):
-    standard, msix = fake_windows(monkeypatch, tmp_path)
+    standard, msix, _ = fake_windows(monkeypatch, tmp_path)
     write_json(standard, {})
     write_json(msix, {})
     assert mcp_setup.config_paths()[0] == [str(standard), str(msix)]
+
+
+def test_claude_data_copy_is_found(monkeypatch, tmp_path):
+    # the copy the app really read on 2026-11-10, which setup used to miss
+    standard, _, data = fake_windows(monkeypatch, tmp_path)
+    write_json(standard, {})
+    write_json(data, {})
+    assert mcp_setup.config_paths()[0] == [str(standard), str(data)]
+
+
+def test_all_three_windows_copies_are_found(monkeypatch, tmp_path):
+    standard, msix, data = fake_windows(monkeypatch, tmp_path)
+    for path in (standard, msix, data):
+        write_json(path, {})
+    assert mcp_setup.config_paths()[0] == [str(standard), str(msix), str(data)]
+
+
+def test_claude_data_copy_alone_is_used_instead_of_creating_one(monkeypatch, tmp_path):
+    # no standard file: setup must write the copy the app reads, not make a new one
+    standard, _, data = fake_windows(monkeypatch, tmp_path)
+    write_json(data, {})
+    assert mcp_setup.config_paths() == ([str(data)], str(standard))
 
 
 def test_no_windows_folder_stops_setup(monkeypatch):
@@ -303,3 +328,17 @@ def test_allow_active_typed_yes_writes_the_flag(monkeypatch, tmp_path, capsys):
     assert data["mcpServers"] == {NAME: ACTIVE_ENTRY, "other": {"command": "node"}}
     out = capsys.readouterr().out
     assert "ACTIVE tools send requests" in out and "only takes effect after that restart" in out
+
+
+def test_allow_active_reaches_the_claude_data_copy(monkeypatch, tmp_path):
+    # 2026-11-10: setup wrote the flag to %APPDATA% only, while the app read the
+    # Claude-Data copy (an old hand-made entry), so the server started with it off
+    standard, _, data = fake_windows(monkeypatch, tmp_path)
+    write_json(standard, {"mcpServers": {NAME: ENTRY}})
+    write_json(data, {"mcpServers": {NAME: ROI}})
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    monkeypatch.setattr("builtins.input", lambda question: "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(active=True) == 0
+    for path in (standard, data):
+        assert json.loads(path.read_text())["mcpServers"][NAME] == ACTIVE_ENTRY

@@ -97,8 +97,11 @@ def windows_folder(var):
 def config_paths():
     """(config files that exist, the standard path to create if none do).
 
-    Windows can have two copies: the standard one in %APPDATA%\\Claude, and
-    one inside the MSIX package folder that some installs read instead.
+    Windows can have more than one copy, and the app reads only one of them:
+      %APPDATA%\\Claude                                      (standard install)
+      %LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude  (older MSIX installs)
+      %LOCALAPPDATA%\\Claude-Data\\claude_*                   (newer MSIX installs)
+    so setup writes every copy it finds, and doctor checks them all.
     """
     system = platform.system()
     if system == "Darwin":
@@ -119,6 +122,9 @@ def config_paths():
         msix = os.path.join(local, "Packages", "Claude_*", "LocalCache",
                             "Roaming", "Claude", CONFIG)
         found += sorted(glob.glob(msix))
+        # [Cc]: this folder is lowercase "claude_..." and names match case-sensitively here
+        data = os.path.join(local, "Claude-Data", "[Cc]laude_*", CONFIG)
+        found += sorted(glob.glob(data))
     return found, standard
 
 

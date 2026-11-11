@@ -624,12 +624,35 @@ def test_active_on_is_a_loud_warning(monkeypatch, tmp_path):
     assert "--no-active" in r["fix"]
 
 
-def test_active_on_in_either_copy_counts(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ENTRY),
-                                     "msix.json": config_with(ACTIVE)})
+def test_copies_that_disagree_say_the_setting_is_unclear(monkeypatch, tmp_path):
+    # 2026-11-10: ON in one copy, off in the one the app read; doctor said "ON"
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
+                                     "data.json": config_with(ENTRY)})
     fake_log(monkeypatch, tmp_path)
     [r] = doctor.check_active()
-    assert r["status"] == WARN and "msix.json" in r["detail"] and "standard.json" not in r["detail"]
+    assert r["status"] == WARN
+    assert "ACTIVE tools are ON" not in r["detail"]  # never a confident "ON"
+    on, off = r["detail"].split("off in")
+    assert "standard.json" in on and "data.json" in off and "unclear" in off
+    assert "--allow-active" in r["fix"] and "--no-active" in r["fix"]
+
+
+def test_active_on_in_every_copy_lists_them(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
+                                     "data.json": config_with(ACTIVE)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert r["status"] == WARN and "ACTIVE tools are ON" in r["detail"]
+    assert "standard.json" in r["detail"] and "data.json" in r["detail"]
+
+
+def test_broken_copy_isnt_counted_as_off(monkeypatch, tmp_path):
+    # check_mcp reports the broken file; check_active shouldn't call it "off"
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
+                                     "bad.json": "{not json"})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert "ACTIVE tools are ON" in r["detail"] and "bad.json" not in r["detail"]
 
 
 def test_active_log_shows_the_last_request(monkeypatch, tmp_path):

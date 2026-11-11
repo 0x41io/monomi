@@ -566,8 +566,8 @@ def check_mcp():
 
 
 def active_configs(found):
-    """The config files that start Monomi with active tools allowed."""
-    on = []
+    """(config files with active tools ON, readable ones with them off)."""
+    on, off = [], []
     for path in found:
         try:
             config = mcp_setup.load_config(path)
@@ -575,7 +575,9 @@ def active_configs(found):
             continue  # check_mcp already reports broken or unreadable files
         if mcp_setup.is_active(config.get("mcpServers", {}).get(mcp_setup.NAME)):
             on.append(path)
-    return on
+        else:
+            off.append(path)
+    return on, off
 
 
 def last_active_request(log=None):
@@ -602,8 +604,15 @@ def check_active():
     except mcp_setup.SetupError:
         found = []
     out = []
-    on = active_configs(found)
-    if on:
+    on, off = active_configs(found)
+    if on and off:
+        # The app reads only one copy, so we can't tell which setting it uses
+        out.append(result(MCP, "active", WARN,
+                          f"ACTIVE tools: ON in {', '.join(on)}, off in {', '.join(off)}; "
+                          "the Claude app reads only one of them, so the setting is unclear",
+                          "python monomi.py mcp setup --allow-active or --no-active, "
+                          "to make them match"))
+    elif on:
         where = f" ({', '.join(on)})" if len(found) > 1 else ""
         out.append(result(MCP, "active", WARN,
                           "ACTIVE tools are ON: fingerprint_hosts can send requests to targets "
