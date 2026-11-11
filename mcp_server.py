@@ -27,6 +27,7 @@ from takeover import check_hosts
 from enrich import enrich
 from evidence import OWNERS
 import fingerprint
+import exposed
 import internetdb
 import threatintel
 from mcp.server.mcpserver import MCPServer
@@ -51,6 +52,10 @@ MAX_PORT_HOSTS = 100  # check_ports also queries Shodan per IP, so it's slower
 MAX_FP_HOSTS = 30
 FP_WORKERS = 15
 FP_TIMEOUT = 8
+# check_exposed_files sends up to 13 requests per host, so it stays small
+MAX_EXP_HOSTS = 10
+EXP_WORKERS = 8
+EXP_TIMEOUT = 8
 
 
 def owners(*keys: str) -> list[str]:
@@ -95,14 +100,17 @@ def finish(tool: str, full: dict, summary: dict, detail: str) -> dict:
 # agent can pass "already_ran" to leave out the checks it already did.
 
 TOOL_NAMES = ("ping", "find_subdomains", "check_email_auth", "check_takeover",
-              "enrich_hosts", "check_ports", "investigate_ip", "fingerprint_hosts")
+              "enrich_hosts", "check_ports", "investigate_ip", "fingerprint_hosts",
+              "check_exposed_files")
 FOLLOWS_FROM = {  # tool -> the suggest.py flags its own results can back up
     "find_subdomains": ("--enrich", "--email"),
     "check_email_auth": (),
     "check_takeover": (),
     "enrich_hosts": ("--ports", "--takeover", "--fingerprint"),
     "check_ports": ("--takeover", "--fingerprint", "--cves FILE"),
-    "fingerprint_hosts": ("--ports", "--takeover"),
+    "fingerprint_hosts": ("--ports", "--takeover", "--exposed-files"),
+    # one-directional: fingerprint points here, here points only at passive follow-ups
+    "check_exposed_files": ("--ports", "--takeover"),
 }
 NEXT_CHECKS_NOTE = ("Suggestions only, nothing was run. Based on this call's results only: "
                     "pass the tools you already called as already_ran to leave them out.")
@@ -698,6 +706,102 @@ def fingerprint_summary(full: dict) -> dict:
     }
 
 
+@mcp.tool(annotations=ToolAnnotations(
+    title="ACTIVE: check exposed files",
+    readOnlyHint=False,     # it reaches out to the target, so not read-only...
+    destructiveHint=False,  # ...but every request is a GET, nothing changes there
+    idempotentHint=True,
+    openWorldHint=True))
+def check_exposed_files(hostnames: list[str] | None = None, detail: str = "summary",
+                        hosts_file: str | None = None, start: int = 0,
+                        already_ran: list[str] | None = None) -> dict:
+    """ACTIVE: looks for developer files a host serves to anyone: an API
+    spec (OpenAPI/Swagger) or a JavaScript source map. Like fingerprint_hosts
+    it contacts the target's own servers, so only run it on targets you're
+    allowed to test (in scope). It is off unless active checks were turned
+    on; if off, it refuses and nothing is sent. Every request goes to
+    scans/active.log.
+    Per host it sends only GETs, a small fixed set: a short list of
+    well-known spec paths (/openapi.json, /swagger.json, /v3/api-docs...),
+    then the homepage, a few of its same-host scripts, and the .map files
+    those scripts name. At most 13 requests per host. It never POSTs, never
+    follows a spec to call the API, and never leaves the hosts you pass in.
+    A file is reported only when it really parses as what it claims to be,
+    so a site that returns a page for every path isn't mistaken for a spec.
+    For a spec it reports the URL, type/version, title, endpoint and method
+    counts, the first paths, any server URLs it lists (these can name
+    internal hosts) and whether it declares a login scheme. For a source
+    map it reports the map URL, how many source files it lists, the first
+    few names, and whether the original source CODE is embedded
+    (has_source_content) — the bigger leak. The code itself is never
+    returned or saved. Findings have "owners": the roles that would fix
+    them, never people.
+    Checks at most 10 hostnames per call. Inputs that aren't hostnames come
+    back in "rejected"; hosts with no public IP are in "not_requested".
+    detail="summary" (default): counts plus the specs and maps found; the
+    full per-host result is saved to "full_results_file". detail="full":
+    everything in the reply.
+    Pass the hosts as "hostnames", or "hosts_file" (a .json/.txt file in
+    Monomi's scans folder). A big file goes in batches of 10: call again
+    with "start" set to the reply's batch.next_start until it is null.
+    Results include "next_checks" (suggestions only, nothing runs); pass
+    "already_ran" to leave out checks you already did.
+    """
+    ran = check_already_ran(already_ran)
+    require_active("check_exposed_files")  # before any lookup or request
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_EXP_HOSTS)
+    with contextlib.redirect_stdout(sys.stderr):
+        enrichment = enrich(checked)
+        ex = exposed.check_all(
+            enrichment, workers=EXP_WORKERS, max_hosts=MAX_EXP_HOSTS, timeout=EXP_TIMEOUT,
+            on_request=lambda host, url: log_request("check_exposed_files", host, url))
+    for finding in ex["hosts"].values():
+        if finding["spec"]:
+            finding["spec"]["owners"] = owners("web", "cdn")
+        for m in finding["source_maps"]:
+            m["owners"] = owners("web")
+    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
+            "batch": batch, "requests_sent": ex["requests"], "active_log": ACTIVE_LOG,
+            "not_requested": sorted(set(checked) - set(ex["requested"])),
+            "hosts": ex["hosts"]}
+    summary = exposed_summary(full)
+    attach_next_checks("check_exposed_files", full, summary, {
+        "subdomains": checked, "enrichment": enrichment, "exposed_files": ex}, ran)
+    return finish("check_exposed_files", full, summary, detail)
+
+
+def exposed_summary(full: dict) -> dict:
+    """check_exposed_files in short: the specs and source maps found, by host."""
+    specs, maps = [], []
+    for host, f in sorted(full["hosts"].items()):
+        s = f["spec"]
+        if s:
+            specs.append({"host": host, "url": s["url"], "type": s["type"],
+                          "version": s["version"], "endpoints": s["endpoint_count"],
+                          "declares_auth": s["declares_auth"], "owners": s["owners"]})
+        for m in f["source_maps"]:
+            maps.append({"host": host, "map_url": m["map_url"],
+                         "source_count": m["source_count"],
+                         "has_source_content": m["has_source_content"], "owners": m["owners"]})
+    return {
+        "hosts_checked": full["hosts_checked"],
+        "hosts_skipped": full["hosts_skipped"],
+        "rejected": full["rejected"],
+        "batch": full["batch"],
+        "requests_sent": full["requests_sent"],
+        "active_log": full["active_log"],
+        "hosts_with_findings": len(full["hosts"]),
+        "specs_found": len(specs),
+        "specs": specs[:LIST_CAP],
+        "source_maps_found": len(maps),
+        "source_maps": maps[:LIST_CAP],
+        # hosts whose maps embed the original source code: the bigger leak
+        "maps_with_source_code": sorted({m["host"] for m in maps if m["has_source_content"]}),
+        "not_requested_count": len(full["not_requested"]),
+        "not_requested": first(full["not_requested"]),
+    }
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def investigate_ip(ips: list[str]) -> dict:
     """Look into suspicious IP addresses (e.g. from logs or alerts): is each
@@ -731,7 +835,8 @@ def investigate_ip(ips: list[str]) -> dict:
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Monomi MCP server (talks over stdin/stdout)")
     parser.add_argument("--allow-active", action="store_true",
-                        help="allow ACTIVE tools (fingerprint_hosts), which send requests to targets")
+                        help="allow ACTIVE tools (fingerprint_hosts, check_exposed_files), "
+                             "which send requests to targets")
     args = parser.parse_args(argv)
     global ALLOW_ACTIVE
     ALLOW_ACTIVE = args.allow_active

@@ -62,6 +62,11 @@ def next_checks(results: dict, cves_saved: bool = False) -> list[dict]:
             add("--fingerprint", "fingerprint_hosts",
                 f"{_count(len(on_own), 'host sits', 'hosts sit')} on the target's own servers: one homepage "
                 "request each shows the web server, its version and its security headers", active=True)
+    fp = results.get("fingerprint") or {}
+    if fp.get("hosts") and "exposed_files" not in results:
+        add("--exposed-files", "check_exposed_files",
+            f"{_count(len(fp['hosts']), 'host served', 'hosts served')} a real page: this checks whether "
+            "any serve a public API spec (OpenAPI/Swagger) or a JavaScript source map", active=True)
     if "email" not in results:
         add("--email", "check_email_auth",
             f"not checked yet: whether someone can send email pretending to be {target} (DNS lookups only)")

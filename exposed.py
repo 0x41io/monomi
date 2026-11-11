@@ -264,9 +264,11 @@ def check_host(host, timeout=8, on_request=None):
 def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeout=8):
     """Check every host from --enrich that has a public IP.
 
-    Returns {"hosts": {host: finding}, "checked", "requests", "skipped"}.
-    "hosts" holds only hosts where something was found (never invent a
-    finding); "requests" counts every request sent, matching the audit log.
+    Returns {"hosts": {host: finding}, "requested", "checked", "requests",
+    "skipped"}. "hosts" holds only hosts where something was found (never
+    invent a finding); "requested" is every host actually contacted (so the
+    caller can report the ones with no public IP); "requests" counts every
+    request sent, matching the audit log.
     """
     import ipaddress
 
@@ -286,4 +288,5 @@ def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeo
             sent += n
             if finding:
                 found[host] = finding
-    return {"hosts": found, "checked": len(hosts), "requests": sent, "skipped": skipped}
+    return {"hosts": found, "requested": hosts, "checked": len(hosts),
+            "requests": sent, "skipped": skipped}

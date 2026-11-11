@@ -621,8 +621,11 @@ def test_fingerprint_never_suggests_itself(monkeypatch):
     fake_web(monkeypatch)
     result = mcp_server.fingerprint_hosts(HOSTS)
     assert "--fingerprint" not in flags(result)
-    assert flags(result) == ["--ports"]  # app/www/down sit on the target's own IPs
-    result = mcp_server.fingerprint_hosts(HOSTS, already_ran=["check_ports"])
+    # app/www/down sit on the target's own IPs; having fingerprinted, the next
+    # active step it points to is checking those live pages for exposed files
+    assert flags(result) == ["--ports", "--exposed-files"]
+    result = mcp_server.fingerprint_hosts(
+        HOSTS, already_ran=["check_ports", "check_exposed_files"])
     assert flags(result) == []
 
 
@@ -680,3 +683,130 @@ def test_broken_https_is_owned_by_server_and_cdn(monkeypatch):
     assert issues["HTTPS"] == {"problems": {"broken": 1}, "host_count": 1, "hosts": ["dev"],
                                "owners": ["server / infrastructure admin", "CDN / proxy admin"]}
     assert issues["Content-Security-Policy"]["owners"] == ["web app team", "CDN / proxy admin"]
+
+
+# --- check_exposed_files (ACTIVE) -------------------------------------------
+
+class MapResp:
+    """A fake response exposed.py can read a body from (it uses iter_content)."""
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status_code = status
+        self.headers = headers or {}
+        self._body = body
+
+    def iter_content(self, n):
+        for i in range(0, len(self._body), n):
+            yield self._body[i:i + n]
+
+    def close(self):
+        pass
+
+
+EXPOSED_OPENAPI = json.dumps({
+    "openapi": "3.0.1", "info": {"title": "Lab API"},
+    "paths": {"/users": {"get": {}}, "/admin": {"get": {}, "post": {}}},
+    "components": {"securitySchemes": {"bearer": {}}}}).encode()
+
+EXPOSED_MAP = json.dumps({
+    "version": 3, "sources": ["src/app.ts"], "sourcesContent": ["secret code"]}).encode()
+
+
+def fake_exposed_web(monkeypatch, pages):
+    """pages: {url: MapResp}. app and intranet resolve; intranet is private.
+    Returns the list of URLs requested."""
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {
+        "app": {"ips": ["8.8.8.8"]},
+        "intranet": {"ips": ["10.0.0.5"], "private_ips": ["10.0.0.5"]}}})
+    sent = []
+
+    def get(url, **kwargs):
+        sent.append(url)
+        return pages.get(url, MapResp(404, body=b"nope"))
+    monkeypatch.setattr(mcp_server.exposed.requests, "get", get)
+    return sent
+
+
+EXP_HOSTS = ["app", "intranet"]
+
+
+def test_exposed_refused_when_active_is_off(monkeypatch, results_dir):
+    sent = fake_exposed_web(monkeypatch, {})
+    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
+        mcp_server.check_exposed_files(EXP_HOSTS)
+    assert sent == []
+    assert not (results_dir / "active.log").exists()
+
+
+def test_exposed_refusal_reason_reaches_the_client(monkeypatch):
+    fake_exposed_web(monkeypatch, {})
+    with pytest.raises(mcp_server.ToolError, match="--allow-active"):
+        asyncio.run(mcp_server.mcp.call_tool("check_exposed_files", {"hostnames": ["app"]}))
+
+
+def test_exposed_refused_before_any_lookup(monkeypatch):
+    def boom(hosts):
+        raise AssertionError("DNS lookup ran while active tools were off")
+    monkeypatch.setattr(mcp_server, "enrich", boom)
+    with pytest.raises(mcp_server.ToolError):
+        mcp_server.check_exposed_files(["app"])
+
+
+def test_exposed_finds_spec_and_map_with_owners(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_exposed_web(monkeypatch, {
+        "https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
+        "https://app/": MapResp(body=b'<script src="/app.js"></script>'),
+        "https://app/app.js": MapResp(headers={"sourcemap": "app.js.map"}, body=b"x=1"),
+        "https://app/app.js.map": MapResp(body=EXPOSED_MAP)})
+    result = mcp_server.check_exposed_files(EXP_HOSTS, detail="full")
+    assert result["hosts_checked"] == 2 and result["not_requested"] == ["intranet"]
+    app = result["hosts"]["app"]
+    assert app["spec"]["type"] == "OpenAPI" and app["spec"]["declares_auth"] is True
+    assert app["spec"]["owners"] == ["web app team", "CDN / proxy admin"]
+    [m] = app["source_maps"]
+    assert m["has_source_content"] is True and m["owners"] == ["web app team"]
+    # the embedded source code never appears in what the tool returns
+    assert "secret code" not in json.dumps(result)
+
+
+def test_exposed_summary_counts_and_flags_source_code(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_exposed_web(monkeypatch, {
+        "https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
+        "https://app/": MapResp(body=b'<script src="/app.js"></script>'),
+        "https://app/app.js": MapResp(headers={"sourcemap": "app.js.map"}, body=b"x=1"),
+        "https://app/app.js.map": MapResp(body=EXPOSED_MAP)})
+    result = mcp_server.check_exposed_files(EXP_HOSTS)  # summary mode
+    assert result["specs_found"] == 1 and result["source_maps_found"] == 1
+    assert result["maps_with_source_code"] == ["app"]
+    assert result["specs"][0]["endpoints"] == 2
+    assert result["hosts_with_findings"] == 1
+
+
+def test_exposed_logs_each_request_and_counts_them(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    sent = fake_exposed_web(monkeypatch, {
+        "https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
+        "https://app/": MapResp(body=b"<html></html>")})
+    result = mcp_server.check_exposed_files(EXP_HOSTS)
+    log = [json.loads(line) for line in (results_dir / "active.log").read_text().splitlines()]
+    assert result["requests_sent"] == len(log) == len(sent)
+    assert {entry["tool"] for entry in log} == {"check_exposed_files"}
+    assert all(entry["host"] == "app" for entry in log)  # intranet was never contacted
+
+
+def test_exposed_clean_host_is_no_finding(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_exposed_web(monkeypatch, {"https://app/": MapResp(body=b"<html></html>")})
+    result = mcp_server.check_exposed_files(EXP_HOSTS)
+    assert result["hosts_with_findings"] == 0 and result["specs_found"] == 0
+
+
+def test_exposed_suggests_next_active_and_passive_checks(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    fake_exposed_web(monkeypatch, {"https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
+                                   "https://app/": MapResp(body=b"<html></html>")})
+    result = mcp_server.check_exposed_files(EXP_HOSTS)
+    # app sits on a public IP of its own, so --ports follows; it never suggests
+    # itself, and it doesn't point back at its active sibling --fingerprint
+    assert flags(result) == ["--ports"]
