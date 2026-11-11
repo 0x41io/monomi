@@ -173,9 +173,14 @@ def _same_host_scripts(html, base_url, host):
     return out
 
 
-def _map_urls(js_result):
+def _map_urls(js_result, host):
     """Where a script says its source map is: the sourceMappingURL comment
-    (resolved against the script URL) and the SourceMap/X-SourceMap header."""
+    (resolved against the script URL) and the SourceMap/X-SourceMap header.
+
+    Only URLs on this same host are kept. Both come from the target, so a
+    script could point its map anywhere (another site, a cloud metadata
+    address); fetching that would leave the hosts Monomi was given.
+    """
     urls, js_url = [], js_result["url"]
     headers = js_result["headers"]
     body = (js_result["body"] or b"").decode("utf-8", "replace")
@@ -187,6 +192,9 @@ def _map_urls(js_result):
             urls.append(urljoin(js_url, headers[header]))
     seen, unique = set(), []
     for u in urls:
+        parsed = urlparse(u)
+        if parsed.scheme not in ("http", "https") or parsed.hostname != host:
+            continue  # same rule as _same_host_scripts
         if u not in seen:
             seen.add(u)
             unique.append(u)
@@ -228,7 +236,7 @@ def _find_source_maps(host, fetch):
             js = fetch(js_url, want_body=True, cap=MAX_SPEC_BYTES)
         except requests.RequestException:
             continue
-        for map_url in _map_urls(js):
+        for map_url in _map_urls(js, host):
             if map_url not in candidates:
                 candidates.append((map_url, js_url))
 

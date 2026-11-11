@@ -2,6 +2,7 @@
 Every request is faked, so nothing touches the network."""
 
 import json
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -105,14 +106,14 @@ def test_map_url_from_comment_and_header():
     js = {"url": "https://lab/static/app.js",
           "headers": {"sourcemap": "app.js.map"},
           "body": b"console.log(1)\n//# sourceMappingURL=app.min.js.map\n"}
-    urls = exposed._map_urls(js)
+    urls = exposed._map_urls(js, "lab")
     assert urls == ["https://lab/static/app.min.js.map", "https://lab/static/app.js.map"]
 
 
 def test_inline_data_map_is_ignored():
     js = {"url": "https://lab/app.js", "headers": {},
           "body": b"//# sourceMappingURL=data:application/json;base64,eyJ2 ..."}
-    assert exposed._map_urls(js) == []
+    assert exposed._map_urls(js, "lab") == []
 
 
 # ---------- the fetch flow (fake HTTP) ----------
@@ -251,3 +252,28 @@ def test_active_user_agent_is_sent(monkeypatch):
     monkeypatch.setattr(exposed.requests, "get", get)
     exposed._fetch("https://lab/x", 8, None, "lab")
     assert "active security check" in seen["ua"] and "passive" not in seen["ua"]
+
+
+# ---------- maps on other hosts are never fetched (found in review, v1.11.1) ----------
+
+def test_cross_host_map_urls_are_dropped():
+    js = {"url": "https://lab/app.js",
+          "headers": {"sourcemap": "http://169.254.169.254/latest/meta-data"},
+          "body": b"//# sourceMappingURL=https://evil.example/x.map"}
+    assert exposed._map_urls(js, "lab") == []
+
+
+def test_non_web_scheme_map_urls_are_dropped():
+    js = {"url": "https://lab/app.js", "headers": {},
+          "body": b"//# sourceMappingURL=file:///etc/passwd"}
+    assert exposed._map_urls(js, "lab") == []
+
+
+def test_check_host_never_requests_another_host(monkeypatch):
+    pages = {"https://lab/": Resp(body=b'<script src="/app.js"></script>'),
+             "https://lab/app.js": Resp(
+                 headers={"x-sourcemap": "http://169.254.169.254/latest/meta-data"},
+                 body=b"//# sourceMappingURL=https://evil.example/x.map")}
+    sent = fake_site(monkeypatch, pages)
+    exposed.check_host("lab")
+    assert all(urlparse(u).hostname == "lab" for u in sent), sent
