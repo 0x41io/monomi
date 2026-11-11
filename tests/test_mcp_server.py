@@ -2,6 +2,7 @@
 the tools call are swapped for fakes with monkeypatch."""
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -357,66 +358,143 @@ def test_check_takeover_from_hosts_file(monkeypatch, tmp_path):
     assert result["rejected"][0]["host"] == "bad host"
     assert result["batch"]["next_start"] is None
 
-def test_find_subdomains_includes_next_checks(monkeypatch):
-    """find_subdomains attaches next_checks; enrich is suggested when hosts exist."""
+
+# --- next_checks ----------------------------------------------------------
+# The lab scan's saved results, so the suggestions are tested on real shapes.
+GOLDEN = os.path.join(os.path.dirname(__file__), "golden", "fixtures")
+
+
+def golden(name: str) -> dict:
+    """A fresh copy of a golden fixture (each test may change it)."""
+    with open(os.path.join(GOLDEN, name)) as f:
+        return json.load(f)
+
+
+def flags(result: dict) -> list[str]:
+    return [c["flag"] for c in result["next_checks"]]
+
+
+def fake_ct(monkeypatch, hosts=("app", "www")):
     def fake_collect(results, domain, **kwargs):
-        results["sources"] = {"crtsh": {"subdomains": ["app", "www"], "subdomain_count": 2,
-                                         "collected_at": "2026-01-01T00:00:00Z"}}
+        results["sources"] = {"crtsh": {"subdomains": list(hosts), "subdomain_count": len(hosts),
+                                        "collected_at": "2026-01-01T00:00:00Z"}}
         results["errors"] = {}
     monkeypatch.setattr(mcp_server, "collect_ct", fake_collect)
     monkeypatch.setattr(mcp_server, "categorize_all", lambda hosts, domain: {})
-    result = mcp_server.find_subdomains("lab.invalid", detail="summary")
-    assert "next_checks" in result
-    flags = [c["flag"] for c in result["next_checks"]]
-    assert "--enrich" in flags
-    assert "--email" in flags
+
+
+def fake_lab(monkeypatch, fixture="41xlab.json"):
+    """enrich and Shodan answer with a golden fixture's saved results."""
+    scan = golden(fixture)
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: golden(fixture)["enrichment"])
+
+    def lookup(enr):
+        exposure = golden(fixture)["exposure"]
+        for key in ("checked", "errors", "skipped"):  # trimmed fixtures may leave the counts out
+            exposure.setdefault(key, 0)
+        exposure.setdefault("nothing_seen", {})
+        return exposure
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lookup)
+    monkeypatch.setattr(mcp_server, "check_hosts",
+                        lambda hosts, domain=None: golden(fixture)["takeover"])
+    monkeypatch.setattr(mcp_server, "check_email",
+                        lambda domain: {"verdict": "ok", "spf": {}, "dmarc": {}, "dkim": {}})
+    return scan["subdomains"]
+
+
+def test_tool_names_match_the_real_tools():
+    # already_ran is checked against TOOL_NAMES, so it must list every tool.
+    real = [t.name for t in asyncio.run(mcp_server.mcp.list_tools())]
+    assert sorted(real) == sorted(mcp_server.TOOL_NAMES)
+
+
+def test_find_subdomains_suggests_enrich_and_email(monkeypatch):
+    fake_ct(monkeypatch)
+    result = mcp_server.find_subdomains("lab.invalid")
+    assert flags(result) == ["--enrich", "--email"]
+    assert all(c["cli_only"] is False for c in result["next_checks"])
+    assert "already_ran" in result["next_checks_note"]
     full = mcp_server.find_subdomains("lab.invalid", detail="full")
     assert full["next_checks"] == result["next_checks"]
 
 
-def test_enrich_hosts_suppresses_enrich_suggests_ports(monkeypatch):
-    """After enrich, --enrich is gone and --ports appears when own IPs exist."""
-    def fake_enrich(hosts):
-        return {
-            "hosts": {"app": {"ips": ["192.0.2.10"], "provider": "Example", "private_ips": []}},
-            "providers": {"Example": 1},
-            "resolved": 1,
-            "unique_ips": 1,
-            "not_resolving": {},
-            "private_ip_hosts": [],
-        }
-    monkeypatch.setattr(mcp_server, "enrich", fake_enrich)
-    monkeypatch.setattr(mcp_server, "owners", lambda *a: ["dns"])
-    result = mcp_server.enrich_hosts(["app.lab"], detail="summary")
-    flags = [c["flag"] for c in result["next_checks"]]
-    assert "--enrich" not in flags
-    assert "--ports" in flags
+def test_find_subdomains_leaves_out_already_ran(monkeypatch):
+    fake_ct(monkeypatch)
+    result = mcp_server.find_subdomains("lab.invalid", already_ran=["check_email_auth"])
+    assert flags(result) == ["--enrich"]
 
 
-def test_check_ports_suppresses_ports(monkeypatch):
-    """After check_ports, --ports is not re-suggested."""
-    def fake_enrich(hosts):
-        return {"hosts": {"app": {"ips": ["192.0.2.10"], "provider": "Example", "private_ips": []}},
-                "not_resolving": {}}
-    def fake_lookup(enr):
-        return {"ips": {"192.0.2.10": {"shared_edge": False, "vulns": [], "hosts": ["app.lab"],
-                                       "ports": [443], "risky": [], "provider": "Example"}},
-                "nothing_seen": {}, "checked": 1, "errors": 0, "skipped": 0,
-                "unique_cves": [], "risky": []}
-    monkeypatch.setattr(mcp_server, "enrich", fake_enrich)
-    monkeypatch.setattr(mcp_server.internetdb, "lookup", fake_lookup)
-    monkeypatch.setattr(mcp_server, "owners", lambda *a: ["server"])
-    result = mcp_server.check_ports(["app.lab"], detail="summary")
-    flags = [c["flag"] for c in result["next_checks"]]
-    assert "--ports" not in flags
-
-
-def test_check_email_auth_includes_next_checks(monkeypatch):
-    def fake_check(domain):
-        return {"verdict": "ok", "spf": {}, "dmarc": {}, "dkim": {}}
-    monkeypatch.setattr(mcp_server, "check_email", fake_check)
-    monkeypatch.setattr(mcp_server, "owners", lambda *a: ["dns", "email"])
+def test_check_email_auth_suggests_nothing(monkeypatch):
+    fake_lab(monkeypatch)
     result = mcp_server.check_email_auth("lab.invalid")
-    assert "next_checks" in result
-    flags = [c["flag"] for c in result["next_checks"]]
-    assert "--email" not in flags
+    assert result["next_checks"] == []
+    assert "next_checks_note" in result and "next_checks_error" not in result
+
+
+def test_check_takeover_suggests_nothing_and_passes_the_target(monkeypatch):
+    hosts = fake_lab(monkeypatch)
+    seen = {}
+    real = mcp_server.suggest.next_checks
+
+    def spy(results, *args):
+        seen.update(results)
+        return real(results, *args)
+    monkeypatch.setattr(mcp_server.suggest, "next_checks", spy)
+    result = mcp_server.check_takeover(hosts, domain="Lab.Invalid.")
+    assert result["next_checks"] == []
+    assert seen["target"] == "lab.invalid"
+
+
+def test_enrich_hosts_suggests_what_its_results_back_up(monkeypatch):
+    hosts = fake_lab(monkeypatch)
+    result = mcp_server.enrich_hosts(hosts)
+    assert flags(result) == ["--ports", "--takeover", "--fingerprint"]  # never --email
+    fp = result["next_checks"][2]
+    assert fp["cli_only"] is True and fp["active"] is True
+    result = mcp_server.enrich_hosts(hosts, already_ran=["check_takeover"])
+    assert flags(result) == ["--ports", "--fingerprint"]
+
+
+def test_check_ports_marks_cves_cli_only(monkeypatch):
+    hosts = fake_lab(monkeypatch, "cves-edge-vs-own.json")
+    result = mcp_server.check_ports(hosts, already_ran=["enrich_hosts"])
+    assert flags(result) == ["--fingerprint", "--cves FILE"]  # never --ports again
+    assert all(c["cli_only"] for c in result["next_checks"])
+
+
+def test_full_chain_never_repeats_a_check(monkeypatch):
+    """find_subdomains -> check_takeover -> enrich_hosts -> check_ports, each
+    passing the tools already called: no tool is ever suggested again."""
+    fake_ct(monkeypatch, hosts=fake_lab(monkeypatch))
+    ran = []
+    calls = [("find_subdomains", lambda r: mcp_server.find_subdomains("lab.invalid", already_ran=r)),
+             ("check_email_auth", lambda r: mcp_server.check_email_auth("lab.invalid", already_ran=r)),
+             ("check_takeover", lambda r: mcp_server.check_takeover(["a"], domain="lab.invalid", already_ran=r)),
+             ("enrich_hosts", lambda r: mcp_server.enrich_hosts(["a"], already_ran=r)),
+             ("check_ports", lambda r: mcp_server.check_ports(["a"], already_ran=r))]
+    for tool, call in calls:
+        result = call(list(ran))
+        for c in result["next_checks"]:
+            assert c["mcp_tool"] not in ran + [tool], (tool, c["flag"])
+        ran.append(tool)
+    assert flags(result) == ["--fingerprint"]  # only the CLI-only active check is left
+
+
+def test_unknown_already_ran_refused_before_any_lookup(monkeypatch):
+    def boom(hosts):
+        raise AssertionError("lookup ran before already_ran was checked")
+    monkeypatch.setattr(mcp_server, "enrich", boom)
+    with pytest.raises(mcp_server.ToolError, match="check_takover"):
+        mcp_server.enrich_hosts(["a"], already_ran=["check_takover"])
+
+
+def test_suggest_failure_is_reported_not_hidden(monkeypatch, capsys):
+    hosts = fake_lab(monkeypatch)
+
+    def broken(results, *args):
+        raise KeyError("hosts")
+    monkeypatch.setattr(mcp_server.suggest, "next_checks", broken)
+    result = mcp_server.enrich_hosts(hosts)
+    assert result["next_checks"] == []
+    assert "KeyError" in result["next_checks_error"]
+    assert "KeyError" in capsys.readouterr().err  # stderr, since stdout carries MCP

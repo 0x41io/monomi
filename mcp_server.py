@@ -75,16 +75,57 @@ def finish(tool: str, full: dict, summary: dict, detail: str) -> dict:
     return {"detail": "summary", **summary, "full_results_file": path}
 
 
-def attach_next_checks(full: dict, summary: dict, results_for_suggest: dict) -> None:
-    """Add the deterministic next_checks list to both the full and summary dicts.
-    Suggestions only: nothing is run. Same list the CLI already shows.
-    Incomplete or unexpected shapes produce an empty list instead of failing the tool."""
+# --- Next checks ----------------------------------------------------------
+# Each MCP call sees only its own results, never what the agent ran before.
+# So each tool suggests only what follows from its own results, and the
+# agent can pass "already_ran" to leave out the checks it already did.
+
+TOOL_NAMES = ("ping", "find_subdomains", "check_email_auth", "check_takeover",
+              "enrich_hosts", "check_ports", "investigate_ip")
+FOLLOWS_FROM = {  # tool -> the suggest.py flags its own results can back up
+    "find_subdomains": ("--enrich", "--email"),
+    "check_email_auth": (),
+    "check_takeover": (),
+    "enrich_hosts": ("--ports", "--takeover", "--fingerprint"),
+    "check_ports": ("--takeover", "--fingerprint", "--cves FILE"),
+}
+NEXT_CHECKS_NOTE = ("Suggestions only, nothing was run. Based on this call's results only: "
+                    "pass the tools you already called as already_ran to leave them out.")
+
+
+def check_already_ran(already_ran: list[str] | None) -> set[str]:
+    """The tool names in already_ran, checked before any lookup runs.
+    A misspelled name would quietly leave a repeat suggestion in, so it's refused."""
+    names = set(already_ran or [])
+    unknown = sorted(names - set(TOOL_NAMES))
+    if unknown:
+        raise ToolError(f"already_ran has unknown tool names {unknown}; "
+                        f"use these names: {', '.join(TOOL_NAMES)}")
+    return names
+
+
+def attach_next_checks(tool: str, full: dict, summary: dict, results_for_suggest: dict,
+                       already_ran: set[str]) -> None:
+    """Add next_checks (and a note saying what it's based on) to the full and summary results.
+    Suggestions only: nothing is run. Keeps only the checks this tool's own results
+    back up (FOLLOWS_FROM), drops tools in already_ran, and marks the ones only
+    the CLI can run as cli_only. If suggest.py fails, the list is empty and
+    next_checks_error says why (also printed to stderr: stdout carries MCP)."""
+    ran = already_ran | {tool}
+    error = None
     try:
         checks = suggest.next_checks(results_for_suggest)
-    except (AttributeError, KeyError, TypeError):
+    except (AttributeError, KeyError, TypeError) as e:
         checks = []
-    full["next_checks"] = checks
-    summary["next_checks"] = checks
+        error = f"next checks couldn't be worked out ({type(e).__name__}: {e})"
+        print(f"monomi {tool}: {error}", file=sys.stderr)
+    checks = [dict(c, cli_only=c["mcp_tool"] is None) for c in checks
+              if c["flag"] in FOLLOWS_FROM[tool] and c["mcp_tool"] not in ran]
+    for out in (full, summary):
+        out["next_checks"] = checks
+        out["next_checks_note"] = NEXT_CHECKS_NOTE
+        if error:
+            out["next_checks_error"] = error
 
 
 def first(names, cap: int = LIST_CAP) -> list:
@@ -183,7 +224,7 @@ def ping(name: str = "world") -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def find_subdomains(domain: str, detail: str = "summary") -> dict:
+def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str] | None = None) -> dict:
     """Find a domain's subdomains from public Certificate Transparency logs
     (crt.sh and Cert Spotter). Passive: never contacts the target itself.
     Also returns wildcard cert names (*.example.com): a wildcard means there
@@ -198,7 +239,13 @@ def find_subdomains(domain: str, detail: str = "summary") -> dict:
     hosts per risky category; the full list is saved to "full_results_file".
     detail="full": every hostname and category in the reply.
     Pass "full_results_file" as "hosts_file" to the other tools instead of
-    copying the hostnames into them."""
+    copying the hostnames into them.
+    Results include "next_checks": checks worth running next, from this
+    call's results (suggestions only, nothing runs). Pass the tools you
+    already called as "already_ran" (e.g. ["check_takeover"]) to leave
+    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
+    """
+    ran = check_already_ran(already_ran)
     domain = clean_domain(domain)
 
     results = {"sources": {}, "errors": {}}
@@ -226,7 +273,7 @@ def find_subdomains(domain: str, detail: str = "summary") -> dict:
         "errors": results["errors"],
     }
     summary = subdomains_summary(full)
-    attach_next_checks(full, summary, {"target": domain, "subdomains": hostnames})
+    attach_next_checks("find_subdomains", full, summary, {"target": domain, "subdomains": hostnames}, ran)
     return finish("find_subdomains", full, summary, detail)
 
 
@@ -249,24 +296,31 @@ def subdomains_summary(full: dict) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def check_email_auth(domain: str) -> dict:
+def check_email_auth(domain: str, already_ran: list[str] | None = None) -> dict:
     """Check whether a domain can be spoofed in email, from its public DNS
     records: SPF, DMARC and DKIM (common selectors only), plus an overall
     verdict. Passive: only reads DNS, never contacts the domain's servers.
     A missing DKIM result can mean the domain uses a selector Monomi
     didn't try, not that DKIM is absent.
-    "owners" names the roles that would fix email findings, never people."""
+    "owners" names the roles that would fix email findings, never people.
+    Results include "next_checks": checks worth running next, from this
+    call's results (suggestions only, nothing runs). Pass the tools you
+    already called as "already_ran" (e.g. ["check_takeover"]) to leave
+    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
+    """
+    ran = check_already_ran(already_ran)
     domain = clean_domain(domain)
     with contextlib.redirect_stdout(sys.stderr):
         result = check_email(domain)
     out = {"domain": domain, "owners": owners("dns", "email"), **result}
-    out["next_checks"] = suggest.next_checks({"target": domain, "email": result})
+    attach_next_checks("check_email_auth", out, out, {"target": domain, "email": result}, ran)
     return out
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def check_takeover(hostnames: list[str] | None = None, domain: str | None = None, detail: str = "summary",
-                   hosts_file: str | None = None, start: int = 0) -> dict:
+                   hosts_file: str | None = None, start: int = 0,
+                   already_ran: list[str] | None = None) -> dict:
     """Check hostnames for dangling CNAMEs that could allow a subdomain
     takeover: a CNAME pointing at a cloud service (e.g. Azure, Elastic
     Beanstalk) whose target no longer exists and could be claimed by
@@ -290,10 +344,16 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
     or a .txt list with one host per line. A big file goes in batches of
     200: call again with "start" set to the reply's batch.next_start
     until it is null.
+    Results include "next_checks": checks worth running next, from this
+    call's results (suggestions only, nothing runs). Pass the tools you
+    already called as "already_ran" (e.g. ["check_takeover"]) to leave
+    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
     """
+    ran = check_already_ran(already_ran)
+    domain = domain.strip().lower().rstrip(".") if domain else None
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
-        result = check_hosts(checked, domain=domain.strip().lower().rstrip(".") if domain else None)
+        result = check_hosts(checked, domain=domain)
     for lead in result["leads"]:
         lead["owners"] = owners("dns", "cloud") if lead["claimable"] else owners("dns")
     for record in result.get("stale", []):
@@ -302,7 +362,10 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, **result}
     summary = takeover_summary(full)
-    attach_next_checks(full, summary, {"subdomains": checked, "takeover": result})
+    found = {"subdomains": checked, "takeover": result}
+    if domain:
+        found["target"] = domain
+    attach_next_checks("check_takeover", full, summary, found, ran)
     return finish("check_takeover", full, summary, detail)
 
 
@@ -325,7 +388,8 @@ def takeover_summary(full: dict) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def enrich_hosts(hostnames: list[str] | None = None, detail: str = "summary",
-                 hosts_file: str | None = None, start: int = 0) -> dict:
+                 hosts_file: str | None = None, start: int = 0,
+                 already_ran: list[str] | None = None) -> dict:
     """Resolve hostnames to IP addresses and look up who hosts each IP:
     ASN, hosting provider and country, with private IPs flagged.
     Pass the hostnames from find_subdomains. Passive: DNS and public
@@ -342,7 +406,12 @@ def enrich_hosts(hostnames: list[str] | None = None, detail: str = "summary",
     or a .txt list with one host per line. A big file goes in batches of
     200: call again with "start" set to the reply's batch.next_start
     until it is null.
+    Results include "next_checks": checks worth running next, from this
+    call's results (suggestions only, nothing runs). Pass the tools you
+    already called as "already_ran" (e.g. ["check_takeover"]) to leave
+    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
     """
+    ran = check_already_ran(already_ran)
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         result = enrich(checked)
@@ -352,7 +421,7 @@ def enrich_hosts(hostnames: list[str] | None = None, detail: str = "summary",
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, **result}
     summary = enrich_summary(full)
-    attach_next_checks(full, summary, {"subdomains": checked, "enrichment": result})
+    attach_next_checks("enrich_hosts", full, summary, {"subdomains": checked, "enrichment": result}, ran)
     return finish("enrich_hosts", full, summary, detail)
 
 
@@ -398,7 +467,8 @@ def ports_summary(enrichment: dict, exposure: dict) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
-                hosts_file: str | None = None, start: int = 0) -> dict:
+                hosts_file: str | None = None, start: int = 0,
+                already_ran: list[str] | None = None) -> dict:
     """Look up open ports, risky services and known CVEs for the IPs
     behind hostnames, from Shodan InternetDB (what Shodan's own internet
     scans last saw). Resolves the hostnames first, so pass the hostnames
@@ -421,7 +491,12 @@ def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
     or a .txt list with one host per line. A big file goes in batches of
     100: call again with "start" set to the reply's batch.next_start
     until it is null.
+    Results include "next_checks": checks worth running next, from this
+    call's results (suggestions only, nothing runs). Pass the tools you
+    already called as "already_ran" (e.g. ["check_takeover"]) to leave
+    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
     """
+    ran = check_already_ran(already_ran)
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_PORT_HOSTS)
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
@@ -437,11 +512,11 @@ def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
             "hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, "not_resolving": enrichment.get("not_resolving", {}), **exposure}
     summary = ports_brief(full)
-    attach_next_checks(full, summary, {
+    attach_next_checks("check_ports", full, summary, {
         "subdomains": checked,
         "enrichment": enrichment,
         "exposure": exposure,
-    })
+    }, ran)
     return finish("check_ports", full, summary, detail)
 
 

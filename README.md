@@ -278,6 +278,13 @@ check_takeover(hosts_file="<that file>", domain="example.com")
 check_ports(hosts_file="<that file>")
 ```
 
+**Next checks over MCP (v1.10.2).** Every tool's reply has `next_checks`: the checks worth running next, each with the reason from that call. Suggestions only, nothing runs. An MCP call only sees its own results, never what the agent ran before, so each tool suggests only what its own results back up (`find_subdomains`: enrich and email; `enrich_hosts` and `check_ports`: ports, takeover, fingerprint, saving CVEs), and the agent passes the tools it already called as `already_ran` to leave those out. A misspelled name in `already_ran` is refused before any lookup runs. Checks only the CLI can run (`--fingerprint`, `--cves`) are marked `cli_only`. If the suggestions can't be worked out, `next_checks` is empty and `next_checks_error` says why.
+
+```
+enrich_hosts(hosts_file="<that file>", already_ran=["find_subdomains", "check_takeover"])
+  -> next_checks: --ports (check_ports), --fingerprint (cli_only)
+```
+
 ### Setting it up
 
 For the Claude desktop app, one command does it:
@@ -417,9 +424,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.9.2: report exports (`--export`: Markdown, HTML, findings CSV; `monomi.py report` for saved scans), setup check (`monomi.py doctor`), one-command MCP setup (`monomi.py mcp setup`)
 - [x] v1.10: fix groups (a path lists every fix it needs, and "fix this first" never says one fix closes a path that needs several), leads kept apart from attack paths (side doors, unverified versions, "go around the CDN"), next-check suggestions. In `--json`, a path's `fix` list is now `actions`, `fix_first` holds a list of actions, and `paths` gains `leads`
 - [x] v1.10.1: next-check suggestions in MCP tool results (same list the CLI already shows; nothing runs unless the agent calls the tool)
+- [x] v1.10.2: MCP next checks fixed: each tool suggests only what its own results back up, `already_ran` leaves out tools the agent already called, `cli_only` marks checks only the CLI can run, and a failure shows in `next_checks_error` instead of an empty list; version number fixed (v1.10.1 still reported 1.10.0)
 
 **Next**
-- [ ] v1.11: finds more: subfinder import and a free passive DNS source for subdomain breadth, next-check suggestions in the MCP tools, security header and exposed API spec checks over MCP
+- [ ] v1.11: finds more: subfinder import and a free passive DNS source for subdomain breadth, security header and exposed API spec checks over MCP
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
