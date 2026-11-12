@@ -30,6 +30,7 @@ import aws_ranges
 import dnscheck
 import internetdb
 import mcp_setup
+import scope
 import threatintel
 import ui
 from collectors import certspotter, crtsh, crtsh_db, pacing, saved
@@ -512,8 +513,8 @@ MCP_STATES = ["unreadable", "broken", "different", "missing", "ok"]
 
 def mcp_state(path, entry):
     """How one config file stands: one of MCP_STATES.
-    Whether active tools are on is its own check (check_active), so the
-    --allow-active flag doesn't make the entry count as "different"."""
+    Whether active tools are on (check_active) and the scope (check_scope)
+    are their own checks, so those flags don't make the entry "different"."""
     try:
         config = mcp_setup.load_config(path)
     except mcp_setup.SetupError:
@@ -521,6 +522,8 @@ def mcp_state(path, entry):
     except OSError:
         return "unreadable"
     old = config.get("mcpServers", {}).get(mcp_setup.NAME)
+    # the same order mcp setup builds it in: the scope pair, then --allow-active
+    entry = mcp_setup.with_scope(entry, *mcp_setup.scope_args(old))
     entry = mcp_setup.with_active(entry, mcp_setup.is_active(old))
     status, _ = mcp_setup.change(config, entry)
     return {"new": "missing", "unchanged": "ok", "changing": "different"}[status]
@@ -634,11 +637,69 @@ def check_active():
     return out
 
 
+def scope_pairs(found):
+    """{config file: (scope path, approved sha256)} for readable files with a Monomi entry."""
+    pairs = {}
+    for path in found:
+        try:
+            config = mcp_setup.load_config(path)
+        except (mcp_setup.SetupError, OSError):
+            continue  # check_mcp already reports broken or unreadable files
+        entry = config.get("mcpServers", {}).get(mcp_setup.NAME)
+        if entry is not None:
+            pairs[path] = mcp_setup.scope_args(entry)
+    return pairs
+
+
+def rejected_lines(s):
+    """The scope file's rejected lines, one per line under a result's detail."""
+    if not s or not s.rejected:
+        return ""
+    return "".join(f"\n      rejected line {r['line']}: {ui.safe(r['text'])} ({r['reason']})"
+                   for r in s.rejected)
+
+
+def check_scope():
+    """Which scope file is approved for ACTIVE tools, and does it still match?
+
+    Uses scope.check_pinned, the same check the MCP server makes at startup,
+    so doctor and the server always agree. Read-only."""
+    fix = "python monomi.py mcp setup --scope FILE (and type yes)"
+    try:
+        found, _ = mcp_setup.config_paths()
+    except mcp_setup.SetupError:
+        found = []
+    pairs = scope_pairs(found)
+    on, _ = active_configs(found)
+    if len(set(pairs.values())) > 1:
+        files = "".join(f"\n      {mcp_setup.describe_scope(*pair)} in {path}"
+                        for path, pair in pairs.items())
+        return [result(MCP, "scope", WARN,
+                       "scope: the config files disagree, and the Claude app reads only "
+                       f"one of them{files}", f"{fix}, to make them match")]
+    path, sha256 = next(iter(pairs.values()), (None, None))
+    if not path:
+        if on:
+            return [result(MCP, "scope", WARN,
+                           "ACTIVE tools are ON but no scope file is approved, so every "
+                           "active check refuses", fix)]
+        return [result(MCP, "scope", OK,
+                       "no scope file approved (needed before active tools can run)")]
+    s, problem = scope.check_pinned(path, sha256)
+    if problem:
+        return [result(MCP, "scope", WARN, f"scope file {path}: {problem}{rejected_lines(s)}",
+                       fix)]
+    return [result(MCP, "scope", OK,
+                   f"scope file {path}: {plural(len(s.inclusions), 'rule')} in scope, "
+                   f"{plural(len(s.exclusions), 'exclusion')}, sha256 {s.sha256[:12]}... "
+                   f"matches the approval{rejected_lines(s)}")]
+
+
 # ---------- Running and showing the checks ----------
 
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list, check_mcp, check_active]
+          check_tor_list, check_mcp, check_active, check_scope]
 
 
 def run_all(checks=None):

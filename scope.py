@@ -252,6 +252,32 @@ def from_bytes(data: bytes, path: str | None = None) -> Scope:
     return Scope(path, digest, rules, rejected)
 
 
+NO_SCOPE = ("no scope file is approved, so active checks refuse every host. "
+            "The person running Monomi sets one with "
+            "`python monomi.py mcp setup --scope FILE` (and types yes)")
+
+
+def check_pinned(path: str | None, sha256: str | None) -> tuple[Scope | None, str | None]:
+    """Load the approved scope file and check it's exactly what was approved.
+
+    Returns (scope, None) when it can be used, or (scope or None, why not).
+    The MCP server calls this once at startup and doctor calls it to report,
+    so both always give the same answer."""
+    if not path:
+        return None, NO_SCOPE
+    if not sha256:
+        return None, ("the scope file has no approved hash; run "
+                      "`python monomi.py mcp setup --scope FILE` again")
+    s = load(path)
+    if s.problem():
+        return s, s.problem()
+    if s.sha256 != sha256.lower():
+        return s, ("the scope file changed since it was approved, so active checks "
+                   "refuse until you approve it again: "
+                   f"`python monomi.py mcp setup --scope {path}` (and type yes)")
+    return s, None
+
+
 def load(path: str) -> Scope:
     """Read the scope file once and parse it. Never raises: a missing or
     unreadable file gives a Scope whose problem() says why."""

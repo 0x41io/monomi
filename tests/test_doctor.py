@@ -697,3 +697,81 @@ def test_active_check_with_no_config_found(monkeypatch, tmp_path):
     fake_log(monkeypatch, tmp_path)
     [r] = doctor.check_active()
     assert r["status"] == OK
+
+
+# ---------- scope (v1.12) ----------
+
+def approved(tmp_path, text="*.example.test\n!dev.example.test\n"):
+    """A scope file plus the config entry that approves it (path + its sha256)."""
+    import hashlib
+    s = tmp_path / "scope.txt"
+    s.write_bytes(text.encode())
+    entry = doctor.mcp_setup.with_scope(ENTRY, str(s), hashlib.sha256(text.encode()).hexdigest())
+    return s, entry
+
+
+def test_scope_args_dont_make_the_entry_different(monkeypatch, tmp_path):
+    _, entry = approved(tmp_path)
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(doctor.mcp_setup.with_active(entry, True))})
+    [r] = doctor.check_mcp()
+    assert r["status"] == OK
+
+
+def test_no_scope_with_active_off_is_ok(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    [r] = doctor.check_scope()
+    assert r["status"] == OK and "no scope file approved" in r["detail"]
+
+
+def test_active_on_with_no_scope_is_a_warning(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
+    [r] = doctor.check_scope()
+    assert r["status"] == WARN and "every active check refuses" in r["detail"]
+    assert "--scope FILE" in r["fix"]
+
+
+def test_approved_scope_shows_counts_and_hash(monkeypatch, tmp_path):
+    s, entry = approved(tmp_path)
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
+    [r] = doctor.check_scope()
+    assert r["status"] == OK
+    assert r["detail"].startswith(f"scope file {s}: 1 rule in scope, 1 exclusion, sha256 ")
+    assert r["detail"].endswith("matches the approval")
+
+
+def test_scope_edited_after_approval_is_a_warning(monkeypatch, tmp_path):
+    s, entry = approved(tmp_path)
+    s.write_bytes(b"*.example.test\n*.other.test\n")
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
+    [r] = doctor.check_scope()
+    assert r["status"] == WARN and "changed since it was approved" in r["detail"]
+
+
+def test_missing_scope_file_is_a_warning(monkeypatch, tmp_path):
+    s, entry = approved(tmp_path)
+    s.unlink()
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
+    [r] = doctor.check_scope()
+    assert r["status"] == WARN and "missing" in r["detail"]
+
+
+def test_rejected_lines_are_listed(monkeypatch, tmp_path):
+    _, entry = approved(tmp_path, "*.example.test\n*\n")
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
+    [r] = doctor.check_scope()
+    first, line = r["detail"].split("\n")
+    assert r["status"] == OK and first.endswith("matches the approval")
+    assert line.strip().startswith("rejected line 2: *") and "a bare '*'" in line
+
+
+def test_copies_with_different_scopes_disagree(monkeypatch, tmp_path):
+    _, entry = approved(tmp_path)
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(entry),
+                                     "data.json": config_with(ENTRY)})
+    [r] = doctor.check_scope()
+    assert r["status"] == WARN and "disagree" in r["detail"]
+    assert "none in" in r["detail"] and "standard.json" in r["detail"]
+
+
+def test_doctor_runs_the_scope_check():
+    assert doctor.check_scope in doctor.CHECKS

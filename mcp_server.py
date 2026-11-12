@@ -28,6 +28,7 @@ from enrich import enrich
 from evidence import OWNERS
 import fingerprint
 import exposed
+import scope
 import internetdb
 import threatintel
 from mcp.server.mcpserver import MCPServer
@@ -157,18 +158,29 @@ def attach_next_checks(tool: str, full: dict, summary: dict, results_for_suggest
 # app is set to "Always allow" the tool.
 
 ALLOW_ACTIVE = False
+# The approved scope file, read once at startup (see main). Until then, and
+# whenever it's missing, edited after approval or empty, SCOPE_PROBLEM says
+# why and every active check refuses. Fail-closed by default.
+SCOPE = None
+SCOPE_PROBLEM = scope.NO_SCOPE
 ACTIVE_LOG = os.path.join(SCANS_DIR, "active.log")
 _log_lock = threading.Lock()  # fingerprint requests run in parallel threads
 
 
 def require_active(tool: str) -> None:
-    """Refuse an active tool unless the server was started with --allow-active."""
+    """Refuse an active tool unless the server was started with --allow-active
+    AND an approved scope file that still matches its approved hash."""
     if not ALLOW_ACTIVE:
         raise ToolError(
             f"{tool} is an ACTIVE check (it sends requests to the target's own servers) "
             "and active checks are turned off, so nothing was sent. Only the person "
             "running Monomi can turn them on: run `python monomi.py mcp setup --allow-active`, "
             "then fully restart the Claude app (the setting is read when the server starts).")
+    if SCOPE_PROBLEM:
+        raise ToolError(
+            f"{tool} is an ACTIVE check and nothing was sent: {SCOPE_PROBLEM}. "
+            "Only the person running Monomi can approve a scope (the scope can't be "
+            "passed to a tool), then fully restart the Claude app.")
 
 
 def log_request(tool: str, host: str, url: str) -> None:
@@ -837,12 +849,26 @@ def main(argv=None) -> None:
     parser.add_argument("--allow-active", action="store_true",
                         help="allow ACTIVE tools (fingerprint_hosts, check_exposed_files), "
                              "which send requests to targets")
+    parser.add_argument("--scope", metavar="FILE",
+                        help="the approved scope file: active tools only reach hosts it allows")
+    parser.add_argument("--scope-sha256", metavar="HEX",
+                        help="the file's sha256 when it was approved (set by mcp setup)")
     args = parser.parse_args(argv)
-    global ALLOW_ACTIVE
+    global ALLOW_ACTIVE, SCOPE, SCOPE_PROBLEM
     ALLOW_ACTIVE = args.allow_active
+    SCOPE, SCOPE_PROBLEM = scope.check_pinned(args.scope, args.scope_sha256)
     # stderr, never stdout: stdout carries the MCP messages
-    print(f"monomi MCP server: active tools {'ON' if ALLOW_ACTIVE else 'off'}", file=sys.stderr)
+    print(f"monomi MCP server: active tools {'ON' if ALLOW_ACTIVE else 'off'}; "
+          f"{scope_status()}", file=sys.stderr)
     mcp.run()
+
+
+def scope_status() -> str:
+    """One line about the scope for the startup message (hash in full)."""
+    if SCOPE_PROBLEM:
+        return f"scope REFUSED: {SCOPE_PROBLEM}"
+    return (f"scope {SCOPE.path} sha256 {SCOPE.sha256} "
+            f"({len(SCOPE.inclusions)} in, {len(SCOPE.exclusions)} excluded)")
 
 
 if __name__ == "__main__":

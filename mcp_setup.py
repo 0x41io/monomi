@@ -6,10 +6,15 @@ monomi mcp setup: add Monomi to the Claude desktop app's MCP config.
     python monomi.py mcp setup --print  # only print the entry (for other MCP clients)
     python monomi.py mcp setup --allow-active  # also allow ACTIVE tools (asks you first)
     python monomi.py mcp setup --no-active     # turn ACTIVE tools back off
+    python monomi.py mcp setup --scope FILE    # approve the scope file for ACTIVE tools
+    python monomi.py mcp setup --no-scope      # clear the approved scope
 
-Without --allow-active or --no-active, setup keeps whatever the config has now.
-Turning active tools ON always asks you to type "yes" at a real terminal,
-even with --yes: an agent running commands for you can't turn them on.
+Without --allow-active/--no-active or --scope/--no-scope, setup keeps
+whatever the config has now. Turning active tools ON, and setting or
+changing the scope, always ask you to type "yes" at a real terminal, even
+with --yes: an agent running commands for you can't do either. The scope
+file's sha256 is saved next to its path, so the server refuses active
+checks if the file is edited after you approved it.
 
 Safe by design: only the "monomi" entry changes (other servers and settings
 stay as they are), the old file is backed up first, a file that isn't valid
@@ -26,6 +31,7 @@ import subprocess
 import sys
 from datetime import datetime
 
+import scope
 import ui
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +45,8 @@ ACTIVE_WARNING = (
     "one homepage request per host). Any agent connected to Monomi in the Claude app\n"
     "could then call them, so only scan targets you're allowed to test. Every request\n"
     "is written to scans/active.log, and `python monomi.py doctor` shows the setting.")
+SCOPE_FLAG = "--scope"              # mcp_server.py's flag: the approved scope file
+SCOPE_HASH_FLAG = "--scope-sha256"  # ...and the sha256 it had when you approved it
 
 
 class SetupError(Exception):
@@ -73,6 +81,41 @@ def with_active(entry, on):
     """A copy of the entry with --allow-active added (on) or removed (off)."""
     args = [a for a in entry.get("args", []) if a != ACTIVE_FLAG]
     return {**entry, "args": args + ([ACTIVE_FLAG] if on else [])}
+
+
+def scope_args(entry):
+    """(scope file path, approved sha256) from a config entry, or (None, None)."""
+    if not isinstance(entry, dict):
+        return None, None
+    args = entry.get("args") or []
+    found = {}
+    for flag in (SCOPE_FLAG, SCOPE_HASH_FLAG):
+        if flag in args:
+            i = args.index(flag)
+            found[flag] = args[i + 1] if i + 1 < len(args) else None
+    return found.get(SCOPE_FLAG), found.get(SCOPE_HASH_FLAG)
+
+
+def with_scope(entry, path, sha256):
+    """A copy of the entry with the scope pair set (or removed if path is None).
+    Each flag is removed together with its value, so it's never added twice."""
+    old, args, skip = entry.get("args", []), [], False
+    for a in old:
+        if skip:
+            skip = False
+        elif a in (SCOPE_FLAG, SCOPE_HASH_FLAG):
+            skip = True  # also drop the value that follows the flag
+        else:
+            args.append(a)
+    if path:
+        args += [SCOPE_FLAG, path, SCOPE_HASH_FLAG, sha256]
+    return {**entry, "args": args}
+
+
+def build_entry(on, path, sha256):
+    """The full entry: the server, the scope pair, then --allow-active last.
+    Always built in this order, so the same settings give the same entry."""
+    return with_active(with_scope(server_entry(), path, sha256), on)
 
 
 # ---------- Where the config is ----------
@@ -198,35 +241,84 @@ def ask(question):
         return False
 
 
-def confirm_active():
-    """Turning active tools on needs a person: a real terminal and the word "yes".
-    --yes never skips this, and piped input (how agents run commands) is refused."""
-    print(f"\n{ui.paint('Turning ACTIVE tools on', ui.BOLD, ui.YELLOW)}")
-    print(ACTIVE_WARNING)
+def show_scope(s):
+    """Everything you're approving: the file, its hash, every rule, every rejected line."""
+    print(f"\n{ui.paint('Scope file for ACTIVE tools', ui.BOLD, ui.YELLOW)}")
+    print(f"  file:   {s.path}")
+    print(f"  sha256: {s.sha256}")
+    print(f"  in scope ({len(s.inclusions)}):")
+    for r in s.inclusions:
+        print(f"    {ui.safe(r.text)}")
+    if s.exclusions:
+        print(f"  never in scope, even if a rule above matches ({len(s.exclusions)}):")
+        for r in s.exclusions:
+            print(f"    {ui.safe(r.text)}")
+    if s.rejected:
+        print(f"  {ui.paint(f'rejected lines ({len(s.rejected)}), these do NOT count:', ui.YELLOW)}")
+        for r in s.rejected:
+            print(f"    line {r['line']}: {ui.safe(r['text'])}  ({r['reason']})")
+    print("  Active tools will only ever send requests to hosts these rules allow.")
+
+
+def confirm(turning_on, new_scope):
+    """Turning active tools on, or setting/changing the scope, needs a person:
+    a real terminal and the word "yes". --yes never skips this, and piped
+    input (how agents run commands) is refused."""
+    if turning_on:
+        print(f"\n{ui.paint('Turning ACTIVE tools on', ui.BOLD, ui.YELLOW)}")
+        print(ACTIVE_WARNING)
+    if new_scope:
+        show_scope(new_scope)
+    asks = [("allow active tools", turning_on), ("approve this scope", new_scope)]
+    what = " and ".join(words for words, needed in asks if needed)
     if not sys.stdin.isatty():
-        ui.fail("Turning active tools on has to be typed by you at a terminal "
+        ui.fail(f"To {what}, you have to type it yourself at a terminal "
                 "(this input isn't one).")
         return False
     try:
-        return input('\nType "yes" to allow active tools: ').strip().lower() == "yes"
+        return input(f'\nType "yes" to {what}: ').strip().lower() == "yes"
     except EOFError:
         return False
 
 
-def setup(yes=False, active=None):
-    """active: True = allow ACTIVE tools, False = turn them off, None = keep each config's setting."""
+def load_new_scope(path):
+    """Read the scope file once (what's shown is what's hashed).
+    Raises SetupError if it can't be used, so nothing is written."""
+    s = scope.load(os.path.abspath(path))
+    if s.problem():
+        if s.rejected:
+            show_scope(s)
+        raise SetupError(f"{s.problem()}. Nothing was changed.")
+    return s
+
+
+def describe_scope(path, sha256):
+    return f"{path} (sha256 {sha256[:12]}...)" if path else "none"
+
+
+def setup(yes=False, active=None, scope_file=None, clear_scope=False):
+    """active: True = allow ACTIVE tools, False = turn them off, None = keep each config's setting.
+    scope_file: approve this scope file; clear_scope: remove it; neither = keep each config's."""
+    new_scope = load_new_scope(scope_file) if scope_file else None
     found, standard = config_paths()
     targets = found or [standard]
     # Read every file first: if any is broken, nothing gets written anywhere
     configs = {path: load_config(path) for path in targets}
 
-    plans, turning_on = {}, False
+    plans, turning_on, scope_changing = {}, False, False
     for path, cfg in configs.items():
         old = cfg.get("mcpServers", {}).get(NAME)
         on = is_active(old) if active is None else active
-        entry = with_active(server_entry(), on)
+        if clear_scope:
+            pair = (None, None)
+        elif new_scope:
+            pair = (new_scope.path, new_scope.sha256)
+        else:
+            pair = scope_args(old)
+        entry = build_entry(on, *pair)
         plans[path] = (*change(cfg, entry), entry)
         turning_on = turning_on or (on and not is_active(old))
+        scope_changing = scope_changing or (new_scope is not None and pair != scope_args(old))
 
     for path, (status, old, entry) in plans.items():
         print(f"\n{ui.paint(path, ui.BOLD, ui.WHITE)}")
@@ -234,6 +326,7 @@ def setup(yes=False, active=None):
             print("  no config yet: it will be created")
         print(f"  monomi: {status}")
         print(f"  active tools: {'ON' if is_active(entry) else 'off'}")
+        print(f"  scope: {describe_scope(*scope_args(entry))}")
         if status == "changing":
             show_entry("now:", old)
         if status != "unchanged":
@@ -243,8 +336,8 @@ def setup(yes=False, active=None):
     if not to_write:
         ui.good("Monomi is already set up in the Claude app. Nothing to change.")
         return 0
-    if turning_on:
-        if not confirm_active():
+    if turning_on or scope_changing:
+        if not confirm(turning_on, new_scope if scope_changing else None):
             ui.info("Nothing was changed.")
             return 0
     elif not yes and not ask("\nWrite this? [y/N] "):
@@ -259,7 +352,10 @@ def setup(yes=False, active=None):
     print("\nNext: fully quit the Claude app, not just its window (Windows: "
           "right-click its tray icon > Quit; macOS: Cmd+Q), open it again, "
           "and ask Claude to run Monomi's ping tool. A change to active tools "
-          "only takes effect after that restart.")
+          "or the scope only takes effect after that restart.")
+    if any(is_active(e) and not scope_args(e)[0] for _, _, e in plans.values()):
+        ui.warn("ACTIVE tools are on but no scope file is approved, so every active "
+                "check will refuse. Approve one with: python monomi.py mcp setup --scope FILE")
     return 0
 
 
@@ -276,18 +372,26 @@ def main(argv=None) -> int:
                         help="also allow ACTIVE tools, which send requests to targets (asks you first)")
     active.add_argument("--no-active", dest="active", action="store_const", const=False,
                         help="turn ACTIVE tools off")
+    scoping = parser.add_mutually_exclusive_group()
+    scoping.add_argument("--scope", dest="scope_file", metavar="FILE",
+                         help="approve this scope file: ACTIVE tools only reach hosts it allows "
+                              "(asks you first)")
+    scoping.add_argument("--no-scope", dest="clear_scope", action="store_true",
+                         help="remove the approved scope (active tools then refuse everything)")
     parser.add_argument("--no-color", action="store_true",
                         help="plain output (also respects NO_COLOR)")
     args = parser.parse_args(argv)
     if args.no_color:
         ui.disable()
 
-    if args.print_only:
-        entry = with_active(server_entry(), bool(args.active))
-        print(json.dumps({"mcpServers": {NAME: entry}}, indent=2))
-        return 0
     try:
-        return setup(yes=args.yes, active=args.active)
+        if args.print_only:
+            s = load_new_scope(args.scope_file) if args.scope_file else None
+            entry = build_entry(bool(args.active), s.path if s else None, s.sha256 if s else None)
+            print(json.dumps({"mcpServers": {NAME: entry}}, indent=2))
+            return 0
+        return setup(yes=args.yes, active=args.active,
+                     scope_file=args.scope_file, clear_scope=args.clear_scope)
     except SetupError as e:
         ui.fail(str(e))
         return 1

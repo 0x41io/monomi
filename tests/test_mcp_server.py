@@ -7,15 +7,20 @@ import os
 import pytest
 
 import mcp_server
+import scope
 
 
 @pytest.fixture(autouse=True)
 def results_dir(tmp_path, monkeypatch):
     """Every test saves its full results in a temp folder, not the real scans/,
-    and starts with active tools off (as the real server does)."""
+    and starts with active tools off (as the real server does). An approved
+    scope is in place, so tests that turn active tools on reach the tool;
+    the scope tests below take it away again."""
     monkeypatch.setattr(mcp_server, "RESULTS_DIR", str(tmp_path))
     monkeypatch.setattr(mcp_server, "ACTIVE_LOG", str(tmp_path / "active.log"))
     monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", False)
+    monkeypatch.setattr(mcp_server, "SCOPE", scope.from_bytes(b"*.example.test\n"))
+    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", None)
     return tmp_path
 
 
@@ -810,3 +815,75 @@ def test_exposed_suggests_next_active_and_passive_checks(monkeypatch):
     # app sits on a public IP of its own, so --ports follows; it never suggests
     # itself, and it doesn't point back at its active sibling --fingerprint
     assert flags(result) == ["--ports"]
+
+
+# --- scope (v1.12) -----------------------------------------------------------
+
+def test_active_tools_refuse_without_a_usable_scope_even_when_on(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    monkeypatch.setattr(mcp_server, "SCOPE", None)
+    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", scope.NO_SCOPE)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("DNS lookup ran without an approved scope")
+    monkeypatch.setattr(mcp_server, "enrich", boom)
+    for tool in (mcp_server.fingerprint_hosts, mcp_server.check_exposed_files):
+        with pytest.raises(mcp_server.ToolError, match="no scope file is approved"):
+            tool(["www.example.test"])
+
+
+def test_scope_refusal_reason_reaches_the_client(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", "the scope file changed since it was approved")
+    with pytest.raises(Exception, match="changed since it was approved"):
+        asyncio.run(mcp_server.mcp.call_tool("fingerprint_hosts",
+                                             {"hostnames": ["www.example.test"]}))
+
+
+def test_no_tool_takes_a_scope_argument():
+    # Invariant 4: the agent can never supply or change the scope
+    for tool in asyncio.run(mcp_server.mcp.list_tools()):
+        params = tool.input_schema.get("properties", {})
+        assert not any("scope" in name.lower() for name in params), tool.name
+
+
+def test_server_starts_fail_closed():
+    # The module's own defaults, before main() runs, checked in a fresh Python
+    import subprocess
+    import sys
+    code = "import mcp_server, scope; print(mcp_server.SCOPE is None, mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    assert out.stdout.split() == ["True", "True"], out.stderr
+
+
+def test_main_reads_and_pins_the_scope(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    f = tmp_path / "scope.txt"
+    f.write_bytes(b"example.test\n*.example.test\n!dev.example.test\n")
+    digest = scope.load(str(f)).sha256
+    mcp_server.main(["--allow-active", "--scope", str(f), "--scope-sha256", digest])
+    assert mcp_server.SCOPE_PROBLEM is None
+    assert mcp_server.SCOPE.match("www.example.test").allowed
+    err = capsys.readouterr().err
+    assert f"scope {f} sha256 {digest} (2 in, 1 excluded)" in err  # full hash at startup
+
+
+def test_main_refuses_a_scope_edited_after_approval(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    f = tmp_path / "scope.txt"
+    f.write_bytes(b"*.example.test\n")
+    digest = scope.load(str(f)).sha256
+    f.write_bytes(b"*.example.test\n*.other.test\n")
+    mcp_server.main(["--allow-active", "--scope", str(f), "--scope-sha256", digest])
+    assert "changed since it was approved" in mcp_server.SCOPE_PROBLEM
+    assert "scope REFUSED: the scope file changed" in capsys.readouterr().err
+    with pytest.raises(mcp_server.ToolError, match="changed since it was approved"):
+        mcp_server.require_active("fingerprint_hosts")
+
+
+def test_main_without_a_scope_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    mcp_server.main(["--allow-active"])
+    assert mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE
+    assert "active tools ON; scope REFUSED: no scope file is approved" in capsys.readouterr().err

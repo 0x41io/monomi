@@ -219,3 +219,53 @@ def test_non_utf8_file_is_a_problem():
 def test_unscoped_marker_is_its_own_thing():
     assert repr(UNSCOPED_CLI) == "UNSCOPED_CLI"
     assert not isinstance(UNSCOPED_CLI, scope.Scope)
+
+
+# --- check_pinned: the approved file must still be exactly what was approved
+
+def write_scope(tmp_path, text):
+    p = tmp_path / "scope.txt"
+    p.write_bytes(text.encode())
+    return str(p), hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_pinned_scope_that_matches_is_usable(tmp_path):
+    path, digest = write_scope(tmp_path, f"*.{D}\n")
+    s, problem = scope.check_pinned(path, digest)
+    assert problem is None and allowed(s, "www." + D)
+
+
+def test_pinned_hash_is_compared_case_insensitively(tmp_path):
+    path, digest = write_scope(tmp_path, f"*.{D}\n")
+    assert scope.check_pinned(path, digest.upper())[1] is None
+
+
+def test_no_scope_file_is_refused():
+    s, problem = scope.check_pinned(None, None)
+    assert s is None and problem == scope.NO_SCOPE
+    assert "mcp setup --scope" in problem
+
+
+def test_scope_without_an_approved_hash_is_refused(tmp_path):
+    path, _ = write_scope(tmp_path, f"*.{D}\n")
+    s, problem = scope.check_pinned(path, None)
+    assert s is None and "no approved hash" in problem
+
+
+def test_scope_edited_after_approval_is_refused(tmp_path):
+    path, digest = write_scope(tmp_path, f"*.{D}\n")
+    (tmp_path / "scope.txt").write_bytes(f"*.{D}\n*.other.test\n".encode())  # widened
+    s, problem = scope.check_pinned(path, digest)
+    assert "changed since it was approved" in problem
+    assert path in problem                       # the fix names the file
+
+
+def test_pinned_file_that_vanished_is_refused(tmp_path):
+    path, digest = write_scope(tmp_path, f"*.{D}\n")
+    (tmp_path / "scope.txt").unlink()
+    assert scope.check_pinned(path, digest)[1].startswith("the scope file is missing")
+
+
+def test_pinned_file_with_no_valid_rules_is_refused_even_if_hash_matches(tmp_path):
+    path, digest = write_scope(tmp_path, "*\n")
+    assert scope.check_pinned(path, digest)[1] == "the scope file has no valid rules"

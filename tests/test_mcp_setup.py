@@ -304,7 +304,7 @@ def test_allow_active_refused_without_a_terminal_even_with_yes(monkeypatch, tmp_
     monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
     assert mcp_setup.setup(yes=True, active=True) == 0
     assert f.read_text() == before and not list(tmp_path.glob("*.bak-*"))
-    assert "typed by you at a terminal" in capsys.readouterr().out
+    assert "type it yourself at a terminal" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("answer", ["y", "", "no"])
@@ -342,3 +342,213 @@ def test_allow_active_reaches_the_claude_data_copy(monkeypatch, tmp_path):
     assert mcp_setup.setup(active=True) == 0
     for path in (standard, data):
         assert json.loads(path.read_text())["mcpServers"][NAME] == ACTIVE_ENTRY
+
+
+# ---------- scope (v1.12) ----------
+
+SCOPE_TEXT = "example.test\n*.example.test\n!dev.example.test\n*\n"  # last line is rejected
+
+
+def scope_file(tmp_path, text=SCOPE_TEXT):
+    p = tmp_path / "scope.txt"
+    p.write_bytes(text.encode())
+    return p
+
+
+def digest(p):
+    import hashlib
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def test_with_scope_adds_and_removes_the_pair_once():
+    e = mcp_setup.with_scope(ENTRY, "/s.txt", "ab" * 32)
+    assert e["args"] == ENTRY["args"] + ["--scope", "/s.txt", "--scope-sha256", "ab" * 32]
+    assert mcp_setup.scope_args(e) == ("/s.txt", "ab" * 32)
+    again = mcp_setup.with_scope(e, "/t.txt", "cd" * 32)
+    assert again["args"].count("--scope") == 1 and mcp_setup.scope_args(again)[0] == "/t.txt"
+    assert mcp_setup.with_scope(e, None, None) == ENTRY
+    assert mcp_setup.scope_args(ENTRY) == (None, None) and mcp_setup.scope_args(None) == (None, None)
+
+
+def test_entry_order_is_always_scope_then_active(monkeypatch):
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    e = mcp_setup.build_entry(True, "/s.txt", "ab" * 32)
+    assert e["args"][-5:] == ["--scope", "/s.txt", "--scope-sha256", "ab" * 32, "--allow-active"]
+
+
+def test_scope_refused_without_a_terminal_even_with_yes(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, scope_file=str(scope_file(tmp_path))) == 0
+    assert f.read_text() == before
+    assert "approve this scope, you have to type it yourself" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer", ["y", "", "no"])
+def test_scope_needs_the_full_word_yes(monkeypatch, tmp_path, answer):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer=answer)
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(scope_file=str(scope_file(tmp_path))) == 0
+    assert f.read_text() == before
+
+
+def test_scope_typed_yes_writes_path_and_hash_to_every_copy(monkeypatch, tmp_path, capsys):
+    standard, _, data = fake_windows(monkeypatch, tmp_path)
+    write_json(standard, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    write_json(data, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    monkeypatch.setattr("builtins.input", lambda question: "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    s = scope_file(tmp_path)
+    assert mcp_setup.main(["setup", "--scope", str(s)]) == 0
+    for path in (standard, data):
+        entry = json.loads(path.read_text())["mcpServers"][NAME]
+        assert mcp_setup.scope_args(entry) == (str(s), digest(s))
+        assert mcp_setup.is_active(entry)            # active setting kept
+    out = capsys.readouterr().out
+    # you see every rule and every rejected line before typing yes
+    assert "in scope (2):" in out and "*.example.test" in out
+    assert "never in scope" in out and "!dev.example.test" in out
+    assert "rejected lines (1)" in out and "line 4" in out and "a bare '*'" in out
+
+
+def test_scope_path_is_saved_absolute(monkeypatch, tmp_path):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    scope_file(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert mcp_setup.setup(scope_file="scope.txt") == 0
+    path, _ = mcp_setup.scope_args(json.loads(f.read_text())["mcpServers"][NAME])
+    assert path == str(tmp_path / "scope.txt")
+
+
+def test_hash_is_of_the_bytes_that_were_shown(monkeypatch, tmp_path):
+    # The file is read once: an edit between "shown" and "written" can't sneak in
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    s = scope_file(tmp_path)
+    shown = digest(s)
+    fake_setup(monkeypatch, [f], f)
+
+    def type_yes_after_an_edit(question):
+        s.write_bytes(b"*.example.test\n*.other.test\n")   # widened while you were reading
+        return "yes"
+    monkeypatch.setattr("builtins.input", type_yes_after_an_edit)
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(scope_file=str(s)) == 0
+    _, saved = mcp_setup.scope_args(json.loads(f.read_text())["mcpServers"][NAME])
+    assert saved == shown != digest(s)   # so the server will refuse the edited file
+
+
+@pytest.mark.parametrize("text,reason", [("", "no valid rules"), ("*\n", "no valid rules"),
+                                         ("!dev.example.test\n", "only exclusions")])
+def test_unusable_scope_file_writes_nothing(monkeypatch, tmp_path, capsys, text, reason):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.main(["setup", "--scope", str(scope_file(tmp_path, text))]) == 1
+    assert f.read_text() == before
+    assert reason in capsys.readouterr().out
+
+
+def test_missing_scope_file_writes_nothing(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    assert mcp_setup.main(["setup", "--scope", str(tmp_path / "nope.txt")]) == 1
+    assert "missing" in capsys.readouterr().out
+
+
+def test_plain_setup_keeps_the_scope(monkeypatch, tmp_path, capsys):
+    s = scope_file(tmp_path)
+    entry = mcp_setup.with_active(mcp_setup.with_scope(ENTRY, str(s), digest(s)), True)
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: entry}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f)
+    assert mcp_setup.setup() == 0
+    assert f.read_text() == before
+    assert f"scope: {s} (sha256 {digest(s)[:12]}...)" in capsys.readouterr().out
+
+
+def test_approving_the_same_scope_again_needs_no_yes(monkeypatch, tmp_path, capsys):
+    s = scope_file(tmp_path)
+    entry = mcp_setup.with_scope(ENTRY, str(s), digest(s))
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: entry}})
+    fake_setup(monkeypatch, [f], f, answer="no")
+    assert mcp_setup.setup(scope_file=str(s)) == 0
+    assert "already set up" in capsys.readouterr().out
+
+
+def test_no_scope_clears_it_with_a_plain_y(monkeypatch, tmp_path):
+    s = scope_file(tmp_path)
+    entry = mcp_setup.with_active(mcp_setup.with_scope(ENTRY, str(s), digest(s)), True)
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: entry}})
+    fake_setup(monkeypatch, [f], f, answer="y")   # narrowing: no typed "yes" needed
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))
+    assert mcp_setup.main(["setup", "--no-scope"]) == 0
+    assert json.loads(f.read_text())["mcpServers"][NAME] == ACTIVE_ENTRY
+
+
+def test_active_on_without_a_scope_warns_after_writing(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(active=True) == 0
+    assert "no scope file is approved, so every active check will refuse" in capsys.readouterr().out
+
+
+def test_allow_active_and_scope_together_ask_once(monkeypatch, tmp_path):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ENTRY}})
+    questions = []
+    fake_setup(monkeypatch, [f], f)
+    monkeypatch.setattr("builtins.input", lambda q: questions.append(q) or "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.main(["setup", "--allow-active", "--scope", str(scope_file(tmp_path))]) == 0
+    assert questions == ['\nType "yes" to allow active tools and approve this scope: ']
+
+
+def test_scope_and_no_scope_cant_be_used_together():
+    with pytest.raises(SystemExit):
+        mcp_setup.main(["setup", "--scope", "x.txt", "--no-scope"])
+
+
+def test_print_with_scope(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    s = scope_file(tmp_path)
+    assert mcp_setup.main(["setup", "--print", "--allow-active", "--scope", str(s)]) == 0
+    entry = json.loads(capsys.readouterr().out)["mcpServers"][NAME]
+    assert mcp_setup.scope_args(entry) == (str(s), digest(s)) and mcp_setup.is_active(entry)
+
+
+def test_scope_flags_match_the_server(tmp_path):
+    import mcp_server
+    s = scope_file(tmp_path)
+    args = mcp_setup.with_scope({"args": []}, str(s), digest(s))["args"]
+    assert args[0] == mcp_setup.SCOPE_FLAG and args[2] == mcp_setup.SCOPE_HASH_FLAG
+
+
+def test_server_accepts_the_entry_setup_writes(monkeypatch, tmp_path):
+    import mcp_server
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    s = scope_file(tmp_path)
+    entry = mcp_setup.build_entry(True, str(s), digest(s))
+    monkeypatch.setattr(mcp_server, "SCOPE", None)              # all three restored after the test
+    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", "untouched")
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", False)
+    mcp_server.main(entry["args"][entry["args"].index(mcp_setup.SCOPE_FLAG):])
+    assert mcp_server.SCOPE_PROBLEM is None and mcp_server.ALLOW_ACTIVE is True
