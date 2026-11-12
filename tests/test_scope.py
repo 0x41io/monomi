@@ -1,0 +1,221 @@
+import hashlib
+
+import pytest
+
+import scope
+from scope import UNSCOPED_CLI
+
+# Test names use the reserved .test suffix, and shared suffixes are built
+# from pieces, so no real domain appears (the chat app turns those into links).
+D = "example.test"
+UK = "co" + ".uk"
+VERCEL = "vercel" + ".app"
+
+
+def make(text: str) -> scope.Scope:
+    return scope.from_bytes(text.encode(), "scope.txt")
+
+
+def allowed(s: scope.Scope, host: str) -> bool:
+    return s.match(host).allowed
+
+
+# --- Matching -------------------------------------------------------------
+
+def test_exact_rule_matches_only_that_host():
+    s = make(D)
+    assert allowed(s, D)
+    assert not allowed(s, "www." + D)
+    assert not allowed(s, "other.test")
+
+
+def test_wildcard_matches_subdomains_but_not_the_apex():
+    s = make("*." + D)
+    assert allowed(s, "www." + D)
+    assert allowed(s, "a.b." + D)      # any depth
+    assert not allowed(s, D)           # the apex must be listed separately
+    assert s.match(D).reason == "no rule matches"
+
+
+def test_wildcard_does_not_match_a_lookalike_suffix():
+    s = make("*." + D)
+    assert not allowed(s, "evil" + D)          # "evilexample.test" isn't under it
+    assert not allowed(s, D + ".attacker.test")
+
+
+def test_exclusion_wins_over_wildcard():
+    s = make(f"*.{D}\n!blog.{D}\n")
+    m = s.match("blog." + D)
+    assert not m.allowed
+    assert m.reason == f"excluded by !blog.{D}"
+    assert allowed(s, "www." + D)
+
+
+def test_exclusion_wins_whatever_the_order():
+    s = make(f"!blog.{D}\n*.{D}\nblog.{D}\n")   # even an exact inclusion loses
+    assert not allowed(s, "blog." + D)
+
+
+def test_exact_exclusion_does_not_exclude_its_subdomains():
+    s = make(f"*.{D}\n!dev.{D}\n")
+    assert not allowed(s, "dev." + D)
+    assert allowed(s, "api.dev." + D)
+
+
+def test_wildcard_exclusion():
+    s = make(f"*.{D}\n!*.dev.{D}\n")
+    assert not allowed(s, "api.dev." + D)
+    assert allowed(s, "dev." + D)              # the wildcard doesn't cover dev itself
+
+
+def test_match_reports_the_rule_that_allowed_it():
+    s = make(f"{D}\n*.{D}\n")
+    assert s.match(D).rule == D
+    assert s.match("www." + D).rule == "*." + D
+    assert s.match("www." + D).reason == f"allowed by *.{D}"
+    assert s.match("other.test").rule is None
+
+
+def test_matching_is_case_insensitive_and_drops_one_trailing_dot():
+    s = make("*.Example.TEST")
+    assert allowed(s, "WWW.example.test")
+    assert allowed(s, "www.example.test.")
+    assert s.match("WWW.example.test.").host == "www.example.test"
+
+
+def test_two_trailing_dots_are_never_in_scope():
+    s = make("*." + D)
+    assert not allowed(s, "www." + D + "..")
+    assert s.match("www." + D + "..").reason == "not a valid hostname"
+
+
+@pytest.mark.parametrize("host", ["", "   ", "*." + D, "https://www." + D,
+                                  "www." + D + "/x", "wwẃ." + D, None, 123])
+def test_things_that_arent_hostnames_are_never_in_scope(host):
+    s = make("*." + D)
+    assert not allowed(s, host)
+
+
+def test_empty_file_puts_nothing_in_scope():
+    s = make("")
+    assert s.problem() == "the scope file has no valid rules"
+    assert not allowed(s, D)
+    assert s.match(D).reason.startswith("no usable scope")
+
+
+def test_only_exclusions_puts_nothing_in_scope():
+    s = make(f"!blog.{D}\n")
+    assert s.problem() == "the scope file has only exclusions, so nothing is in scope"
+    assert not allowed(s, "www." + D)
+
+
+# --- Parsing --------------------------------------------------------------
+
+def test_comments_and_blank_lines_are_ignored():
+    s = make(f"# In scope\n\n{D}   # main site\n   \n*.{D}\n")
+    assert [r.text for r in s.rules] == [D, "*." + D]
+    assert s.rejected == []
+
+
+def test_port_and_one_trailing_dot_are_dropped_from_rules():
+    s = make(f"{D}:443\n*.{D}.\n")
+    assert [r.text for r in s.rules] == [D, "*." + D]
+
+
+def test_two_trailing_dots_are_rejected():
+    s = make(D + "..")
+    assert s.rules == []
+    assert s.rejected[0]["line"] == 1
+
+
+@pytest.mark.parametrize("line,reason_start", [
+    ("*", "a bare '*'"),
+    ("!*", "a bare '*'"),
+    ("*.*." + D, "'*' is only allowed"),
+    ("www*." + D, "'*' is only allowed"),
+    ("com", "'com' is a single label"),
+    ("*.com", "'com' is a single label"),
+    ("localhost", "'localhost' is a single label"),
+    (UK, f"'{UK}' is shared"),
+    ("*." + UK, f"'{UK}' is shared"),
+    ("*." + VERCEL, f"'{VERCEL}' is shared"),
+    ("wwẃ." + D, "contains non-ASCII"),
+    ("https://" + D, "looks like a URL"),
+    (D + "/login", "looks like a URL"),
+    ("10.0.0.1", "IP addresses"),
+    ("10.0.0.0/8", "IP addresses"),
+    ("2001:db8::1", "IP addresses"),
+    ("!", "a lone '!'"),
+    ("!!" + D, "more than one '!'"),
+    ("exa mple.test", "not a valid hostname"),
+    ("-bad." + D, "not a valid hostname"),
+])
+def test_bad_lines_are_rejected_with_a_reason(line, reason_start):
+    s = make(f"{D}\n{line}\n")
+    assert len(s.rules) == 1                  # the good line still counts
+    assert s.rejected[0]["line"] == 2
+    assert s.rejected[0]["reason"].startswith(reason_start)
+
+
+def test_a_domain_under_a_shared_suffix_is_accepted():
+    s = make(f"example.{UK}\n*.example.{UK}\nmyapp.{VERCEL}\n")
+    assert s.rejected == []
+    assert allowed(s, "www.example." + UK)
+    assert allowed(s, "myapp." + VERCEL)
+    assert not allowed(s, "someone-else." + VERCEL)
+
+
+def test_rejected_lines_never_count_as_rules():
+    s = make(f"*\n*.{UK}\n")
+    assert s.problem() == "the scope file has no valid rules"
+    assert not allowed(s, "www.example." + UK)
+
+
+def test_windows_bom_and_crlf_are_handled():
+    s = scope.from_bytes(("﻿" + f"{D}\r\n*.{D}\r\n").encode("utf-8"))
+    assert [r.text for r in s.rules] == [D, "*." + D]
+
+
+# --- Hashing and loading --------------------------------------------------
+
+def test_hash_is_sha256_of_the_exact_bytes():
+    data = f"{D}\n".encode()
+    assert scope.from_bytes(data).sha256 == hashlib.sha256(data).hexdigest()
+
+
+def test_any_byte_change_changes_the_hash():
+    a = scope.from_bytes(f"{D}\n".encode())
+    b = scope.from_bytes(f"{D} \n".encode())   # same rules, one extra space
+    assert [r.text for r in a.rules] == [r.text for r in b.rules]
+    assert a.sha256 != b.sha256
+
+
+def test_load_reads_the_file(tmp_path):
+    p = tmp_path / "scope.txt"
+    p.write_bytes(f"*.{D}\n".encode())
+    s = scope.load(str(p))
+    assert s.problem() is None
+    assert s.path == str(p)
+    assert s.sha256 == hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def test_missing_file_is_a_problem_not_a_crash(tmp_path):
+    s = scope.load(str(tmp_path / "nope.txt"))
+    assert s.problem().startswith("the scope file is missing")
+    assert not allowed(s, D)
+
+
+def test_unreadable_file_is_a_problem_not_a_crash(tmp_path):
+    s = scope.load(str(tmp_path))            # a folder can't be read as a file
+    assert s.problem().startswith("the scope file can't be read")
+
+
+def test_non_utf8_file_is_a_problem():
+    s = scope.from_bytes(b"\xff\xfe\x00bad")
+    assert s.problem() == "the scope file isn't UTF-8 text"
+    assert not allowed(s, D)
+
+
+def test_unscoped_marker_is_its_own_thing():
+    assert repr(UNSCOPED_CLI) == "UNSCOPED_CLI"
+    assert not isinstance(UNSCOPED_CLI, scope.Scope)
