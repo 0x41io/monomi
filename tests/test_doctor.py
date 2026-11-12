@@ -775,3 +775,24 @@ def test_copies_with_different_scopes_disagree(monkeypatch, tmp_path):
 
 def test_doctor_runs_the_scope_check():
     assert doctor.check_scope in doctor.CHECKS
+
+
+def test_active_log_counts_refusals_separately(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    req = {"time": "2026-11-12T01:00:00+00:00", "event": "request", "tool": "fingerprint_hosts",
+           "host": "www", "url": "x"}
+    ref = {"time": "2026-11-12T02:00:00+00:00", "event": "refused", "tool": "fingerprint_hosts",
+           "host": "evil", "reason": "no rule matches"}
+    fake_log(monkeypatch, tmp_path, [json.dumps(req), json.dumps(ref), json.dumps(ref)])
+    _, r = doctor.check_active()
+    # the last REQUEST is shown, not the later refusal
+    assert r["detail"] == ("last active request 2026-11-12T01:00:00+00:00: fingerprint_hosts -> www "
+                           "(1 request, 2 refusals in scans/active.log)")
+
+
+def test_active_log_with_only_refusals(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    ref = {"time": "t", "event": "refused", "tool": "fingerprint_hosts", "host": None, "reason": "off"}
+    fake_log(monkeypatch, tmp_path, [json.dumps(ref)])
+    _, r = doctor.check_active()
+    assert r["detail"] == "no active requests sent yet (1 refusal in scans/active.log)"

@@ -16,7 +16,6 @@ import json
 import os
 import re
 import sys
-import threading
 from collections import Counter
 from datetime import datetime
 from monomi import clean_domain, collect_ct
@@ -26,6 +25,7 @@ from emailauth import check_email
 from takeover import check_hosts
 from enrich import enrich
 from evidence import OWNERS
+import activelog
 import fingerprint
 import exposed
 import scope
@@ -34,7 +34,6 @@ import threatintel
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from common import now_utc
 
 # The server itself. "monomi" is the name agents will see.
 mcp = MCPServer("monomi")
@@ -164,31 +163,45 @@ ALLOW_ACTIVE = False
 SCOPE = None
 SCOPE_PROBLEM = scope.NO_SCOPE
 ACTIVE_LOG = os.path.join(SCANS_DIR, "active.log")
-_log_lock = threading.Lock()  # fingerprint requests run in parallel threads
 
 
 def require_active(tool: str) -> None:
     """Refuse an active tool unless the server was started with --allow-active
     AND an approved scope file that still matches its approved hash."""
     if not ALLOW_ACTIVE:
+        log_refusal(tool, "active checks are off")
         raise ToolError(
             f"{tool} is an ACTIVE check (it sends requests to the target's own servers) "
             "and active checks are turned off, so nothing was sent. Only the person "
             "running Monomi can turn them on: run `python monomi.py mcp setup --allow-active`, "
             "then fully restart the Claude app (the setting is read when the server starts).")
     if SCOPE_PROBLEM:
+        log_refusal(tool, SCOPE_PROBLEM)
         raise ToolError(
             f"{tool} is an ACTIVE check and nothing was sent: {SCOPE_PROBLEM}. "
             "Only the person running Monomi can approve a scope (the scope can't be "
             "passed to a tool), then fully restart the Claude app.")
 
 
-def log_request(tool: str, host: str, url: str) -> None:
-    """Add one line to scans/active.log for every active request, before it's sent."""
-    os.makedirs(os.path.dirname(ACTIVE_LOG), exist_ok=True)
-    line = json.dumps({"time": now_utc(), "tool": tool, "host": host, "url": url})
-    with _log_lock, open(ACTIVE_LOG, "a") as f:
-        f.write(line + "\n")
+def log_request(tool: str, host: str, url: str, scope_rule: str | None) -> None:
+    """One line in scans/active.log for every active request, before it's sent:
+    the rule that allowed it and the approved scope's hash (see activelog.py)."""
+    activelog.request(ACTIVE_LOG, "mcp", tool, host, url, scope_rule, SCOPE)
+
+
+def log_refusal(tool: str, reason: str, host: str | None = None) -> None:
+    """One line in scans/active.log for everything refused: a whole call
+    (host None) or one out-of-scope host."""
+    activelog.refused(ACTIVE_LOG, "mcp", tool, reason, host, SCOPE)
+
+
+def scope_filter(tool: str, hosts: list[str]) -> tuple[list[str], list[dict]]:
+    """Drop out-of-scope hosts BEFORE any DNS lookup, logging each one.
+    Returns (hosts to check, [{"host", "reason"}] that were refused)."""
+    inside, outside = scope.split(SCOPE, hosts)
+    for o in outside:
+        log_refusal(tool, o["reason"], o["host"])
+    return inside, outside
 
 
 def first(names, cap: int = LIST_CAP) -> list:
@@ -624,6 +637,10 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
     it on targets you're allowed to test (in scope). It is off unless the
     person running Monomi turned active checks on; if it's off, it refuses
     and nothing is sent. Every request is written to scans/active.log.
+    Only hosts allowed by the scope file the person running Monomi approved
+    are contacted (the scope can't be passed in or changed by a tool); any
+    other host comes back in "out_of_scope" with the reason, and gets no
+    DNS lookup and no request.
     From the response headers it reports the web software (Server,
     X-Powered-By...), any exact version shown ("version leaks": match them
     to CVEs, but a version alone is a lead, not proof of a flaw) and
@@ -655,11 +672,13 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
     ran = check_already_ran(already_ran)
     require_active("fingerprint_hosts")  # before any lookup or request
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_FP_HOSTS)
+    checked, out_of_scope = scope_filter("fingerprint_hosts", checked)  # before any lookup
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         fp = fingerprint.fingerprint_all(
             enrichment, workers=FP_WORKERS, max_hosts=MAX_FP_HOSTS, timeout=FP_TIMEOUT,
-            on_request=lambda host, url: log_request("fingerprint_hosts", host, url))
+            scope=SCOPE,  # checked again before every request
+            on_request=lambda host, url, rule: log_request("fingerprint_hosts", host, url, rule))
     for r in fp["hosts"].values():
         for t in r["techs"]:
             if t["version"]:
@@ -672,6 +691,7 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
                 issue["owners"] = owners("web", "cdn")
     requested = set(fp["hosts"]) | set(fp["errors"])
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
+            "out_of_scope": out_of_scope,
             "batch": batch, "requests_sent": fp["requests"], "active_log": ACTIVE_LOG,
             "not_requested": sorted(set(checked) - requested),
             "hosts": fp["hosts"], "errors": fp["errors"]}
@@ -700,6 +720,8 @@ def fingerprint_summary(full: dict) -> dict:
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],
         "rejected": full["rejected"],
+        "out_of_scope_count": len(full["out_of_scope"]),
+        "out_of_scope": full["out_of_scope"][:LIST_CAP],
         "batch": full["batch"],
         "requests_sent": full["requests_sent"],
         "active_log": full["active_log"],
@@ -732,7 +754,11 @@ def check_exposed_files(hostnames: list[str] | None = None, detail: str = "summa
     it contacts the target's own servers, so only run it on targets you're
     allowed to test (in scope). It is off unless active checks were turned
     on; if off, it refuses and nothing is sent. Every request goes to
-    scans/active.log.
+    scans/active.log. Only hosts allowed by the approved scope file are
+    contacted (the scope can't be passed in or changed by a tool); any other
+    host comes back in "out_of_scope" with the reason, with no DNS lookup
+    and no request. Every URL is checked against the scope again before it's
+    fetched.
     Per host it sends only GETs, a small fixed set: a short list of
     well-known spec paths (/openapi.json, /swagger.json, /v3/api-docs...),
     then the homepage, a few of its same-host scripts, and the .map files
@@ -762,17 +788,20 @@ def check_exposed_files(hostnames: list[str] | None = None, detail: str = "summa
     ran = check_already_ran(already_ran)
     require_active("check_exposed_files")  # before any lookup or request
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_EXP_HOSTS)
+    checked, out_of_scope = scope_filter("check_exposed_files", checked)  # before any lookup
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         ex = exposed.check_all(
             enrichment, workers=EXP_WORKERS, max_hosts=MAX_EXP_HOSTS, timeout=EXP_TIMEOUT,
-            on_request=lambda host, url: log_request("check_exposed_files", host, url))
+            scope=SCOPE,  # checked again before every request
+            on_request=lambda host, url, rule: log_request("check_exposed_files", host, url, rule))
     for finding in ex["hosts"].values():
         if finding["spec"]:
             finding["spec"]["owners"] = owners("web", "cdn")
         for m in finding["source_maps"]:
             m["owners"] = owners("web")
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
+            "out_of_scope": out_of_scope,
             "batch": batch, "requests_sent": ex["requests"], "active_log": ACTIVE_LOG,
             "not_requested": sorted(set(checked) - set(ex["requested"])),
             "hosts": ex["hosts"]}
@@ -799,6 +828,8 @@ def exposed_summary(full: dict) -> dict:
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],
         "rejected": full["rejected"],
+        "out_of_scope_count": len(full["out_of_scope"]),
+        "out_of_scope": full["out_of_scope"][:LIST_CAP],
         "batch": full["batch"],
         "requests_sent": full["requests_sent"],
         "active_log": full["active_log"],

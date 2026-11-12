@@ -17,6 +17,7 @@ import requests
 
 from common import ACTIVE_USER_AGENT, now_utc
 from headers import check_headers
+from scope import UNSCOPED_CLI, OutOfScope, check_url
 
 # A version number like 2.4.41 or 7.4: digits, then one or more ".digits".
 VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
@@ -51,17 +52,21 @@ MAX_HOSTS = 100
 
 
 def fetch_headers(host: str, timeout: int = 10, on_request=None,
-                  scheme: str = "https") -> dict:
+                  scheme: str = "https", *, scope) -> dict:
     """Request scheme://host/ once (https unless told otherwise) and return what came back.
 
-    on_request(host, url), if given, is called right before the request
-    is sent (the MCP server uses it to write the audit log).
+    scope (required, no default): a scope.Scope, or scope.UNSCOPED_CLI for a
+    CLI run without --scope. The URL's host is checked against it before
+    anything else; out of scope raises scope.OutOfScope and nothing is sent.
+    on_request(host, url, scope_rule), if given, is called right before the
+    request is sent (it writes the audit log).
     Returns {"host", "url", "status", "headers", "collected_at"}.
     Raises requests.RequestException if the host can't be reached.
     """
     url = f"{scheme}://{host}/"
+    rule = check_url(scope, url)  # raises OutOfScope: no log line, no request
     if on_request:
-        on_request(host, url)
+        on_request(host, url, rule)
     resp = requests.get(
         url,
         headers={"User-Agent": ACTIVE_USER_AGENT},
@@ -135,7 +140,7 @@ def _retry_on_http(error: Exception) -> bool:
     return isinstance(error, requests.ConnectionError)  # SSLError is one too
 
 
-def _safe_fetch(host: str, timeout: int = 10, on_request=None):
+def _safe_fetch(host: str, timeout: int = 10, on_request=None, *, scope):
     """fetch_headers() that never crashes: returns (host, result, error, requests sent).
 
     If HTTPS fails in a way plain HTTP might not (see _retry_on_http),
@@ -144,13 +149,17 @@ def _safe_fetch(host: str, timeout: int = 10, on_request=None):
     reported as if HTTPS were fine.
     """
     try:
-        return host, fetch_headers(host, timeout=timeout, on_request=on_request), None, 1
+        return host, fetch_headers(host, timeout=timeout, on_request=on_request,
+                                   scope=scope), None, 1
+    except OutOfScope:
+        return host, None, "OutOfScope", 0  # nothing was sent, and no HTTP retry
     except requests.RequestException as e:
         https_error = type(e).__name__
         if not _retry_on_http(e):
             return host, None, https_error, 1
     try:
-        result = fetch_headers(host, timeout=timeout, on_request=on_request, scheme="http")
+        result = fetch_headers(host, timeout=timeout, on_request=on_request,
+                               scheme="http", scope=scope)
     except requests.RequestException as e:
         return host, None, f"{https_error}; http: {type(e).__name__}", 2
     result["https_error"] = https_error
@@ -158,8 +167,11 @@ def _safe_fetch(host: str, timeout: int = 10, on_request=None):
 
 
 def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
-                    max_hosts: int = MAX_HOSTS, timeout: int = 10) -> dict:
+                    max_hosts: int = MAX_HOSTS, timeout: int = 10, *, scope) -> dict:
     """Fingerprint every host from --enrich that has a public IP.
+
+    scope is required (see fetch_headers): every request is checked
+    against it again, right before it's sent.
 
     on_request, max_hosts and timeout let the MCP server log every request,
     check fewer hosts per call and wait less per host (its calls must
@@ -176,7 +188,7 @@ def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
     hosts = hosts[:max_hosts]
 
     def fetch(host):
-        return _safe_fetch(host, timeout=timeout, on_request=on_request)
+        return _safe_fetch(host, timeout=timeout, on_request=on_request, scope=scope)
 
     found, errors, sent = {}, {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -195,7 +207,7 @@ def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
 if __name__ == "__main__":
     import sys
 
-    result = fetch_headers(sys.argv[1])
+    result = fetch_headers(sys.argv[1], scope=UNSCOPED_CLI)  # you typed the host yourself
     print(f"{result['url']}  ->  HTTP {result['status']}  ({result['collected_at']})")
     if "location" in result["headers"]:
         print(f"  redirects to: {result['headers']['location']}")

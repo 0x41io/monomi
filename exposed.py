@@ -26,6 +26,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from common import ACTIVE_USER_AGENT, now_utc
+from scope import check_url
 
 # Well-known places an OpenAPI/Swagger spec is served, tried in order.
 SPEC_PATHS = [
@@ -52,17 +53,23 @@ PATHS_SHOWN = 20
 SOURCES_SHOWN = 10
 
 
-def _fetch(url, timeout, on_request, host, want_body=False, cap=0):
+def _fetch(url, timeout, on_request, host, want_body=False, cap=0, *, scope):
     """One GET. Returns {"url", "status", "headers", "body" (bytes|None),
     "truncated"}; raises requests.RequestException if the host can't answer.
 
-    on_request(host, url), if given, is called right before the request so
-    the MCP server can write the audit log. Only `cap` bytes of the body
-    are read (truncated=True if there was more), so one huge file can't
-    blow up memory or the time budget.
+    scope (required, no default): the host is read from `url` itself (not
+    the `host` label) and checked first; out of scope raises
+    scope.OutOfScope, a requests error, so callers skip it like a host that
+    didn't answer, and nothing is sent. This covers the spec paths, the
+    homepage, scripts and source maps alike.
+    on_request(host, url, scope_rule), if given, is called right before the
+    request so the audit log is written. Only `cap` bytes of the body are
+    read (truncated=True if there was more), so one huge file can't blow up
+    memory or the time budget.
     """
+    rule = check_url(scope, url)  # raises OutOfScope: no log line, no request
     if on_request:
-        on_request(host, url)
+        on_request(host, url, rule)
     resp = requests.get(
         url,
         headers={"User-Agent": ACTIVE_USER_AGENT},
@@ -254,23 +261,35 @@ def _find_source_maps(host, fetch):
     return maps, sent
 
 
-def check_host(host, timeout=8, on_request=None):
+def check_host(host, timeout=8, on_request=None, *, scope):
     """Check one host for an exposed spec and source maps.
-    Returns (finding dict or None, requests_sent). None = nothing found."""
-    def fetch(url, want_body=False, cap=0):
-        return _fetch(url, timeout, on_request, host, want_body=want_body, cap=cap)
+    Returns (finding dict or None, requests_sent). None = nothing found.
+    scope is required (see _fetch). requests_sent counts the requests that
+    really went out (the moment each is logged), so a URL the scope blocked
+    is never counted and the number always matches the audit log."""
+    sent_count = [0]
 
-    spec, spec_sent = _find_spec(host, fetch)
-    maps, map_sent = _find_source_maps(host, fetch)
-    sent = spec_sent + map_sent
+    def sent_now(h, url, rule):
+        sent_count[0] += 1
+        if on_request:
+            on_request(h, url, rule)
+
+    def fetch(url, want_body=False, cap=0):
+        return _fetch(url, timeout, sent_now, host, want_body=want_body, cap=cap,
+                      scope=scope)
+
+    spec, _ = _find_spec(host, fetch)
+    maps, _ = _find_source_maps(host, fetch)
+    sent = sent_count[0]
     if not spec and not maps:
         return None, sent
     return {"host": host, "spec": spec, "source_maps": maps,
             "collected_at": now_utc()}, sent
 
 
-def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeout=8):
+def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeout=8, *, scope):
     """Check every host from --enrich that has a public IP.
+    scope is required (see _fetch).
 
     Returns {"hosts": {host: finding}, "requested", "checked", "requests",
     "skipped"}. "hosts" holds only hosts where something was found (never
@@ -288,7 +307,7 @@ def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeo
     hosts = hosts[:max_hosts]
 
     def run(host):
-        return host, check_host(host, timeout=timeout, on_request=on_request)
+        return host, check_host(host, timeout=timeout, on_request=on_request, scope=scope)
 
     found, sent = {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:

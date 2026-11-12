@@ -26,6 +26,7 @@ from datetime import datetime
 
 import requests
 
+import activelog
 import aws_ranges
 import dnscheck
 import internetdb
@@ -589,17 +590,26 @@ def config_lines(label, paths):
 
 
 def last_active_request(log=None):
-    """(how many requests scans/active.log holds, its last entry) or (0, None)."""
+    """(requests in scans/active.log, its last request, refusals) or (0, None, 0).
+    Refusals (v1.12) are counted on their own, never as requests."""
     log = log or mcp_setup.ACTIVE_LOG
     try:
         with open(log, encoding="utf-8") as f:
             lines = [line for line in f if line.strip()]
     except OSError:
-        return 0, None
-    try:
-        return len(lines), json.loads(lines[-1]) if lines else None
-    except ValueError:
-        return len(lines), {"time": "?", "host": "?", "tool": "? (last line unreadable)"}
+        return 0, None, 0
+    requests_, refusals, last = 0, 0, None
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = {"time": "?", "host": "?", "tool": "? (last line unreadable)"}
+        if activelog.is_request(entry):
+            requests_ += 1
+            last = entry
+        else:
+            refusals += 1
+    return requests_, last, refusals
 
 
 def check_active():
@@ -629,11 +639,17 @@ def check_active():
                           "python monomi.py mcp setup --no-active, to turn them off"))
     else:
         out.append(result(MCP, "active", OK, "ACTIVE tools are off (fingerprint_hosts refuses)"))
-    count, last = last_active_request()
+    count, last, refusals = last_active_request()
+    refused = f", {plural(refusals, 'refusal')}" if refusals else ""
     if last:
         out.append(result(MCP, "active_log", OK,
                           f"last active request {last.get('time')}: {last.get('tool')} -> "
-                          f"{last.get('host')} ({plural(count, 'request')} in scans/active.log)"))
+                          f"{last.get('host')} ({plural(count, 'request')}{refused} "
+                          "in scans/active.log)"))
+    elif refusals:
+        out.append(result(MCP, "active_log", OK,
+                          f"no active requests sent yet ({plural(refusals, 'refusal')} "
+                          "in scans/active.log)"))
     return out
 
 

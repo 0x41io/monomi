@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import monomi
@@ -193,9 +195,9 @@ def test_run_exposed_stores_results_and_summarizes(monkeypatch, capsys):
     }
     finding = {"hosts": hosts, "requested": ["staging", "app"],
                "checked": 2, "requests": 10, "skipped": 0}
-    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment: finding)
+    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment, **kwargs: finding)
     results = {}
-    monomi.run_exposed(results, {"hosts": {}})
+    monomi.run_exposed(results, {"hosts": {}}, monomi.scope.UNSCOPED_CLI)
     assert results["exposed_files"] is finding
     out = capsys.readouterr().out
     assert "OpenAPI spec" in out and "source map" in out
@@ -205,7 +207,111 @@ def test_run_exposed_stores_results_and_summarizes(monkeypatch, capsys):
 
 def test_run_exposed_clean_says_nothing_found(monkeypatch, capsys):
     empty = {"hosts": {}, "requested": ["a"], "checked": 1, "requests": 7, "skipped": 0}
-    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment: empty)
+    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment, **kwargs: empty)
     results = {}
-    monomi.run_exposed(results, {"hosts": {}})
+    monomi.run_exposed(results, {"hosts": {}}, monomi.scope.UNSCOPED_CLI)
     assert "No exposed API specs or source maps" in capsys.readouterr().out
+
+
+# ---------- --scope on the CLI (v1.12) ----------
+
+
+LAB_SCOPE = "example.test\n*.example.test\n!dev.example.test\n"
+
+
+def lab_file(tmp_path, text=LAB_SCOPE):
+    p = tmp_path / "scope.txt"
+    p.write_text(text)
+    return str(p)
+
+
+def fake_fingerprint_web(monkeypatch):
+    sent = []
+
+    class R:
+        status_code, headers = 200, {"Server": "nginx"}
+
+        def close(self):
+            pass
+
+    def get(url, **kwargs):
+        sent.append(url)
+        return R()
+    monkeypatch.setattr(monomi.fingerprint.requests, "get", get)
+    return sent
+
+
+ENRICHED = {"hosts": {h: {"ips": ["8.8.8.8"]} for h in
+                      ["www.example.test", "dev.example.test", "evil.test", "example.test"]}}
+
+
+def test_cli_scope_only_lets_in_scope_hosts_through(monkeypatch, tmp_path, capsys, active_log):
+    s = monomi.load_cli_scope(lab_file(tmp_path))
+    sent = fake_fingerprint_web(monkeypatch)
+    results = {}
+    monomi.run_fingerprint(results, ENRICHED, s)
+    assert sorted(sent) == ["https://example.test/", "https://www.example.test/"]
+    assert [o["host"] for o in results["fingerprint"]["out_of_scope"]] == ["dev.example.test", "evil.test"]
+    out = capsys.readouterr().out
+    assert "2 host(s) out of scope, no active request sent: dev.example.test, evil.test" in out
+    log = [json.loads(x) for x in active_log.read_text().splitlines()]
+    assert {x["via"] for x in log} == {"cli"} and {x["tool"] for x in log} == {"--fingerprint"}
+    assert sorted(x["host"] for x in log if x["event"] == "refused") == ["dev.example.test", "evil.test"]
+    assert all(x["scope_sha256"] == s.sha256 for x in log)
+
+
+def test_cli_without_scope_still_logs_every_request(monkeypatch, capsys, active_log):
+    sent = fake_fingerprint_web(monkeypatch)
+    monomi.run_fingerprint({}, ENRICHED, monomi.scope.UNSCOPED_CLI)
+    assert len(sent) == 4
+    log = [json.loads(x) for x in active_log.read_text().splitlines()]
+    assert len(log) == 4 and all(x["event"] == "request" and x["scope_rule"] is None for x in log)
+
+
+def test_cli_exposed_files_uses_the_scope_too(monkeypatch, tmp_path, capsys, active_log):
+    s = monomi.load_cli_scope(lab_file(tmp_path))
+    seen = {}
+
+    def check_all(enrichment, **kwargs):
+        seen["hosts"], seen["scope"] = sorted(enrichment["hosts"]), kwargs["scope"]
+        return {"hosts": {}, "requested": [], "checked": 0, "requests": 0, "skipped": 0}
+    monkeypatch.setattr(monomi.exposed, "check_all", check_all)
+    results = {}
+    monomi.run_exposed(results, ENRICHED, s)
+    assert seen == {"hosts": ["example.test", "www.example.test"], "scope": s}
+    assert len(results["exposed_files"]["out_of_scope"]) == 2
+
+
+@pytest.mark.parametrize("text", ["", "*\n", "!dev.example.test\n"])
+def test_unusable_cli_scope_stops_before_scanning(monkeypatch, tmp_path, capsys, text):
+    def boom(*a, **k):
+        raise AssertionError("scanning started with an unusable --scope")
+    monkeypatch.setattr(monomi, "collect_ct", boom)
+    monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
+                                             "--scope", lab_file(tmp_path, text)])
+    assert monomi.main() == 1
+    assert "Nothing was scanned" in capsys.readouterr().out
+
+
+def test_missing_cli_scope_stops_before_scanning(monkeypatch, tmp_path, capsys):
+    def boom(*a, **k):
+        raise AssertionError("scanning started with a missing --scope file")
+    monkeypatch.setattr(monomi, "collect_ct", boom)
+    monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
+                                             "--scope", str(tmp_path / "nope.txt")])
+    assert monomi.main() == 1
+    assert "missing" in capsys.readouterr().out
+
+
+def test_cli_scope_shows_rejected_lines_and_summary(tmp_path, capsys):
+    s = monomi.load_cli_scope(lab_file(tmp_path, LAB_SCOPE + "*\n"))
+    out = capsys.readouterr().out
+    assert s.problem() is None
+    assert "--scope line 4 ignored" in out and "2 in, 1 excluded" in out
+
+
+def test_scope_without_active_checks_warns(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(monomi, "collect_ct", lambda results, domain: None)  # no hosts: stops early
+    monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--scope", lab_file(tmp_path)])
+    monomi.main()
+    assert "--scope only limits ACTIVE checks" in capsys.readouterr().out

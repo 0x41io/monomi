@@ -27,8 +27,10 @@ import mcp_setup
 import paths
 import report
 import suggest
+import activelog
 import fingerprint
 import exposed
+import scope
 import history
 import internetdb
 import takeover
@@ -81,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
     parser.add_argument("--exposed-files", action="store_true", help="ACTIVE: look for public API specs (OpenAPI/Swagger) and JS source maps on live hosts (turns on --enrich)")
+    parser.add_argument("--scope", metavar="FILE",
+                        help="ACTIVE checks only reach hosts this scope file allows: one rule per "
+                             "line, example.com, *.example.com (subdomains), !host (never); every "
+                             "other host is skipped and listed")
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")           
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
@@ -372,11 +378,49 @@ def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
             info(f"No CVEs found, so {cves_file} wasn't written.")
 
 
-def run_fingerprint(results: dict, enrichment: dict) -> None:
+def load_cli_scope(path: str | None):
+    """--scope FILE as a Scope (strict: an unusable file stops the scan), or
+    scope.UNSCOPED_CLI when no --scope was given. Returns None to stop."""
+    if not path:
+        return scope.UNSCOPED_CLI
+    s = scope.load(path)
+    if s.problem():
+        fail(f"--scope: {s.problem()}. Nothing was scanned.")
+        return None
+    for r in s.rejected:
+        warn(f"--scope line {r['line']} ignored: {ui.safe(r['text'])} ({r['reason']})")
+    info(f"Scope for active checks: {path} ({len(s.inclusions)} in, "
+         f"{len(s.exclusions)} excluded, sha256 {s.sha256[:12]}...)")
+    return s
+
+
+def scope_hosts(tool: str, enrichment: dict, active_scope) -> tuple[dict, list[dict]]:
+    """Keep only in-scope hosts for an active check, BEFORE any request.
+    Out-of-scope hosts are listed, logged as refused, and never contacted."""
+    inside, outside = scope.split(active_scope, sorted(enrichment["hosts"]))
+    for o in outside:
+        activelog.refused(activelog.PATH, "cli", tool, o["reason"], o["host"], active_scope)
+    if outside:
+        shown = ", ".join(ui.safe(o["host"]) for o in outside[:10])
+        more = f" and {len(outside) - 10} more" if len(outside) > 10 else ""
+        warn(f"{len(outside)} host(s) out of scope, no active request sent: {shown}{more}")
+    return {**enrichment, "hosts": {h: enrichment["hosts"][h] for h in inside}}, outside
+
+
+def log_cli_request(tool: str, active_scope):
+    """on_request for the fetch layer: every CLI active request goes to scans/active.log too."""
+    return lambda host, url, rule: activelog.request(
+        activelog.PATH, "cli", tool, host, url, rule, active_scope)
+
+
+def run_fingerprint(results: dict, enrichment: dict, active_scope) -> None:
     """--fingerprint: one homepage request per live host, then show what tech it gives away (ACTIVE)."""
     print()
     info("Fingerprinting web servers (active: one homepage request per live host)...")
-    fp = fingerprint.fingerprint_all(enrichment)
+    allowed, out_of_scope = scope_hosts("--fingerprint", enrichment, active_scope)
+    fp = fingerprint.fingerprint_all(allowed, scope=active_scope,
+                                     on_request=log_cli_request("--fingerprint", active_scope))
+    fp["out_of_scope"] = out_of_scope
     fp["collected_at"] = now_utc()
     results["fingerprint"] = fp
     if fp["skipped"]:
@@ -418,12 +462,15 @@ def run_fingerprint(results: dict, enrichment: dict) -> None:
         good(f"All {pages} hosts that served a page have the checked security headers.")
 
 
-def run_exposed(results: dict, enrichment: dict) -> None:
+def run_exposed(results: dict, enrichment: dict, active_scope) -> None:
     """--exposed-files: look for public API specs and JS source maps (ACTIVE)."""
     print()
     info("Checking for exposed API specs and source maps "
          "(active: a few requests per live host)...")
-    ex = exposed.check_all(enrichment)
+    allowed, out_of_scope = scope_hosts("--exposed-files", enrichment, active_scope)
+    ex = exposed.check_all(allowed, scope=active_scope,
+                           on_request=log_cli_request("--exposed-files", active_scope))
+    ex["out_of_scope"] = out_of_scope
     results["exposed_files"] = ex
     if ex["skipped"]:
         warn(f"Only the first {exposed.MAX_HOSTS} hosts were checked ({ex['skipped']} skipped).")
@@ -838,6 +885,14 @@ def main() -> int:
             parser.error("--export works on domain scans, not --investigate-ip")
         return run_investigate(args.investigate_ip, args.json, args.ai)
     
+    # --scope: checked before anything is scanned, so a bad file costs nothing
+    if args.scope and not (args.fingerprint or args.exposed_files):
+        warn("--scope only limits ACTIVE checks (--fingerprint, --exposed-files); "
+             "none were asked for, so it changes nothing.")
+    active_scope = load_cli_scope(args.scope)
+    if active_scope is None:
+        return 1
+
     if args.ports and not args.enrich:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
     if args.fingerprint and not args.enrich:
@@ -895,9 +950,9 @@ def main() -> int:
         if args.ports:
             run_ports(results, data, args.cves)
         if args.fingerprint:
-            run_fingerprint(results, data)
+            run_fingerprint(results, data, active_scope)
         if args.exposed_files:
-            run_exposed(results, data)
+            run_exposed(results, data, active_scope)
     else:
         for sub in all_subs:
             print(f"    {sub}")

@@ -1,5 +1,6 @@
 import pytest
 
+import activelog
 import dnscheck
 from collectors import pacing, saved
 
@@ -16,6 +17,14 @@ def saved_dir(tmp_path, monkeypatch):
     """Every test gets its own empty folder for saved source copies, never the real scans/."""
     monkeypatch.setattr(saved, "SCANS_DIR", str(tmp_path / "scans"))
     return tmp_path / "scans"
+
+
+@pytest.fixture(autouse=True)
+def active_log(tmp_path, monkeypatch):
+    """CLI active checks log to a temp file in every test, never the real scans/active.log."""
+    path = tmp_path / "active.log"
+    monkeypatch.setattr(activelog, "PATH", str(path))
+    return path
 
 
 @pytest.fixture(autouse=True)

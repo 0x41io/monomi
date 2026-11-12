@@ -10,6 +10,21 @@ import mcp_server
 import scope
 
 
+class AllowAll(scope.Scope):
+    """A stand-in approved scope that allows every host, so the older tests
+    (which use short dotless names like "app") reach the tool. The scope
+    tests at the end of this file use a real scope file instead."""
+    def __init__(self):
+        super().__init__(path="test-scope.txt", sha256="ab" * 32,
+                         rules=[scope.Rule("*.example.test", "example.test", True, False)])
+
+    def match(self, host):
+        h = scope.normalize_host(host)
+        if h is None:
+            return scope.Match(host, False, None, "not a valid hostname")
+        return scope.Match(h, True, "(test: allow all)", "allowed by (test: allow all)")
+
+
 @pytest.fixture(autouse=True)
 def results_dir(tmp_path, monkeypatch):
     """Every test saves its full results in a temp folder, not the real scans/,
@@ -19,7 +34,7 @@ def results_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "RESULTS_DIR", str(tmp_path))
     monkeypatch.setattr(mcp_server, "ACTIVE_LOG", str(tmp_path / "active.log"))
     monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", False)
-    monkeypatch.setattr(mcp_server, "SCOPE", scope.from_bytes(b"*.example.test\n"))
+    monkeypatch.setattr(mcp_server, "SCOPE", AllowAll())
     monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", None)
     return tmp_path
 
@@ -551,12 +566,23 @@ def fake_web(monkeypatch):
 HOSTS = ["app", "www", "intranet", "gone", "down"]
 
 
+def read_log(results_dir):
+    path = results_dir / "active.log"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def assert_only_a_refusal(results_dir):
+    [line] = read_log(results_dir)
+    assert line["event"] == "refused" and line["reason"] == "active checks are off"
+    assert line["via"] == "mcp" and line["host"] is None
+
+
 def test_fingerprint_refused_when_active_is_off(monkeypatch, results_dir):
     sent = fake_web(monkeypatch)
     with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
         mcp_server.fingerprint_hosts(HOSTS)
     assert sent == []
-    assert not (results_dir / "active.log").exists()
+    assert_only_a_refusal(results_dir)  # v1.12: refusals are logged, requests none
 
 
 def test_fingerprint_refusal_reason_reaches_the_client(monkeypatch):
@@ -739,7 +765,7 @@ def test_exposed_refused_when_active_is_off(monkeypatch, results_dir):
     with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
         mcp_server.check_exposed_files(EXP_HOSTS)
     assert sent == []
-    assert not (results_dir / "active.log").exists()
+    assert_only_a_refusal(results_dir)  # v1.12: refusals are logged, requests none
 
 
 def test_exposed_refusal_reason_reaches_the_client(monkeypatch):
@@ -887,3 +913,94 @@ def test_main_without_a_scope_says_so(monkeypatch, capsys):
     mcp_server.main(["--allow-active"])
     assert mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE
     assert "active tools ON; scope REFUSED: no scope file is approved" in capsys.readouterr().err
+
+
+# --- per-host scope filter + audit log (v1.12) -------------------------------
+
+LAB_SCOPE = b"example.test\n*.example.test\n!dev.example.test\n"
+
+
+@pytest.fixture
+def lab_scope(monkeypatch):
+    """A real approved scope (not AllowAll) with active tools on."""
+    s = scope.from_bytes(LAB_SCOPE, "scope.txt")
+    monkeypatch.setattr(mcp_server, "SCOPE", s)
+    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", None)
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    return s
+
+
+def lab_web(monkeypatch, module):
+    """DNS that records what it was asked, and a web that answers 200 to anything."""
+    looked_up, sent = [], []
+
+    def enrich(hosts):
+        looked_up.extend(hosts)
+        return {"hosts": {h: {"ips": ["8.8.8.8"]} for h in hosts}}
+    monkeypatch.setattr(mcp_server, "enrich", enrich)
+
+    def get(url, **kwargs):
+        sent.append(url)
+        if module is mcp_server.exposed:
+            return MapResp(404, body=b"nope")
+        return FakeResponse(200, {"Server": "nginx"})
+    monkeypatch.setattr(module.requests, "get", get)
+    return looked_up, sent
+
+
+ASKED = ["www.example.test", "dev.example.test", "evil.test", "example.test"]
+
+
+@pytest.mark.parametrize("tool,module", [
+    ("fingerprint_hosts", mcp_server.fingerprint), ("check_exposed_files", mcp_server.exposed)])
+def test_out_of_scope_hosts_get_no_dns_lookup_and_no_request(
+        monkeypatch, results_dir, lab_scope, tool, module):
+    looked_up, sent = lab_web(monkeypatch, module)
+    result = getattr(mcp_server, tool)(ASKED, detail="full")
+    assert looked_up == ["example.test", "www.example.test"]   # filtered BEFORE the lookup
+    assert sent and all("dev.example.test" not in u and "evil.test" not in u for u in sent)
+    assert result["out_of_scope"] == [
+        {"host": "dev.example.test", "reason": "excluded by !dev.example.test"},
+        {"host": "evil.test", "reason": "no rule matches"}]
+    assert result["hosts_checked"] == 2
+
+
+@pytest.mark.parametrize("tool,module", [
+    ("fingerprint_hosts", mcp_server.fingerprint), ("check_exposed_files", mcp_server.exposed)])
+def test_audit_log_has_rules_hashes_and_refusals(monkeypatch, results_dir, lab_scope, tool, module):
+    _, sent = lab_web(monkeypatch, module)
+    result = getattr(mcp_server, tool)(ASKED)
+    log = read_log(results_dir)
+    refused = [x for x in log if x["event"] == "refused"]
+    requests_ = [x for x in log if x["event"] == "request"]
+    assert [(x["host"], x["reason"]) for x in refused] == [
+        ("dev.example.test", "excluded by !dev.example.test"), ("evil.test", "no rule matches")]
+    assert len(requests_) == len(sent) == result["requests_sent"]
+    assert {x["scope_rule"] for x in requests_ if x["host"] == "www.example.test"} == {"*.example.test"}
+    assert {x["scope_rule"] for x in requests_ if x["host"] == "example.test"} == {"example.test"}
+    assert all(x["scope_sha256"] == lab_scope.sha256 and x["via"] == "mcp" and x["tool"] == tool
+               for x in log)
+
+
+def test_summary_shows_out_of_scope(monkeypatch, results_dir, lab_scope):
+    lab_web(monkeypatch, mcp_server.fingerprint)
+    result = mcp_server.fingerprint_hosts(ASKED)
+    assert result["out_of_scope_count"] == 2 and len(result["out_of_scope"]) == 2
+
+
+def test_all_hosts_out_of_scope_sends_nothing(monkeypatch, results_dir, lab_scope):
+    looked_up, sent = lab_web(monkeypatch, mcp_server.fingerprint)
+    result = mcp_server.fingerprint_hosts(["evil.test", "dev.example.test"])
+    assert looked_up == [] and sent == [] and result["requests_sent"] == 0
+    assert result["out_of_scope_count"] == 2
+
+
+def test_scope_problem_refusal_is_logged_with_its_reason(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    monkeypatch.setattr(mcp_server, "SCOPE", None)
+    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", scope.NO_SCOPE)
+    with pytest.raises(mcp_server.ToolError):
+        mcp_server.check_exposed_files(["www.example.test"])
+    [line] = read_log(results_dir)
+    assert line["event"] == "refused" and line["reason"] == scope.NO_SCOPE
+    assert line["tool"] == "check_exposed_files" and line["scope_sha256"] is None

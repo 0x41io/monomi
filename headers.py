@@ -79,8 +79,9 @@ def check_headers(result: dict) -> list[dict]:
 if __name__ == "__main__":
     import sys
     from fingerprint import fetch_headers
+    from scope import UNSCOPED_CLI
 
-    result = fetch_headers(sys.argv[1])
+    result = fetch_headers(sys.argv[1], scope=UNSCOPED_CLI)  # you typed the host yourself
     print(f"{result['url']}  ->  HTTP {result['status']}")
     if not 200 <= result["status"] < 300:
         print("  not a real page (redirect or error), so headers weren't judged")

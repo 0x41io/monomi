@@ -25,6 +25,9 @@ import hashlib
 import ipaddress
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
+
+import requests
 
 # One DNS label: letters, digits, hyphens (not at either end), underscores,
 # 1-63 characters. Same rule as mcp_server.LABEL_RE.
@@ -83,6 +86,13 @@ class _Unscoped:
 
 
 UNSCOPED_CLI = _Unscoped()
+
+
+class OutOfScope(requests.RequestException):
+    """Raised by the fetch layer instead of sending a request to a host the
+    scope doesn't allow. It's a kind of requests error on purpose: every
+    place that already handles "this host didn't answer" handles this too,
+    so it can never crash a scan halfway, and no request is ever sent."""
 
 
 @dataclass(frozen=True)
@@ -250,6 +260,46 @@ def from_bytes(data: bytes, path: str | None = None) -> Scope:
         return Scope(path, digest, error="the scope file isn't UTF-8 text")
     rules, rejected = parse(text)
     return Scope(path, digest, rules, rejected)
+
+
+def check_url(scope, url: str) -> str | None:
+    """The last check before an ACTIVE request goes out: is this URL's host
+    in scope? Returns the rule that allowed it (None for UNSCOPED_CLI) or
+    raises OutOfScope.
+
+    The host is read from the URL itself, never from a separate argument:
+    this check exists to catch bugs, so it doesn't trust the caller's label.
+    `scope` must be a Scope or UNSCOPED_CLI; anything else (None, a typo,
+    a forgotten argument passed through) is a TypeError, never a pass."""
+    if scope is UNSCOPED_CLI:
+        return None
+    if not isinstance(scope, Scope):
+        raise TypeError(f"scope must be a Scope or scope.UNSCOPED_CLI, not {scope!r}")
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        host = None
+    m = scope.match(host)
+    if not m.allowed:
+        raise OutOfScope(f"{host or url}: out of scope ({m.reason})")
+    return m.rule
+
+
+def split(scope, hosts) -> tuple[list[str], list[dict]]:
+    """Sort hosts into (in scope, out of scope with the reason), before any
+    DNS lookup. With UNSCOPED_CLI every host is in."""
+    if scope is UNSCOPED_CLI:
+        return list(hosts), []
+    if not isinstance(scope, Scope):
+        raise TypeError(f"scope must be a Scope or scope.UNSCOPED_CLI, not {scope!r}")
+    inside, outside = [], []
+    for host in hosts:
+        m = scope.match(host)
+        if m.allowed:
+            inside.append(host)
+        else:
+            outside.append({"host": host, "reason": m.reason})
+    return inside, outside
 
 
 NO_SCOPE = ("no scope file is approved, so active checks refuse every host. "

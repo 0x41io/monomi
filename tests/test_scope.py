@@ -269,3 +269,62 @@ def test_pinned_file_that_vanished_is_refused(tmp_path):
 def test_pinned_file_with_no_valid_rules_is_refused_even_if_hash_matches(tmp_path):
     path, digest = write_scope(tmp_path, "*\n")
     assert scope.check_pinned(path, digest)[1] == "the scope file has no valid rules"
+
+
+# --- check_url: the last check before every active request -------------------
+
+LAB = make(f"{D}\n*.{D}\n!dev.{D}\n")
+
+
+def test_check_url_returns_the_rule_that_allowed_it():
+    assert scope.check_url(LAB, f"https://www.{D}/") == "*." + D
+    assert scope.check_url(LAB, f"https://{D}/openapi.json") == D
+
+
+def test_check_url_reads_the_host_from_the_url_itself():
+    # ports, case and paths don't change which host is checked
+    assert scope.check_url(LAB, f"http://WWW.{D}:8080/x?y=1") == "*." + D
+    with pytest.raises(scope.OutOfScope, match="no rule matches"):
+        scope.check_url(LAB, f"https://evil.test/{D}")          # the path doesn't count
+    with pytest.raises(scope.OutOfScope):
+        scope.check_url(LAB, f"https://www.{D}.evil.test/")     # a lookalike suffix
+
+
+def test_check_url_refuses_exclusions():
+    with pytest.raises(scope.OutOfScope, match=f"excluded by !dev.{D}"):
+        scope.check_url(LAB, f"https://dev.{D}/")
+
+
+@pytest.mark.parametrize("url", ["", "not a url", "https:///x", "https://[::1/"])
+def test_check_url_refuses_urls_without_a_usable_host(url):
+    with pytest.raises(scope.OutOfScope):
+        scope.check_url(LAB, url)
+
+
+def test_out_of_scope_is_a_requests_error():
+    # so every existing "host didn't answer" handler catches it: no crash, no request
+    import requests
+    assert issubclass(scope.OutOfScope, requests.RequestException)
+
+
+def test_unscoped_cli_allows_without_a_rule():
+    assert scope.check_url(UNSCOPED_CLI, "https://anything.test/") is None
+
+
+@pytest.mark.parametrize("bad", [None, "", "*.example.test", object()])
+def test_anything_but_a_scope_or_the_marker_is_an_error_never_a_pass(bad):
+    with pytest.raises(TypeError):
+        scope.check_url(bad, f"https://www.{D}/")
+    with pytest.raises(TypeError):
+        scope.split(bad, ["www." + D])
+
+
+def test_split_sorts_hosts_with_reasons():
+    inside, outside = scope.split(LAB, ["www." + D, "dev." + D, "evil.test", D])
+    assert inside == ["www." + D, D]
+    assert outside == [{"host": "dev." + D, "reason": f"excluded by !dev.{D}"},
+                       {"host": "evil.test", "reason": "no rule matches"}]
+
+
+def test_split_unscoped_keeps_everything():
+    assert scope.split(UNSCOPED_CLI, ["a.test", "b.test"]) == (["a.test", "b.test"], [])

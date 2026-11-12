@@ -8,6 +8,8 @@ import pytest
 import requests
 
 import exposed
+import scope
+from scope import UNSCOPED_CLI
 
 
 # ---------- read_openapi: only a real spec counts ----------
@@ -152,7 +154,7 @@ def test_check_host_finds_a_spec_and_stops_early(monkeypatch):
     pages = {"https://lab/openapi.json": Resp(body=json.dumps(OPENAPI).encode()),
              "https://lab/": Resp(body=b"<html>no scripts</html>")}
     sent = fake_site(monkeypatch, pages)
-    finding, n = exposed.check_host("lab")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert finding["spec"]["type"] == "OpenAPI" and finding["source_maps"] == []
     # stopped at the first spec path, so the later ones were never requested
     assert "https://lab/swagger.json" not in sent
@@ -167,7 +169,7 @@ def test_check_host_finds_a_source_map(monkeypatch):
         "https://lab/app.js.map": Resp(body=json.dumps(smap).encode()),
     }
     fake_site(monkeypatch, pages)
-    finding, n = exposed.check_host("lab")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert finding["spec"] is None
     [m] = finding["source_maps"]
     assert m["map_url"] == "https://lab/app.js.map" and m["has_source_content"] is True
@@ -177,7 +179,7 @@ def test_check_host_finds_a_source_map(monkeypatch):
 def test_clean_host_is_no_finding(monkeypatch):
     # everything 404s, homepage has no scripts: nothing found, no invented finding
     fake_site(monkeypatch, {"https://lab/": Resp(body=b"<html></html>")})
-    finding, n = exposed.check_host("lab")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert finding is None and n == len(exposed.SPEC_PATHS) + 1
 
 
@@ -186,7 +188,7 @@ def test_soft_404_html_is_not_a_spec(monkeypatch):
     def get(url, **kwargs):
         return Resp(200, body=b"<html>page</html>")
     monkeypatch.setattr(exposed.requests, "get", get)
-    finding, n = exposed.check_host("lab")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert finding is None
 
 
@@ -195,7 +197,7 @@ def test_truncated_spec_is_not_parsed(monkeypatch):
     pages = {"https://lab/openapi.json": Resp(body=big),
              "https://lab/": Resp(body=b"<html></html>")}
     fake_site(monkeypatch, pages)
-    finding, n = exposed.check_host("lab")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert finding is None  # over the cap -> truncated -> never parsed as JSON
 
 
@@ -206,7 +208,8 @@ def test_every_request_is_logged_and_counted(monkeypatch):
              "https://lab/a.js.map": Resp(body=b'{"version":3,"sources":[]}')}
     sent = fake_site(monkeypatch, pages)
     logged = []
-    finding, n = exposed.check_host("lab", on_request=lambda host, url: logged.append((host, url)))
+    finding, n = exposed.check_host(
+        "lab", scope=UNSCOPED_CLI, on_request=lambda host, url, rule: logged.append((host, url)))
     assert n == len(sent) == len(logged)          # count matches the log exactly
     assert all(host == "lab" for host, _ in logged)
     assert logged[0] == ("lab", "https://lab/openapi.json")
@@ -216,7 +219,7 @@ def test_connection_errors_dont_crash_the_host(monkeypatch):
     pages = {"https://lab/openapi.json": requests.ConnectionError("refused"),
              "https://lab/": requests.Timeout("slow")}
     fake_site(monkeypatch, pages)
-    finding, n = exposed.check_host("lab")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert finding is None and n == len(exposed.SPEC_PATHS) + 1
 
 
@@ -229,7 +232,7 @@ def test_check_all_skips_private_and_unresolved(monkeypatch):
         "intranet": {"ips": ["10.0.0.5"]},
         "gone": {"ips": []},
     }}
-    out = exposed.check_all(enrichment)
+    out = exposed.check_all(enrichment, scope=UNSCOPED_CLI)
     assert out["checked"] == 1 and out["hosts"] == {}
     assert out["requests"] == len(exposed.SPEC_PATHS) + 1  # only "pub" was touched
 
@@ -238,7 +241,7 @@ def test_check_all_keeps_findings_and_counts_requests(monkeypatch):
     pages = {"https://pub/openapi.json": Resp(body=json.dumps(OPENAPI).encode()),
              "https://pub/": Resp(body=b"<html></html>")}
     fake_site(monkeypatch, pages)
-    out = exposed.check_all({"hosts": {"pub": {"ips": ["8.8.8.8"]}}})
+    out = exposed.check_all({"hosts": {"pub": {"ips": ["8.8.8.8"]}}}, scope=UNSCOPED_CLI)
     assert list(out["hosts"]) == ["pub"]
     assert out["requests"] == 2  # first spec path hits, homepage has no scripts
 
@@ -250,7 +253,7 @@ def test_active_user_agent_is_sent(monkeypatch):
         seen["ua"] = kwargs["headers"]["User-Agent"]
         return Resp(404)
     monkeypatch.setattr(exposed.requests, "get", get)
-    exposed._fetch("https://lab/x", 8, None, "lab")
+    exposed._fetch("https://lab/x", 8, None, "lab", scope=UNSCOPED_CLI)
     assert "active security check" in seen["ua"] and "passive" not in seen["ua"]
 
 
@@ -275,5 +278,50 @@ def test_check_host_never_requests_another_host(monkeypatch):
                  headers={"x-sourcemap": "http://169.254.169.254/latest/meta-data"},
                  body=b"//# sourceMappingURL=https://evil.example/x.map")}
     sent = fake_site(monkeypatch, pages)
-    exposed.check_host("lab")
+    exposed.check_host("lab", scope=UNSCOPED_CLI)
     assert all(urlparse(u).hostname == "lab" for u in sent), sent
+
+
+# ---------- scope in the fetch layer (v1.12) ----------
+
+
+LAB = scope.from_bytes(b"*.example.test\n")
+
+
+def test_fetch_has_no_default_scope():
+    with pytest.raises(TypeError, match="scope"):
+        exposed._fetch("https://www.example.test/", 8, None, "www.example.test")
+    with pytest.raises(TypeError, match="scope"):
+        exposed.check_host("www.example.test")
+    with pytest.raises(TypeError, match="scope"):
+        exposed.check_all({"hosts": {}})
+
+
+def test_fetch_checks_the_url_not_the_host_label(monkeypatch):
+    # the label says an in-scope host, the URL goes elsewhere: the URL wins
+    sent = fake_site(monkeypatch, {})
+    with pytest.raises(scope.OutOfScope):
+        exposed._fetch("https://evil.test/x", 8, None, "www.example.test", scope=LAB)
+    assert sent == []
+
+
+def test_map_url_on_another_host_is_stopped_at_the_fetch_layer(monkeypatch):
+    # if _map_urls ever let a cross-host map through (a bug), no request goes out
+    pages = {"https://www.example.test/": Resp(body=b'<script src="/app.js"></script>'),
+             "https://www.example.test/app.js": Resp(body=b"x()")}
+    sent = fake_site(monkeypatch, pages)
+    monkeypatch.setattr(exposed, "_map_urls", lambda js, host: ["https://evil.test/app.js.map"])
+    logged = []
+    finding, n = exposed.check_host("www.example.test", scope=LAB,
+                                    on_request=lambda host, url, rule: logged.append(url))
+    assert "https://evil.test/app.js.map" not in sent
+    assert all(u.startswith("https://www.example.test/") for u in sent)
+    assert n == len(sent) == len(logged)  # the count is what really went out
+
+
+def test_every_request_logs_its_scope_rule(monkeypatch):
+    fake_site(monkeypatch, {})
+    rules = []
+    exposed.check_host("www.example.test", scope=LAB,
+                       on_request=lambda host, url, rule: rules.append(rule))
+    assert rules and set(rules) == {"*.example.test"}
