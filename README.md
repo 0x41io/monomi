@@ -10,7 +10,7 @@
 
 Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, how an attacker would most likely get in, and who should fix what first.
 
-> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups. Two optional checks are **active** — they contact the target's own servers: `--fingerprint` (one homepage request per host) and `--exposed-files` (a few requests per host to find public API specs and source maps). Both send an honest active User-Agent and only run when you ask for them. Only assess domains you own or have permission to review.
+> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups. Two optional checks are **active** — they contact the target's own servers: `--fingerprint` (one homepage request per host) and `--exposed-files` (a few requests per host to find public API specs and source maps). Both send an honest active User-Agent and only run when you ask for them, and `--scope FILE` limits them to the hosts you're allowed to test (over MCP a scope file is required). Only assess domains you own or have permission to review.
 ---
 
 ## Features
@@ -46,7 +46,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **JSON export** for use in other tools
 - **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
 - **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, changing only Monomi's entry and backing up the old file first (see [MCP server mode](#mcp-server-mode))
-- **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) are off by default behind an `--allow-active` gate with an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
+- **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) are off by default behind an `--allow-active` gate, only reach hosts in a scope file you approved, and write every request and refusal to an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
 ## Installation
 
@@ -168,6 +168,9 @@ python monomi.py example.com --fingerprint
 # Look for exposed API specs and source maps (ACTIVE: a few requests per host; turns on --enrich)
 python monomi.py example.com --exposed-files
 
+# Only let the active checks reach hosts your scope file allows (see "Scope file" below)
+python monomi.py example.com --fingerprint --exposed-files --scope scope.txt
+
 # Check email spoofing protection (SPF, DMARC, DKIM; DNS lookups only)
 python monomi.py example.com --email
 
@@ -271,6 +274,21 @@ Passive tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hos
 
 **Active tools (v1.11, off by default).** `fingerprint_hosts` and `check_exposed_files` contact the target's own servers, so they're gated: the MCP server refuses them unless it was started with `--allow-active`, and refuses before any lookup or request — so the gate holds even if the Claude app is set to always-allow the tool. Turn them on with `python monomi.py mcp setup --allow-active` (it makes you type `yes` at a real terminal, so an agent can't enable them for you), then fully restart the app. Every active request is written to `scans/active.log`, and `python monomi.py doctor` shows whether active tools are on and the last request sent. `check_exposed_files` never returns source code it finds, only that it's present.
 
+**Scope file (v1.12, required for active tools).** Active tools only ever contact hosts in a scope file you approved. With active tools on and no approved scope, every active check refuses. One rule per line, so a bug bounty program's scope list can be pasted in:
+
+```
+# comments and blank lines are ignored
+example.com          # exactly this host
+*.example.com        # any subdomain, NOT example.com itself (list it separately)
+!blog.example.com    # never in scope, even if a rule above matches: exclusions always win
+```
+
+Approve it with `python monomi.py mcp setup --scope scope.txt`. Setup shows every rule and every rejected line, asks you to type `yes` at a real terminal (`--yes` never skips it, so an agent can't approve a scope for you), and saves the file's path and its sha256 in the Claude config. At startup the server reads the file once and refuses all active checks if it changed since you approved it, so editing the file means approving it again. `--no-scope` removes it. No MCP tool has a scope argument: an agent can't pass, widen or change the scope.
+
+Out-of-scope hosts are dropped before any DNS lookup and come back in `out_of_scope` with the reason, and every URL is checked again right before it's fetched (homepage, HTTP fallback, scripts, source maps). `scans/active.log` records each request with the rule that allowed it and the scope's sha256, plus every refusal (out-of-scope hosts, active off, no or changed scope), and whether it came from the CLI or MCP. On the CLI, `--scope FILE` is optional (you're the one running it) but strict when given.
+
+Rejected lines (they don't count, and setup and doctor show why): a bare `*`, `*` anywhere but the start, single labels (`com`, `*.com`), shared suffixes many owners use (`co.uk`, `com.au`, `vercel.app`, `github.io`, `cloudfront.net`...; `example.co.uk` is fine), non-ASCII names, URLs, and IP addresses or ranges. Limits: scope is by hostname only (the IP a host resolves to isn't checked), and anything that can edit the Claude app's config file can change the approved hash, the same limit as `--allow-active`.
+
 Every call is built to fit the Claude app's 60-second tool limit: `find_subdomains` gives its sources 45 seconds in total, returns whatever finished, and lists skipped sources in `errors`.
 
 **Summary replies (v1.9).** `find_subdomains`, `check_takeover`, `enrich_hosts` and `check_ports` take `detail="summary"` (the default) or `detail="full"`. A summary gives the counts plus the hosts that matter (risky categories, takeover leads and stale records, dangling CNAMEs, origin IPs), and saves the full result to `scans/mcp/` as `full_results_file`. Use `detail="full"` to get everything in the reply.
@@ -345,6 +363,8 @@ monomi/
 ├── categorize.py         # rule-based hostname categories
 ├── mcp_server.py         # MCP server mode (7 passive tools + 2 active, gated)
 ├── mcp_setup.py          # adds Monomi to the Claude app's MCP config (monomi.py mcp setup)
+├── scope.py              # scope file for active checks: parse, match, hash pinning
+├── activelog.py          # scans/active.log: every active request and refusal
 ├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
 ├── takeover.py           # dangling CNAME / subdomain takeover check (--takeover)
 ├── threatintel.py        # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
@@ -437,13 +457,17 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.11: active checks over MCP, off by default behind an `--allow-active` gate with an `scans/active.log` audit trail: `fingerprint_hosts` (web server, versions, security headers; retries over plain HTTP when HTTPS fails) and `check_exposed_files` (public OpenAPI/Swagger specs and JS source maps, CLI `--exposed-files`, source code never returned). `monomi.py doctor` reports the active-tools setting and finds the Claude config across Windows install layouts; active requests send an honest active User-Agent
 - [x] v1.11.1: `--exposed-files` / `check_exposed_files` only fetch source maps on the host being checked (a script could point its map at another site or a cloud metadata address); found in review
 
+- [x] v1.12: a human-approved, fail-closed scope file for the active tools (`mcp setup --scope`, typed `yes`, sha256 pinned at server start; CLI `--scope`). Out-of-scope hosts get no DNS lookup and no request, every URL is re-checked in the fetch layer, and `scans/active.log` records the rule and scope hash for each request plus every refusal, from the CLI and MCP alike
+
 **Next**
-- [ ] v1.12: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
+- [ ] v1.13: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
+- [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
 
 **Later**
+- [ ] IP / CIDR rules in the scope file, and the full Public Suffix List
 - [ ] HTTP-based takeover checks for wildcard services (GitHub Pages, S3, Heroku, Netlify)
 - [ ] Liveness checks for discovered hosts
 - [ ] Plugin system for data sources

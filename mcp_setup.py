@@ -41,10 +41,12 @@ CONFIG = "claude_desktop_config.json"
 ACTIVE_FLAG = "--allow-active"  # mcp_server.py's flag that allows ACTIVE tools
 ACTIVE_LOG = os.path.join(HERE, "scans", "active.log")  # where mcp_server.py logs them
 ACTIVE_WARNING = (
-    "ACTIVE tools send requests to the target's own servers (today: fingerprint_hosts,\n"
-    "one homepage request per host). Any agent connected to Monomi in the Claude app\n"
-    "could then call them, so only scan targets you're allowed to test. Every request\n"
-    "is written to scans/active.log, and `python monomi.py doctor` shows the setting.")
+    "ACTIVE tools send requests to the target's own servers (fingerprint_hosts: one\n"
+    "homepage request per host; check_exposed_files: a few GETs per host). Any agent\n"
+    "connected to Monomi in the Claude app could then call them, but only on hosts in\n"
+    "the scope file you approve (python monomi.py mcp setup --scope FILE); without one\n"
+    "they refuse everything. Every request and refusal is written to scans/active.log,\n"
+    "and `python monomi.py doctor` shows the setting and the scope.")
 SCOPE_FLAG = "--scope"              # mcp_server.py's flag: the approved scope file
 SCOPE_HASH_FLAG = "--scope-sha256"  # ...and the sha256 it had when you approved it
 

@@ -634,11 +634,12 @@ def check_active():
     elif on:
         where = config_lines("in", on) if len(found) > 1 else ""
         out.append(result(MCP, "active", WARN,
-                          "ACTIVE tools are ON: fingerprint_hosts can send requests to targets "
+                          "ACTIVE tools are ON: fingerprint_hosts and check_exposed_files can "
+                          "send requests to hosts in the approved scope "
                           f"(after a Claude app restart){where}",
                           "python monomi.py mcp setup --no-active, to turn them off"))
     else:
-        out.append(result(MCP, "active", OK, "ACTIVE tools are off (fingerprint_hosts refuses)"))
+        out.append(result(MCP, "active", OK, "ACTIVE tools are off (fingerprint_hosts and check_exposed_files refuse)"))
     count, last, refusals = last_active_request()
     refused = f", {plural(refusals, 'refusal')}" if refusals else ""
     if last:
