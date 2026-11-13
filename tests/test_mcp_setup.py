@@ -825,3 +825,124 @@ def test_opencode_strange_config_is_never_overwritten(monkeypatch, tmp_path):
     with pytest.raises(SetupError, match="doesn't look like an OpenCode config"):
         mcp_setup.setup(yes=True, client=OPENCODE)
     assert not list(f.parent.glob("*.bak-*"))
+
+
+# ---------- Hermes Agent (v1.13): YAML, mcp_servers.monomi ----------
+
+HERMES = mcp_setup.CLIENTS["hermes"]
+HERMES_FILE = """# Hermes settings
+model:
+  provider: openrouter   # keep me
+mcp_servers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+"""
+
+
+def hermes_home(monkeypatch, tmp_path, text=None):
+    """Point HERMES_HOME at a temp folder; write config.yaml if text is given."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_setup, "direct_entry", lambda: {"command": "py", "args": ["server"]})
+    f = tmp_path / "config.yaml"
+    if text is not None:
+        f.write_text(text, encoding="utf-8")
+    return f
+
+
+def hermes_monomi(f):
+    from ruamel.yaml import YAML
+    return YAML(typ="safe").load(f.read_text(encoding="utf-8"))["mcp_servers"][NAME]
+
+
+def test_hermes_config_follows_hermes_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    assert HERMES.paths() == ([], str(tmp_path / "profile" / "config.yaml"))
+    monkeypatch.delenv("HERMES_HOME")
+    assert HERMES.paths()[1] == os.path.join(os.path.expanduser("~/.hermes"), "config.yaml")
+
+
+def test_hermes_setup_keeps_comments_quotes_and_other_servers(monkeypatch, tmp_path, capsys):
+    f = hermes_home(monkeypatch, tmp_path, HERMES_FILE)
+    monkeypatch.setattr("builtins.input", lambda question: "y")
+    assert mcp_setup.main(["setup", "--client", "hermes"]) == 0
+    text = f.read_text(encoding="utf-8")
+    assert text.startswith(HERMES_FILE)  # every byte before Monomi's entry is untouched
+    assert text.endswith("  monomi:\n    command: py\n    args: [server]\n")
+    assert hermes_monomi(f) == {"command": "py", "args": ["server"]}
+    assert len(list(tmp_path.glob("config.yaml.bak-*"))) == 1
+    assert "/reload-mcp" in capsys.readouterr().out
+
+    assert mcp_setup.main(["setup", "--client", "hermes"]) == 0  # nothing left to change
+    assert "already set up in Hermes" in capsys.readouterr().out
+
+
+def test_hermes_keeps_the_files_own_list_indentation(monkeypatch, tmp_path):
+    text = "toolsets:\n    - web\n    - terminal\nmcp_servers:\n    other:\n        command: node\n"
+    f = hermes_home(monkeypatch, tmp_path, text)
+    assert mcp_setup.setup(yes=True, client=HERMES) == 0
+    assert f.read_text(encoding="utf-8").startswith(text)
+
+
+def test_hermes_new_or_empty_file(monkeypatch, tmp_path):
+    for start in (None, "", "mcp_servers:\n"):
+        f = hermes_home(monkeypatch, tmp_path, start)
+        assert mcp_setup.setup(yes=True, client=HERMES) == 0
+        assert hermes_monomi(f) == {"command": "py", "args": ["server"]}
+        f.unlink()
+
+
+def test_hermes_keeps_your_own_keys_in_monomis_entry(monkeypatch, tmp_path):
+    f = hermes_home(monkeypatch, tmp_path, "mcp_servers:\n  monomi:\n    command: old\n"
+                                           "    timeout: 120\n    env: {X: '1'}\n")
+    assert mcp_setup.setup(yes=True, client=HERMES) == 0
+    assert hermes_monomi(f) == {"command": "py", "args": ["server"], "timeout": 120, "env": {"X": "1"}}
+
+
+def test_hermes_active_needs_typed_yes(monkeypatch, tmp_path):
+    f = hermes_home(monkeypatch, tmp_path, HERMES_FILE)
+    monkeypatch.setattr("builtins.input", lambda question: "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, active=True, client=HERMES) == 0
+    assert f.read_text(encoding="utf-8") == HERMES_FILE
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(active=True, client=HERMES) == 0
+    assert hermes_monomi(f)["args"] == ["server", "--allow-active"]
+
+
+@pytest.mark.parametrize("text", ["model: [unclosed\n", "mcp_servers: [a, b]\n", "- just\n- a list\n"])
+def test_hermes_broken_or_strange_config_is_never_overwritten(monkeypatch, tmp_path, text):
+    f = hermes_home(monkeypatch, tmp_path, text)
+    with pytest.raises(SetupError, match="Nothing was changed"):
+        mcp_setup.setup(yes=True, client=HERMES)
+    assert f.read_text(encoding="utf-8") == text and not list(tmp_path.glob("*.bak-*"))
+
+
+def test_hermes_print_and_windows_paths(monkeypatch, capsys):
+    win = {"command": "C:\\Users\\me\\monomi\\venv\\Scripts\\python.exe",
+           "args": ["C:\\Users\\me\\monomi\\mcp_server.py"]}
+    monkeypatch.setattr(mcp_setup, "direct_entry", lambda: win)
+    assert mcp_setup.main(["setup", "--client", "hermes", "--print"]) == 0
+    from ruamel.yaml import YAML
+    assert YAML(typ="safe").load(capsys.readouterr().out)["mcp_servers"][NAME] == win
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("a: 1\n", (2, 0)),                                   # nothing nested: ruamel's defaults
+    ("mcp_servers:\n  x:\n    command: c\n", (2, 0)),
+    ("toolsets:\n    - web\nmcp:\n    x: 1\n", (4, 4)),  # list first: ruamel's guess got this wrong
+    ("toolsets:\n- web\nmcp:\n  x: 1\n", (2, 0)),
+    ("toolsets:\n  - web\nmcp:\n  x: 1\n", (2, 2)),
+])
+def test_hermes_measures_the_files_own_indentation(text, expected):
+    assert HERMES._indentation(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "toolsets:\n  - web\n  - terminal\nmcp_servers:\n  other:\n    command: node\n",
+    "toolsets:\n- web\nmcp_servers:\n  other:\n    command: node\n",
+])
+def test_hermes_keeps_other_list_styles_too(monkeypatch, tmp_path, text):
+    f = hermes_home(monkeypatch, tmp_path, text)
+    assert mcp_setup.setup(yes=True, client=HERMES) == 0
+    assert f.read_text(encoding="utf-8").startswith(text)

@@ -38,7 +38,12 @@ import subprocess
 import sys
 from datetime import datetime
 
+import io
+
 import tomlkit
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import YAMLError
 from tomlkit.exceptions import TOMLKitError
 
 import scope
@@ -475,7 +480,109 @@ class OpenCode(Client):
         return direct_entry()
 
 
-CLIENTS = {c.key: c for c in (Claude(), Codex(), OpenCode())}
+class Hermes(Client):
+    """Nous Research's Hermes Agent: YAML, mcp_servers.monomi with command and
+    args, in $HERMES_HOME/config.yaml or ~/.hermes/config.yaml (Hermes' own
+    Windows installer sets HERMES_HOME, so that case is covered too).
+
+    ruamel.yaml edits the file in place: comments, key order and quotes stay,
+    and the file's own indentation is detected and kept. Other keys in
+    Monomi's own entry (env, timeout, tools...) stay as they are."""
+    key = "hermes"
+    label = "Hermes"
+    restart = ("type /reload-mcp in a running Hermes chat, or start a new `hermes` "
+               "session, so it reconnects to its MCP servers")
+
+    def paths(self):
+        home = os.environ.get("HERMES_HOME") or os.path.expanduser(os.path.join("~", ".hermes"))
+        path = os.path.join(home, "config.yaml")
+        return ([path] if os.path.exists(path) else []), path
+
+    @staticmethod
+    def _indentation(text):
+        """(mapping indent, list-dash offset) this YAML text uses, measured
+        from its own lines; (2, 0) when it has no nested keys or lists.
+        ruamel's own guess misreads files whose first nested block is a list,
+        and a wrong guess would re-indent the whole file when it's written."""
+        lines = [(len(ln) - len(ln.lstrip(" ")), ln.strip()) for ln in text.splitlines()
+                 if ln.strip() and not ln.lstrip().startswith("#")]
+        mapping = offset = None
+        for i, (col, body) in enumerate(lines):
+            parent = next((c for c, _ in reversed(lines[:i]) if c < col), None)
+            if parent is None:
+                continue
+            if body.startswith("- ") and offset is None:
+                offset = col - parent
+            elif not body.startswith("-") and ":" in body and mapping is None:
+                mapping = col - parent
+        return mapping or 2, offset or 0
+
+    @classmethod
+    def _yaml(cls, text=""):
+        """A round-trip YAML handler set to the indentation this text uses."""
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        mapping, offset = cls._indentation(text)
+        yaml.indent(mapping=mapping, sequence=offset + 2, offset=offset)
+        return yaml
+
+    def load(self, path):
+        text = read_text(path)
+        try:
+            doc = self._yaml(text).load(text) if text.strip() else None
+        except YAMLError as e:
+            raise SetupError(f"{path} isn't valid YAML ({e}); fix it or move it away, "
+                             "then run setup again. Nothing was changed.")
+        doc = CommentedMap() if doc is None else doc
+        servers = doc.get("mcp_servers") if isinstance(doc, dict) else None
+        if not isinstance(doc, dict) or not isinstance(servers or {}, dict) \
+                or not isinstance(servers and servers.get(NAME) or {}, dict):
+            raise SetupError(f"{path} doesn't look like a Hermes config (expected "
+                             "mcp_servers: with one entry per server). Nothing was changed.")
+        doc.yaml_text = text  # kept so dump() writes with the file's own indentation
+        return doc
+
+    def entry(self, doc):
+        server = (doc.get("mcp_servers") or {}).get(NAME)
+        if not server:
+            return None
+        return {"command": str(server.get("command", "")),
+                "args": [str(a) for a in server.get("args") or []]}
+
+    def with_entry(self, doc, entry):
+        text = getattr(doc, "yaml_text", "")
+        yaml = self._yaml(text)
+        out = io.StringIO()
+        yaml.dump(doc, out)
+        new = yaml.load(out.getvalue()) or CommentedMap()  # a copy: the loaded one stays as read
+        new.yaml_text = text
+        if not new.get("mcp_servers"):
+            new["mcp_servers"] = CommentedMap()
+        servers = new["mcp_servers"]
+        if NAME not in servers:
+            servers[NAME] = CommentedMap()
+        args = CommentedSeq(entry["args"])
+        args.fa.set_flow_style()  # args: [a, b], like Hermes' own docs
+        servers[NAME]["command"] = entry["command"]
+        servers[NAME]["args"] = args
+        return new
+
+    def dump(self, doc):
+        out = io.StringIO()
+        self._yaml(getattr(doc, "yaml_text", "")).dump(doc, out)
+        return out.getvalue()
+
+    def show(self, entry):
+        return self.dump(self.with_entry(CommentedMap(), entry)).rstrip("\n")
+
+    def printable(self, entry):
+        return self.show(entry)
+
+    def base(self):
+        return direct_entry()
+
+
+CLIENTS = {c.key: c for c in (Claude(), Codex(), OpenCode(), Hermes())}
 
 
 # ---------- The command ----------
