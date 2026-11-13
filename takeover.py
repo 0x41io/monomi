@@ -48,6 +48,12 @@ NOT_CLAIMABLE = [
 # 'app-nlb-1a2b3c.elb.us-east-1.amazonaws.com' ('.amazonaws.com.cn' in China)
 AWS_NLB = re.compile(r"\.elb\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$")
 
+# AWS API Gateway names carry an ID AWS generates, so a deleted one can't be
+# registered again, like a load balancer's:
+# 'd-ab12cd34ef.execute-api.us-east-1.amazonaws.com' (a custom domain's target)
+# 'a1b2c3d4e5.execute-api.us-east-1.amazonaws.com'   (an API's own name)
+AWS_API_GATEWAY = re.compile(r"\.execute-api\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$")
+
 
 def match_not_claimable(target: str) -> str | None:
     """Which never-claimable service a CNAME target belongs to, if any.
@@ -59,6 +65,8 @@ def match_not_claimable(target: str) -> str | None:
             return service
     if AWS_NLB.search(target):
         return "AWS Elastic Load Balancing"
+    if AWS_API_GATEWAY.search(target):
+        return "AWS API Gateway"
     return None
 
 

@@ -1,3 +1,5 @@
+import pytest
+
 import dnscheck
 import takeover
 from evidence import build_evidence
@@ -186,3 +188,25 @@ def test_provider_domain_matches():
     assert match_provider("x.blob.core.windows.net") == "Microsoft Azure"
     assert match_provider("gone.blog-example.com") is None
     assert match_provider("evil.amazonaws.com.attacker.net") is None
+
+
+# --- AWS API Gateway (v1.13.1): random-ID names, so stale, not a lead ---
+
+@pytest.mark.parametrize("target", [
+    "d-ab12cd34ef.execute-api.us-east-1.amazonaws.com",   # a custom domain's target
+    "a1b2c3d4e5.execute-api.eu-west-2.amazonaws.com",     # an API's own name
+])
+def test_api_gateway_names_are_not_claimable(target):
+    assert match_not_claimable(target) == "AWS API Gateway"
+
+
+def test_lookalike_api_gateway_name_does_not_match():
+    assert match_not_claimable("x.execute-api.us-east-1.amazonaws.com.attacker.net") is None
+
+
+def test_dangling_api_gateway_cname_is_stale_not_a_lead(monkeypatch):
+    fake_dns(monkeypatch, {"api.example.com": "d-ab12cd34ef.execute-api.us-east-1.amazonaws.com"},
+             dead={"d-ab12cd34ef.execute-api.us-east-1.amazonaws.com"})
+    result = inspect_host("api.example.com")
+    assert result["status"] == "stale" and result["lead"] is None
+    assert result["stale"]["service"] == "AWS API Gateway"
