@@ -235,6 +235,32 @@ def review(candidates: list[dict], results: dict, evidence=(), scope=None
     return paths, leads, set_aside
 
 
+# The checks that apply to one takeover record on its own, outside a scan
+# (MCP check_takeover): its "doesn't exist" must be confirmed twice, and its
+# target must be claimable. Scope, ownership and freshness need the whole scan.
+TAKEOVER_CHECKS = (4, 6)
+
+
+def takeover_gate(record: dict, domain: str | None = None) -> dict:
+    """The gate block for one dangling-CNAME record from takeover.check_hosts().
+
+    "finding" when its NXDOMAIN was confirmed over DNS-over-HTTPS and its
+    target is on a service known to let deleted names be claimed again (and
+    isn't inside the domain); otherwise "lead", with the failed checks.
+    """
+    candidate = {"gate_input": {"door": [record], "no_door": None, "nxdomain": [record],
+                                "claim": {"cname": record["cname"], "claimable": record.get("claimable", False)}}}
+    ctx = Context({"target": domain or ""})
+    failed = []
+    for number, name, check in CHECKS:
+        if number in TAKEOVER_CHECKS:
+            why = check(candidate, ctx)
+            if why is not None:
+                failed.append({"check": number, "name": name, "why": why})
+    return {"result": "lead" if failed else "finding", "passed": len(TAKEOVER_CHECKS) - len(failed),
+            "of": len(TAKEOVER_CHECKS), "failed": failed, "notes": []}
+
+
 def describe(gate: dict | None) -> str:
     """The gate result in a few words, the same in every output.
 

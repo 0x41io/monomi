@@ -27,6 +27,7 @@ from enrich import enrich
 from evidence import OWNERS
 import activelog
 import fingerprint
+import gate
 import exposed
 import scope
 import internetdb
@@ -411,6 +412,12 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
     points back inside it is also "stale", since only its owner can create
     that name.
     Each lead and stale record has "owners": the roles that would fix it, never people.
+    Each lead also has a "gate" (Monomi's validation gate, checks 4 and 6):
+    result "finding" only when DNS-over-HTTPS confirmed the target doesn't
+    exist (not system DNS alone; see "nxdomain_confirmed_by") and the
+    service is known to let deleted names be claimed again; otherwise
+    "lead", with each failed check and why. Even a "finding" is still
+    unconfirmed until someone verifies it: Monomi never claims the name.
     Checks at most 200 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason.
     detail="summary" (default): counts per status, every lead and stale record,
     and up to 20 hosts whose check failed; the full per-host "results" are
@@ -432,6 +439,7 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
         result = check_hosts(checked, domain=domain)
     for lead in result["leads"]:
         lead["owners"] = owners("dns", "cloud") if lead["claimable"] else owners("dns")
+        lead["gate"] = gate.takeover_gate(lead, domain)  # checks 4 and 6 (v1.13)
     for record in result.get("stale", []):
         record["owners"] = owners("dns")
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
@@ -455,6 +463,7 @@ def takeover_summary(full: dict) -> dict:
         "rejected": full["rejected"],
         "batch": full["batch"],
         "status_counts": dict(Counter(r["status"] for r in results.values()).most_common()),
+        "leads_passing_gate": sum(1 for lead in full["leads"] if lead.get("gate", {}).get("result") == "finding"),
         "leads": full["leads"],
         "stale": full.get("stale", []),
         "unknown_count": len(unknown),

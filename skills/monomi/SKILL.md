@@ -42,6 +42,11 @@ None of these contact the target's own servers.
    of copying hostnames into the chat:
    - `check_takeover(hosts_file=..., domain=...)`: dangling CNAMEs. Always
      pass `domain`, so CNAMEs pointing back inside it are marked `stale`.
+     Each lead has a `gate`: `finding` only when DNS-over-HTTPS confirmed
+     the target is gone and the service lets deleted names be claimed
+     again; otherwise `lead`, with each failed check and why. Report the
+     gate as given. Even a `finding` is unverified: Monomi never claims the
+     name, so never call it a confirmed takeover.
    - `enrich_hosts(hosts_file=...)`: IPs, hosting provider, country, private
      IPs in public DNS, dangling CNAMEs.
    - `check_ports(hosts_file=...)`: open ports, risky services and CVEs from

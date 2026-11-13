@@ -171,7 +171,8 @@ def test_clean_hosts_caps_rejected_list():
 
 def test_check_takeover_adds_owners(monkeypatch):
     monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
-        "leads": [{"host": "a", "claimable": True}, {"host": "b", "claimable": False}],
+        "leads": [{"host": "a", "cname": "gone-a", "claimable": True, "nxdomain_confirmed_by": ["Google"]},
+                  {"host": "b", "cname": "gone-b", "claimable": False, "nxdomain_confirmed_by": ["Google"]}],
         "stale": [{"host": "c"}], "results": {}, "checked": 3, "errors": {}})
     result = mcp_server.check_takeover(["a", "b", "c"])
     assert result["leads"][0]["owners"] == ["DNS admin", "cloud / service account owner"]
@@ -211,7 +212,7 @@ def test_check_email_auth_adds_owners(monkeypatch):
 
 def test_takeover_summary_counts_and_keeps_leads(monkeypatch):
     monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
-        "leads": [{"host": "a", "claimable": True}],
+        "leads": [{"host": "a", "cname": "gone-a", "claimable": True, "nxdomain_confirmed_by": ["Google"]}],
         "stale": [{"host": "b"}],
         "results": {"a": {"status": "lead"}, "b": {"status": "stale"},
                     "c": {"status": "no_such_host"}, "d": {"status": "no_such_host"},
@@ -224,6 +225,7 @@ def test_takeover_summary_counts_and_keeps_leads(monkeypatch):
     assert result["leads"][0]["owners"] == ["DNS admin", "cloud / service account owner"]
     assert result["stale"][0]["owners"] == ["DNS admin"]
     assert result["unknown_hosts"] == ["e"]
+    assert result["leads_passing_gate"] == 1 and result["leads"][0]["gate"]["result"] == "finding"
     with open(result["full_results_file"]) as f:   # the file has everything
         assert len(json.load(f)["results"]) == 5
 
@@ -310,7 +312,7 @@ def test_hosts_file_reads_txt_and_drops_comments(monkeypatch, tmp_path):
 
 
 def test_hosts_file_outside_scans_is_refused(monkeypatch, tmp_path):
-    folder = scans_dir(monkeypatch, tmp_path)
+    scans_dir(monkeypatch, tmp_path)  # point scans/ at tmp_path; the file below is outside it
     secret = tmp_path / "bashrc.txt"
     secret.write_text("export ANTHROPIC_API_KEY=sk-ant-secret\n")
     for path in (str(secret), "../bashrc.txt"):
@@ -1004,3 +1006,47 @@ def test_scope_problem_refusal_is_logged_with_its_reason(monkeypatch, results_di
     [line] = read_log(results_dir)
     assert line["event"] == "refused" and line["reason"] == scope.NO_SCOPE
     assert line["tool"] == "check_exposed_files" and line["scope_sha256"] is None
+
+
+# --- The validation gate on takeover leads (v1.13): checks 4 and 6 ---
+
+def gated_leads(monkeypatch, *leads, domain=None):
+    monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
+        "leads": [dict(lead) for lead in leads], "stale": [],
+        "results": {lead["host"]: {"status": "lead"} for lead in leads}, "checked": len(leads), "errors": {}})
+    return mcp_server.check_takeover([lead["host"] for lead in leads], domain=domain)
+
+
+CONFIRMED = {"host": "a", "cname": "gone.azurewebsites.net", "claimable": True,
+             "nxdomain_confirmed_by": ["Cloudflare", "Google"]}
+
+
+def test_confirmed_claimable_takeover_passes_the_gate(monkeypatch):
+    result = gated_leads(monkeypatch, CONFIRMED)
+    assert result["leads"][0]["gate"] == {"result": "finding", "passed": 2, "of": 2,
+                                          "failed": [], "notes": []}
+    assert result["leads_passing_gate"] == 1
+
+
+def test_takeover_on_system_dns_alone_fails_check_4(monkeypatch):
+    lead = gated_leads(monkeypatch, dict(CONFIRMED, nxdomain_confirmed_by=[]))["leads"][0]
+    assert lead["gate"]["result"] == "lead"
+    assert [f["check"] for f in lead["gate"]["failed"]] == [4]
+    assert "system DNS alone" in lead["gate"]["failed"][0]["why"]
+
+
+def test_unknown_service_and_same_domain_fail_check_6(monkeypatch):
+    unknown = dict(CONFIRMED, host="b", cname="gone.unknownhost.test", claimable=False)
+    inside = dict(CONFIRMED, host="c", cname="old.lab.test")
+    result = gated_leads(monkeypatch, unknown, inside, domain="lab.test")
+    unknown_gate, inside_gate = (lead["gate"] for lead in result["leads"])
+    assert unknown_gate["failed"][0]["check"] == 6 and "who can claim" in unknown_gate["failed"][0]["why"]
+    assert inside_gate["failed"][0]["check"] == 6 and "inside lab.test" in inside_gate["failed"][0]["why"]
+    assert result["leads_passing_gate"] == 0
+
+
+def test_breaking_the_takeover_gate_lets_an_unconfirmed_lead_through(monkeypatch):
+    """Break the rule: with no checks, an unconfirmed lead reads as a finding."""
+    monkeypatch.setattr(mcp_server.gate, "TAKEOVER_CHECKS", ())
+    lead = gated_leads(monkeypatch, dict(CONFIRMED, nxdomain_confirmed_by=[]))["leads"][0]
+    assert lead["gate"]["result"] == "finding"
