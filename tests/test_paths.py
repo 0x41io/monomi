@@ -86,7 +86,8 @@ def test_clean_target_has_no_paths():
     results["fingerprint"]["hosts"] = {}
     results["email"]["verdict"]["verdict"] = "protected"
     out, _ = run(results)
-    assert out == {"paths": [], "leads": [], "fix_first": None, "more": 0, "more_leads": 0}
+    assert out == {"paths": [], "leads": [], "set_aside": [], "fix_first": None,
+                   "more": 0, "more_leads": 0, "more_set_aside": 0}
 
 
 def test_cdn_ip_is_never_a_side_door():
@@ -98,6 +99,7 @@ def test_cdn_ip_is_never_a_side_door():
 
 def test_takeover_path_chains_into_spoofed_email():
     results = lab_results()
+    results["subdomains"].append("oldapp")  # a takeover check only runs on the scan's own hosts
     results["takeover"]["leads"] = [{"host": "oldapp", "cname": "gone-app", "service": "Azure App Service",
                                      "claimable": True, "nxdomain_confirmed_by": ["Cloudflare"],
                                      "collected_at": None}]
@@ -113,6 +115,7 @@ def test_takeover_path_chains_into_spoofed_email():
 
 def test_exposed_service_ranks_right_after_email():
     results = lab_results()
+    results["subdomains"].append("db")
     results["exposure"] = {"ips": {"198.51.100.20": {"shared_edge": False, "hosts": ["db"], "ports": [5432],
                                                      "tags": [], "risky": ["5432/PostgreSQL"], "vulns": []}}}
     out, ev = run(results)
@@ -148,6 +151,7 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
 
 def test_paths_are_capped():
     results = lab_results()
+    results["subdomains"].extend(f"app{i}" for i in range(12))
     results["takeover"]["leads"] = [{"host": f"app{i}", "cname": f"gone{i}", "service": "Azure App Service",
                                      "claimable": True, "nxdomain_confirmed_by": ["Cloudflare"],
                                      "collected_at": None} for i in range(12)]
@@ -171,7 +175,7 @@ def test_appendix_lists_paths_and_fix_first():
     from paths import paths_appendix
     out, _ = run(lab_results())
     text = paths_appendix(out)
-    assert "**P1: Send email as lab** (High, weakest step: Inference)" in text
+    assert "**P1: Send email as lab** (High, weakest step: Inference, gate 6/6)" in text
     assert "4. Lead: The server shows software versions" in text
     assert "**Fix this first**" in text and "owner: DNS admin, email admin" in text
 

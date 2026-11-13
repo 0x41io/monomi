@@ -437,6 +437,13 @@
             ]
           }
         ],
+        "gate": {
+          "result": "finding",
+          "passed": 6,
+          "of": 6,
+          "failed": [],
+          "notes": []
+        },
         "id": "P1"
       }
     ],
@@ -501,6 +508,19 @@
             ]
           }
         ],
+        "gate": {
+          "result": "lead",
+          "passed": 5,
+          "of": 6,
+          "failed": [
+            {
+              "check": 5,
+              "name": "observed way in",
+              "why": "nothing shows a way into these hosts yet (no risky open service or known CVE on 64.227.89.72)"
+            }
+          ],
+          "notes": []
+        },
         "missing": "nothing shows a way into these hosts yet (no risky open service or known CVE on 64.227.89.72)",
         "id": "L1"
       },
@@ -552,10 +572,24 @@
             ]
           }
         ],
+        "gate": {
+          "result": "lead",
+          "passed": 5,
+          "of": 6,
+          "failed": [
+            {
+              "check": 5,
+              "name": "observed way in",
+              "why": "nothing shows that 64.227.89.72 is the server behind www.41xlab.com (a CDN hides its origin from outside)"
+            }
+          ],
+          "notes": []
+        },
         "missing": "nothing shows that 64.227.89.72 is the server behind www.41xlab.com (a CDN hides its origin from outside)",
         "id": "L2"
       }
     ],
+    "set_aside": [],
     "fix_first": {
       "actions": [
         {
@@ -576,6 +610,7 @@
       "still_required_actions": []
     },
     "more": 0,
-    "more_leads": 0
+    "more_leads": 0,
+    "more_set_aside": 0
   }
 }

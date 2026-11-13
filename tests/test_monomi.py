@@ -314,4 +314,17 @@ def test_scope_without_active_checks_warns(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(monomi, "collect_ct", lambda results, domain: None)  # no hosts: stops early
     monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--scope", lab_file(tmp_path)])
     monomi.main()
-    assert "--scope only limits ACTIVE checks" in capsys.readouterr().out
+    assert "only sets aside attack paths" in capsys.readouterr().out
+
+
+def test_show_investigation_prints_every_label(capsys):
+    """--investigate-ip prints each label with its reason and source; an
+    anonymizer is a warning. (Nothing tested this printout before v1.13.)"""
+    r = {"ip": "198.51.100.9", "network": {"as_name": "ExampleNet", "asn": "AS64500", "country": "US"},
+         "rdns": None, "shodan": None, "errors": {},
+         "labels": [{"label": "tor_exit", "reason": "on the Tor exit list", "source": "Tor Project"},
+                    {"label": "hosting", "reason": "a hosting network", "source": "Team Cymru"}]}
+    monomi.show_investigation(r)
+    out = capsys.readouterr().out
+    assert "TOR_EXIT" in out and "on the Tor exit list" in out and "[Tor Project]" in out
+    assert "HOSTING" in out and "[Team Cymru]" in out

@@ -117,6 +117,13 @@
             ]
           }
         ],
+        "gate": {
+          "result": "finding",
+          "passed": 6,
+          "of": 6,
+          "failed": [],
+          "notes": []
+        },
         "id": "P1"
       }
     ],
@@ -163,10 +170,24 @@
             ]
           }
         ],
+        "gate": {
+          "result": "lead",
+          "passed": 5,
+          "of": 6,
+          "failed": [
+            {
+              "check": 5,
+              "name": "observed way in",
+              "why": "nothing shows that 203.0.113.10 is the server behind www.cves.test (a CDN hides its origin from outside)"
+            }
+          ],
+          "notes": []
+        },
         "missing": "nothing shows that 203.0.113.10 is the server behind www.cves.test (a CDN hides its origin from outside)",
         "id": "L1"
       }
     ],
+    "set_aside": [],
     "fix_first": {
       "actions": [
         {
@@ -186,6 +207,7 @@
       "still_required_actions": []
     },
     "more": 0,
-    "more_leads": 0
+    "more_leads": 0,
+    "more_set_aside": 0
   }
 }

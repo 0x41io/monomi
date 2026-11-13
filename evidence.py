@@ -67,10 +67,11 @@ def build_evidence(results: dict) -> list[dict]:
     seen_by = {}
     for r in results["sources"].values():
         for host in r["subdomains"]:
-            seen_by.setdefault(host, []).append(
-                {"name": r["source"] + (" (saved copy)" if r.get("from_saved") else ""),
-                 "collected_at": r.get("collected_at")}
-            )
+            source = {"name": r["source"] + (" (saved copy)" if r.get("from_saved") else ""),
+                      "collected_at": r.get("collected_at")}
+            if r.get("from_saved"):
+                source["from_saved"] = True  # not this scan's data (validation gate check 3)
+            seen_by.setdefault(host, []).append(source)
     for host in results["subdomains"]:
         names = ", ".join(s["name"] for s in seen_by[host])
         add(f"{host} was found by {names}", seen_by[host])
@@ -256,6 +257,7 @@ def cited_ids(report: str) -> set[str]:
             else:
                 cited.update({f"E{first}", f"E{last}"})
     return cited
+
 
 def check_citations(report: str, evidence: list[dict]) -> list[str]:
     """Return evidence IDs the report cites that don't exist (sorted, no repeats)."""

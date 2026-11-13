@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 
 import evidence
+import gate
 import paths
 import ui
 
@@ -297,7 +298,8 @@ def to_html(results: dict, generated) -> str:
         out.append("<p><em>No attack path found in this scan's evidence.</em></p>")
     for p in built["paths"]:
         out.append(f"<h3>{esc(p['id'])}: {esc(p['title'])} {badge(p['severity'])}</h3>"
-                   f'<p class="note">weakest step: {esc(p["strength"])}</p><ol>')
+                   f'<p class="note">weakest step: {esc(p["strength"])} · '
+                   f'{esc(gate.describe(p.get("gate")))}</p><ol>')
         for st in p["steps"]:
             out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
                        f"[{id_links(st['evidence'])}]</li>")
@@ -309,13 +311,23 @@ def to_html(results: dict, generated) -> str:
                 "would make it one.</p>"]
     for p in leads:
         out.append(f"<h4>{esc(p['id'])}: {esc(p['title'])} {badge(p['severity'])}</h4>"
-                   f'<p class="note">weakest step: {esc(p["strength"])}</p><ol>')
+                   f'<p class="note">weakest step: {esc(p["strength"])} · '
+                   f'{esc(gate.describe(p.get("gate")))}</p><ol>')
         for st in p["steps"]:
             out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
                        f"[{id_links(st['evidence'])}]</li>")
         out.append(f"</ol><p>Missing: {esc(p['missing'])}</p>")
     if built.get("more_leads"):
         out.append(f"<p>{built['more_leads']} more lead(s) left out</p>")
+    set_aside = built.get("set_aside", [])
+    if set_aside:
+        out += ["<h3>Set aside</h3>",
+                '<p class="note">Out of scope or not the target\'s own: neither attack '
+                "paths nor leads.</p><ul>"]
+        out += [f"<li>{esc(p['title'])}: {esc(p['why'])}</li>" for p in set_aside]
+        out.append("</ul>")
+    if built.get("more_set_aside"):
+        out.append(f"<p>{built['more_set_aside']} more set aside</p>")
 
     # Same evidence as the Markdown: everything a finding, path or the AI cites
     cites = " ".join(f"[{f['id']}]" for f in found)

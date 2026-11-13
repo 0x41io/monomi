@@ -19,8 +19,10 @@ an attack path once a known CVE is matched to it; until then it is a lead.
 Leads are never part of "fix this first".
 
 The rules here don't decide path or lead themselves: each builds a
-candidate that names its door (the observed way in, if any), and gate.py
-runs every candidate through the same checks (see gate.py).
+candidate that names its door (the observed way in, if any) and the hosts
+and IPs it goes through, and gate.py runs every candidate through the same
+checks. What fails "in scope" or "the target's own" is set aside: listed
+with the reason, never a path or a lead (see gate.py).
 
 One lead is only ever a lead: "go around the CDN". Some hosts sit behind a
 CDN while others point straight at a web server of the target's own. If
@@ -37,7 +39,7 @@ import re
 import gate
 from categorize import categorize
 from evidence import OWNERS
-from internetdb import SHARED_EDGE, edge_from_ip
+from internetdb import SHARED_EDGE
 
 LABEL_RANK = {"Observed": 0, "Inference": 1, "Lead": 2}
 SEVERITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
@@ -98,10 +100,13 @@ def _action(facts, what=None, owners=None):
             "owners": owners or _owners(facts)}
 
 
-def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdomain=()):
-    """A candidate attack path. door: the facts that show an observed way in
-    (gate check 5); no_door: why it isn't a path when there are none;
-    nxdomain: the takeover records whose "doesn't exist" it rests on (check 4)."""
+def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdomain=(),
+          hosts=(), ips=(), claim=None):
+    """A candidate attack path, with what the gate checks (see gate.py):
+    door: the facts that show an observed way in (check 5); no_door: why it
+    isn't a path when there are none; nxdomain: the takeover records whose
+    "doesn't exist" it rests on (check 4); hosts / ips: what the attack goes
+    through (checks 1, 2, 6); claim: a takeover's {"cname", "claimable"} (check 6)."""
     return {
         "title": title,
         "severity": severity,
@@ -109,7 +114,8 @@ def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdom
         "steps": steps,
         "outcome": outcome,
         "actions": actions,
-        "gate_input": {"door": list(door), "no_door": no_door, "nxdomain": list(nxdomain)},
+        "gate_input": {"door": list(door), "no_door": no_door, "nxdomain": list(nxdomain),
+                       "hosts": list(hosts), "ips": list(ips), "claim": claim},
     }
 
 
@@ -122,26 +128,16 @@ def _names(hosts, most=3):
     return f"{', '.join(hosts[:-1])} and {hosts[-1]}"
 
 
-def _edge_ips(results):
-    """IPs that are shared CDN edge servers: sharing one proves nothing."""
-    edge = set()
-    exp = results.get("exposure") or {}
-    for group in ("ips", "nothing_seen"):
-        for ip, d in exp.get(group, {}).items():
-            if d.get("shared_edge"):
-                edge.add(ip)
-    enr = results.get("enrichment") or {}
-    for h in enr.get("hosts", {}).values():
-        if h.get("provider") in SHARED_EDGE:
-            edge.update(h["ips"])
-        edge.update(ip for ip in h["ips"] if edge_from_ip(ip))
-    return edge
+# IPs that are shared CDN edge servers (lives in gate.py, which owns check 2)
+_edge_ips = gate.edge_ips
 
 
-def build_paths(results: dict, evidence: list[dict]) -> dict:
+def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     """Chain evidence into attack paths and leads.
 
-    Returns {"paths", "leads", "fix_first", "more", "more_leads"}.
+    scope: the --scope file (a scope.Scope), for gate check 1, or None.
+    Returns {"paths", "leads", "set_aside", "fix_first", "more", "more_leads",
+    "more_set_aside"}.
     """
     # Each rule ends with the path's actions (see _action). Evidence that
     # only backs a step up, like the email facts in rule A, is in no action.
@@ -165,7 +161,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                                f"linking to {host}", spoof, "Inference"))
         candidates.append(_path(f"Take over {host}", "High", steps,
                                 f"Phishing pages or stolen cookies on a real {target} subdomain",
-                                [_action([lead])], door=[lead], nxdomain=[records[host]]))
+                                [_action([lead])], door=[lead], nxdomain=[records[host]], hosts=[host],
+                                claim={"cname": records[host]["cname"], "claimable": True}))
     for lead in kinds.get("dangling_unknown", []):
         host = lead["host"]
         steps = [
@@ -175,7 +172,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         ]
         candidates.append(_path(f"Take over {host} through an expired name", "Medium", steps,
                                 f"Phishing pages on a real {target} subdomain", [_action([lead])],
-                                door=[lead], nxdomain=[records[host]]))
+                                door=[lead], nxdomain=[records[host]], hosts=[host],
+                                claim={"cname": records[host]["cname"], "claimable": False}))
 
     # B. Email impersonation
     for v in spoof:
@@ -188,7 +186,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         ]
         candidates.append(_path(f"Send email as {target}", "High" if spoofable else "Medium", steps,
                                 "Stolen passwords, payments or malware through trusted-looking email",
-                                [_action([v])], door=[v]))
+                                [_action([v])], door=[v], hosts=[target]))
 
     exp = results.get("exposure") or {}
     exp_ips = exp.get("ips", {})
@@ -206,7 +204,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                   "against those services directly", [r], "Inference"),
         ]
         candidates.append(_path(f"Attack the exposed services on {ip}", "High", steps,
-                                "Direct access to the server or its data", [_action([r])], door=[r]))
+                                "Direct access to the server or its data", [_action([r])], door=[r],
+                                hosts=exp_ips.get(ip, {}).get("hosts", []), ips=[ip]))
 
     # Which IPs each live host is on, for D and E
     enr = results.get("enrichment") or {}
@@ -278,14 +277,16 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         title = (f"Use {who} as a side door into {where}" if door else
                  f"Check whether {who} {'is' if one else 'are'} a side door into {where}")
         candidates.append(_path(title, "Medium", steps, f"Access to the server that also runs {shared[0]}",
-                                actions, door=door, no_door=no_door))
+                                actions, door=door, no_door=no_door, hosts=hosts, ips=sorted(ips)))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped).
     # A matched CVE makes it an attack path; a version on its own is only a lead.
+    # A shared CDN edge IP is set aside by the gate (check 2): its software isn't the target's.
     for ip in sorted({e["host"] for e in kinds.get("cves", [])}
                      | {ip for e in kinds.get("version_leak", []) for ip in ips_of.get(e["host"], [])}):
-        if ip in edge or ip in side_door_ips:
+        if ip in side_door_ips:
             continue
+        on_ip = sorted(h for h, h_ips in ips_of.items() if ip in h_ips)
         cves = [e for e in kinds.get("cves", []) if e["host"] == ip]
         leaks = [e for e in kinds.get("version_leak", []) if ip in ips_of.get(e["host"], [])]
         action = [_action(cves + leaks, f"Upgrade or patch the server software on {ip}")]
@@ -297,14 +298,14 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                        ) + ", so the versions are unverified"
             candidates.append(_path(f"Check whether the software on {ip} has known flaws", "Low", steps,
                                     "Server compromise, if the version is really vulnerable", action,
-                                    no_door=no_door))
+                                    no_door=no_door, hosts=on_ip, ips=[ip]))
             continue
         steps = [_step(f"{ip} shows software versions or matching CVEs", cves + leaks, "Observed"),
                  _step("An attacker checks whether the running version really has those flaws "
                        "and tries public exploits", cves + leaks, "Lead")]
         candidates.append(_path(f"Exploit known flaws on {ip}", "Medium", steps,
                                 "Server compromise, if the version is really vulnerable", action,
-                                door=cves))
+                                door=cves, hosts=on_ip or exp_ips.get(ip, {}).get("hosts", []), ips=[ip]))
 
     # F. Go around the CDN: always a lead (see the top of this file). Built
     # only when a server of the target's own is seen answering web requests.
@@ -349,9 +350,10 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                      f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
                      [OWNERS["server"], OWNERS["cdn"]]) for ip in own_ips[:3]],
             no_door=(f"nothing shows that {where} is the server behind {who} "
-                     "(a CDN hides its origin from outside)")))
+                     "(a CDN hides its origin from outside)"),
+            hosts=direct, ips=own_ips))
 
-    paths, leads = gate.review(candidates, results)
+    paths, leads, set_aside = gate.review(candidates, results, evidence, scope)
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
     more = max(0, len(paths) - MAX_PATHS)
     paths = paths[:MAX_PATHS]
@@ -363,8 +365,11 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     leads = leads[:MAX_PATHS]
     for i, p in enumerate(leads, 1):
         p["id"] = f"L{i}"
-    return {"paths": paths, "leads": leads, "fix_first": _fix_first(paths),
-            "more": more, "more_leads": more_leads}
+    # Set aside: out of scope or not the target's own. No IDs and no fixes.
+    more_set_aside = max(0, len(set_aside) - MAX_PATHS)
+    return {"paths": paths, "leads": leads, "set_aside": set_aside[:MAX_PATHS],
+            "fix_first": _fix_first(paths), "more": more, "more_leads": more_leads,
+            "more_set_aside": more_set_aside}
 
 
 def _fix_first(paths):
@@ -428,6 +433,10 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
     """
     built.setdefault("leads", [])       # saved before the Lead tier: its side
     built.setdefault("more_leads", 0)   # doors stay the paths they were saved as
+    built.setdefault("set_aside", [])   # saved before the gate (v1.13): its paths
+    built.setdefault("more_set_aside", 0)  # keep their tier, marked "gate not run"
+    for p in built["paths"] + built["leads"]:
+        p.setdefault("gate", None)
     if all("actions" in p for p in built["paths"]):
         return built
     by_id = {e["id"]: e for e in evidence}
@@ -466,7 +475,8 @@ def paths_appendix(built: dict) -> str:
     if not built["paths"]:
         lines.append("*No attack path found in this scan's evidence.*")
     for p in built["paths"]:
-        lines.append(f"- **{p['id']}: {p['title']}** ({p['severity']}, weakest step: {p['strength']})")
+        lines.append(f"- **{p['id']}: {p['title']}** ({p['severity']}, weakest step: {p['strength']}, "
+                     f"{gate.describe(p.get('gate'))})")
         for n, s in enumerate(p["steps"], 1):
             lines.append(f"  {n}. {s['label']}: {s['text']} [{', '.join(s['evidence'])}]")
         lines.append(f"  - Result: {p['outcome']}")
@@ -476,12 +486,20 @@ def paths_appendix(built: dict) -> str:
         lines += ["", "**Leads to investigate** (not attack paths: each is missing "
                       "something that would make it one)", ""]
     for p in built.get("leads", []):
-        lines.append(f"- **{p['id']}: {p['title']}** ({p['severity']}, weakest step: {p['strength']})")
+        lines.append(f"- **{p['id']}: {p['title']}** ({p['severity']}, weakest step: {p['strength']}, "
+                     f"{gate.describe(p.get('gate'))})")
         for n, s in enumerate(p["steps"], 1):
             lines.append(f"  {n}. {s['label']}: {s['text']} [{', '.join(s['evidence'])}]")
         lines.append(f"  - Missing: {p['missing']}")
     if built.get("more_leads"):
         lines.append(f"- {built['more_leads']} more lead(s) left out")
+    if built.get("set_aside"):
+        lines += ["", "**Set aside** (out of scope or not the target's own: neither "
+                      "attack paths nor leads)", ""]
+    for p in built.get("set_aside", []):
+        lines.append(f"- {p['title']}: {p['why']}")
+    if built.get("more_set_aside"):
+        lines.append(f"- {built['more_set_aside']} more set aside")
     fix = built.get("fix_first")
     if fix:
         t = fix_first_parts(fix)

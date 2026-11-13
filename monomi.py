@@ -23,6 +23,7 @@ import doctor
 import emailauth
 import enrich
 import evidence
+import gate
 import mcp_setup
 import paths
 import report
@@ -65,7 +66,6 @@ def clean_domain(raw: str) -> str:
     if not DOMAIN_RE.match(d):
         raise ValueError(f"'{raw}' doesn't look like a valid domain")
 
-
     return d
 
 
@@ -87,11 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ACTIVE checks only reach hosts this scope file allows: one rule per "
                              "line, example.com, *.example.com (subdomains), !host (never); every "
                              "other host is skipped and listed")
-    parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")           
+    parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
     parser.add_argument("--investigate-ip", nargs="+", metavar="IP",
-                help="look into suspicious IP(s): Tor/VPN/hosting signs, network owner, Shodan (asks public sources, never the IP)")
+                        help="look into suspicious IP(s): Tor/VPN/hosting signs, network owner, Shodan (asks public sources, never the IP)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
     return parser
 
@@ -184,6 +184,7 @@ def add_import(results: dict, sf: dict, path: str) -> None:
     if sf["skipped"]:
         info(f"Skipped {sum(sf['skipped'].values())} rows of noise/raw data "
              f"(mostly {', '.join(t for t, _ in sf['skipped'].most_common(2))})")
+
 
 # Sources that keep every certificate ever logged (expired ones too)
 FULL_HISTORY_SOURCES = ("crt.sh", "crt.sh database")
@@ -446,7 +447,7 @@ def run_fingerprint(results: dict, enrichment: dict, active_scope) -> None:
         warn(f"{len(plain)} host(s) only answered over plain HTTP (HTTPS failed): {', '.join(plain)}")
     if fp["errors"]:
         info(f"{len(fp['errors'])} host(s) didn't answer (timeouts, TLS errors, refused).")
-    
+
     # Security headers: count how many real pages are missing each one
     counts = {}
     for r in fp["hosts"].values():
@@ -653,6 +654,7 @@ def show_paths(results: dict) -> None:
     leads = built.get("leads", [])
     if not built["paths"] and not leads:
         good("No attack path found: none of the findings chain into a way in.")
+        show_set_aside(built)
         return
     if not built["paths"]:
         good(f"No attack path found, {len(leads)} lead{'' if len(leads) == 1 else 's'} to investigate.")
@@ -660,7 +662,8 @@ def show_paths(results: dict) -> None:
     colors = {"High": ui.RED, "Medium": ui.YELLOW, "Low": ui.GREY}
     for p in built["paths"]:
         badge = ui.paint(p["severity"].upper(), ui.BOLD, colors[p["severity"]])
-        print(f"    {p['id']}  {badge}  {ui.safe(p['title'])}  (weakest step: {p['strength']})")
+        print(f"    {p['id']}  {badge}  {ui.safe(p['title'])}  "
+              f"(weakest step: {p['strength']} · {gate.describe(p.get('gate'))})")
         for n, s in enumerate(p["steps"], 1):
             print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
         print(f"        => {ui.safe(p['outcome'])}")
@@ -679,13 +682,28 @@ def show_paths(results: dict) -> None:
     for i, p in enumerate(leads):
         if i:
             print()  # between leads, not after the last one (the caller adds its own gap)
-        print(f"    {p['id']}  {ui.paint('LEAD', ui.BOLD, ui.GREY)}  {ui.safe(p['title'])}")
+        print(f"    {p['id']}  {ui.paint('LEAD', ui.BOLD, ui.GREY)}  {ui.safe(p['title'])}  "
+              f"({gate.describe(p.get('gate'))})")
         for n, s in enumerate(p["steps"], 1):
             print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
         print(f"        Missing: {ui.safe(p['missing'])}")
     if built.get("more_leads"):
         print()
         info(f"{built['more_leads']} more lead(s) not shown.")
+    show_set_aside(built)
+
+
+def show_set_aside(built: dict) -> None:
+    """What the validation gate set aside: out of scope, or not the target's own."""
+    items = built.get("set_aside", [])
+    if not items:
+        return
+    print()
+    info("Set aside (out of scope or not the target's own: neither attack paths nor leads):")
+    for p in items:
+        print(f"    - {ui.safe(p['title'])}: {ui.safe(p['why'])}")
+    if built.get("more_set_aside"):
+        info(f"{built['more_set_aside']} more set aside, not shown.")
 
 
 def show_next_checks(results: dict, cves_saved: bool = False) -> None:
@@ -783,9 +801,9 @@ def show_investigation(r: dict) -> None:
         print("    Shodan    nothing on record")
 
     print()
-    for l in r["labels"]:
-        text = f"{ui.paint(l['label'].upper(), ui.BOLD, ui.RED)}  {ui.safe(l['reason'])}  [{l['source']}]"
-        if l["label"] in threatintel.ANONYMIZERS or l["label"] == "known_bad":
+    for lb in r["labels"]:
+        text = f"{ui.paint(lb['label'].upper(), ui.BOLD, ui.RED)}  {ui.safe(lb['reason'])}  [{lb['source']}]"
+        if lb["label"] in threatintel.ANONYMIZERS or lb["label"] == "known_bad":
             warn(text)
         else:
             info(text)
@@ -884,11 +902,11 @@ def main() -> int:
         if args.export:
             parser.error("--export works on domain scans, not --investigate-ip")
         return run_investigate(args.investigate_ip, args.json, args.ai)
-    
+
     # --scope: checked before anything is scanned, so a bad file costs nothing
     if args.scope and not (args.fingerprint or args.exposed_files):
-        warn("--scope only limits ACTIVE checks (--fingerprint, --exposed-files); "
-             "none were asked for, so it changes nothing.")
+        info("--scope without --fingerprint or --exposed-files: no active request is sent, "
+             "so it only sets aside attack paths through hosts it doesn't allow.")
     active_scope = load_cli_scope(args.scope)
     if active_scope is None:
         return 1
@@ -974,7 +992,9 @@ def main() -> int:
 
     # 4. Evidence, AI report, JSON
     results["evidence"] = evidence.build_evidence(results)
-    results["paths"] = paths.build_paths(results, results["evidence"])
+    # The validation gate sets aside paths through hosts the --scope file doesn't allow
+    gate_scope = None if active_scope is scope.UNSCOPED_CLI else active_scope
+    results["paths"] = paths.build_paths(results, results["evidence"], gate_scope)
     show_paths(results)
     show_next_checks(results, cves_saved=bool(args.cves))
     if args.ai:

@@ -174,6 +174,15 @@ like a path's, then one line "Missing: <missing>". Never call a lead an \
 attack path, never raise it above Medium, never count it among the paths, \
 and never put it in "Fix this first". If "more_leads" is above 0, say how \
 many leads were left out.
+- Every path and lead has a "gate": the validation gate's checklist, run by \
+code. Under each path's and lead's title, write one line "Gate: <passed>/<of> \
+checks passed", and for a lead name each failed check from "failed" with its \
+"why". State the gate result exactly as given: never argue with it, never \
+say a lead "should" be a path, and never re-run a check yourself.
+- "set_aside" holds items the gate set aside (out of scope, or on \
+infrastructure that isn't the target's own, like a shared CDN edge). If it \
+isn't empty, after the leads add "**Set aside**" and one line per item: \
+"<title>: <why>". Never treat a set-aside item as a path, a lead or a finding.
 - If "fix_first" is set, start section 5 with it as "**Fix this first**", \
 with its owners, citing its evidence IDs, and say which paths it closes. \
 When it lists more than one action, head it "**Fix these N first**", list \
@@ -256,8 +265,8 @@ def summarize(results: dict) -> tuple[str, str]:
             {
                 "host": h,
                 "ips": enr["hosts"][h]["ips"],
-                "provider": enr["hosts"][h]["provider"]
-                            or DNS_LABELS.get(enr["hosts"][h].get("dns"), "no IPv4 address"),
+                "provider": (enr["hosts"][h]["provider"]
+                             or DNS_LABELS.get(enr["hosts"][h].get("dns"), "no IPv4 address")),
                 "all_providers": enr["hosts"][h].get("providers", []),
                 "asn": enr["hosts"][h].get("asn"),
                 "country": enr["hosts"][h].get("country"),
@@ -411,7 +420,7 @@ def ip_payload(results: dict) -> dict:
             "registered_network_location": net.get("country"),
             "reverse_dns": r["rdns"],
             "shodan": {"ports": s["ports"], "tags": s["tags"], "cve_count": len(s["vulns"])} if s else None,
-            "labels": [l["label"] for l in r["labels"]],
+            "labels": [lb["label"] for lb in r["labels"]],
             "failed_sources": sorted(r["errors"]),
         }
     return {
