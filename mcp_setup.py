@@ -38,6 +38,9 @@ import subprocess
 import sys
 from datetime import datetime
 
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
+
 import scope
 import ui
 
@@ -50,7 +53,7 @@ ACTIVE_LOG = os.path.join(HERE, "scans", "active.log")  # where mcp_server.py lo
 ACTIVE_WARNING = (
     "ACTIVE tools send requests to the target's own servers (fingerprint_hosts: one\n"
     "homepage request per host; check_exposed_files: a few GETs per host). Any agent\n"
-    "connected to Monomi in the Claude app could then call them, but only on hosts in\n"
+    "connected to Monomi in this MCP client could then call them, but only on hosts in\n"
     "the scope file you approve (python monomi.py mcp setup --scope FILE); without one\n"
     "they refuse everything. Every request and refusal is written to scans/active.log,\n"
     "and `python monomi.py doctor` shows the setting and the scope.")
@@ -319,7 +322,82 @@ class Claude(Client):
         return server_entry()
 
 
-CLIENTS = {c.key: c for c in (Claude(),)}
+def direct_entry():
+    """How a client that runs where Monomi runs starts the server: this
+    Python, no wsl.exe (unlike the Claude app on Windows reaching into WSL)."""
+    return {"command": sys.executable, "args": [SERVER]}
+
+
+def read_text(path):
+    """A config file's text ("" if it's missing). utf-8-sig also reads files
+    that Windows editors saved with a BOM."""
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8-sig") as f:
+        return f.read()
+
+
+class Codex(Client):
+    """OpenAI's Codex CLI: TOML, one [mcp_servers.monomi] table with command
+    and args, in $CODEX_HOME/config.toml or ~/.codex/config.toml. The key is
+    mcp_servers with an underscore: Codex silently ignores mcpServers.
+    tomlkit keeps the file's comments and layout, and any other keys in
+    Monomi's own table (say a tool_timeout_sec you added) stay as they are."""
+    key = "codex"
+    label = "Codex"
+    restart = ("start a new Codex session (`codex`) and type /mcp to check that "
+               "monomi is listed")
+
+    def paths(self):
+        home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+        path = os.path.join(home, "config.toml")
+        return ([path] if os.path.exists(path) else []), path
+
+    def load(self, path):
+        try:
+            doc = tomlkit.parse(read_text(path))
+        except TOMLKitError as e:
+            raise SetupError(f"{path} isn't valid TOML ({e}); fix it or move it away, "
+                             "then run setup again. Nothing was changed.")
+        servers = doc.get("mcp_servers", {})
+        if not isinstance(servers, dict) or not isinstance(servers.get(NAME, {}), dict):
+            raise SetupError(f"{path} doesn't look like a Codex config (expected "
+                             "[mcp_servers.<name>] tables). Nothing was changed.")
+        return doc
+
+    def entry(self, doc):
+        table = doc.get("mcp_servers", {}).get(NAME)
+        if table is None:
+            return None
+        return {"command": str(table.get("command", "")),
+                "args": [str(a) for a in table.get("args", [])]}
+
+    def with_entry(self, doc, entry):
+        new = tomlkit.parse(tomlkit.dumps(doc))  # a copy: the loaded one stays as read
+        if "mcp_servers" not in new:
+            # A "super table" writes only [mcp_servers.monomi], no empty [mcp_servers]
+            new["mcp_servers"] = tomlkit.table(is_super_table=True)
+        servers = new["mcp_servers"]
+        if NAME not in servers:
+            servers[NAME] = tomlkit.table()
+        servers[NAME]["command"] = entry["command"]
+        servers[NAME]["args"] = list(entry["args"])
+        return new
+
+    def dump(self, doc):
+        return tomlkit.dumps(doc).lstrip("\n")
+
+    def show(self, entry):
+        return self.printable(entry)
+
+    def printable(self, entry):
+        return self.dump(self.with_entry(tomlkit.document(), entry)).rstrip("\n")
+
+    def base(self):
+        return direct_entry()
+
+
+CLIENTS = {c.key: c for c in (Claude(), Codex())}
 
 
 # ---------- The command ----------

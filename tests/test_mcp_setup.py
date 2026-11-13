@@ -634,3 +634,100 @@ def test_client_flag_picks_the_adapter(monkeypatch, tmp_path, capsys):
     monkeypatch.setitem(mcp_setup.CLIENTS, "listy", ListClient(f))
     assert mcp_setup.main(["setup", "--client", "listy", "--print"]) == 0
     assert json.loads(capsys.readouterr().out) == {"tools": {NAME: ["py", "server"]}}
+
+
+# ---------- Codex CLI (v1.13): TOML, [mcp_servers.monomi] ----------
+
+CODEX = mcp_setup.CLIENTS["codex"]
+CODEX_FILE = """# my Codex settings
+model = "gpt-5"   # keep this comment
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+"""
+
+
+def codex_home(monkeypatch, tmp_path, text=None):
+    """Point CODEX_HOME at a temp folder; write config.toml if text is given."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_setup, "direct_entry", lambda: {"command": "py", "args": ["server"]})
+    f = tmp_path / "config.toml"
+    if text is not None:
+        f.write_text(text, encoding="utf-8")
+    return f
+
+
+def codex_monomi(f):
+    import tomlkit
+    return tomlkit.parse(f.read_text(encoding="utf-8"))["mcp_servers"][NAME]
+
+
+def test_codex_config_follows_codex_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "elsewhere"))
+    assert CODEX.paths() == ([], str(tmp_path / "elsewhere" / "config.toml"))
+    monkeypatch.delenv("CODEX_HOME")
+    assert CODEX.paths()[1] == os.path.join(os.path.expanduser("~/.codex"), "config.toml")
+
+
+def test_codex_setup_keeps_comments_and_other_servers(monkeypatch, tmp_path, capsys):
+    f = codex_home(monkeypatch, tmp_path, CODEX_FILE)
+    monkeypatch.setattr("builtins.input", lambda question: "y")
+    assert mcp_setup.main(["setup", "--client", "codex"]) == 0
+    text = f.read_text(encoding="utf-8")
+    assert text.startswith(CODEX_FILE)  # every byte before Monomi's table is untouched
+    assert "[mcp_servers.monomi]" in text and "mcpServers" not in text
+    assert dict(codex_monomi(f)) == {"command": "py", "args": ["server"]}
+    assert len(list(tmp_path.glob("config.toml.bak-*"))) == 1
+    assert "start a new Codex session" in capsys.readouterr().out
+
+    assert mcp_setup.main(["setup", "--client", "codex"]) == 0  # nothing left to change
+    assert "already set up in Codex" in capsys.readouterr().out
+
+
+def test_codex_new_file_has_only_monomis_table(monkeypatch, tmp_path):
+    f = codex_home(monkeypatch, tmp_path)
+    assert mcp_setup.setup(yes=True, client=CODEX) == 0
+    assert f.read_text(encoding="utf-8").splitlines()[0] == "[mcp_servers.monomi]"
+
+
+def test_codex_keeps_your_own_keys_in_monomis_table(monkeypatch, tmp_path):
+    f = codex_home(monkeypatch, tmp_path, '[mcp_servers.monomi]\ncommand = "old"\n'
+                                          'args = []\ntool_timeout_sec = 120\n')
+    assert mcp_setup.setup(yes=True, client=CODEX) == 0
+    table = codex_monomi(f)
+    assert table["command"] == "py" and table["tool_timeout_sec"] == 120
+
+
+def test_codex_active_needs_typed_yes_and_writes_the_flag(monkeypatch, tmp_path):
+    f = codex_home(monkeypatch, tmp_path, CODEX_FILE)
+    monkeypatch.setattr("builtins.input", lambda question: "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, active=True, client=CODEX) == 0
+    assert f.read_text(encoding="utf-8") == CODEX_FILE  # refused: nothing written
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(active=True, client=CODEX) == 0
+    assert list(codex_monomi(f)["args"]) == ["server", "--allow-active"]
+
+
+@pytest.mark.parametrize("text", ['model = "unclosed', "mcp_servers = 5\n"])
+def test_codex_broken_or_strange_config_is_never_overwritten(monkeypatch, tmp_path, text):
+    f = codex_home(monkeypatch, tmp_path, text)
+    with pytest.raises(SetupError, match="Nothing was changed"):
+        mcp_setup.setup(yes=True, client=CODEX)
+    assert f.read_text(encoding="utf-8") == text and not list(tmp_path.glob("*.bak-*"))
+
+
+def test_codex_print_and_windows_paths(monkeypatch, capsys):
+    win = {"command": "C:\\Users\\me\\monomi\\venv\\Scripts\\python.exe",
+           "args": ["C:\\Users\\me\\monomi\\mcp_server.py"]}
+    monkeypatch.setattr(mcp_setup, "direct_entry", lambda: win)
+    assert mcp_setup.main(["setup", "--client", "codex", "--print"]) == 0
+    import tomlkit
+    printed = tomlkit.parse(capsys.readouterr().out)
+    assert dict(printed["mcp_servers"][NAME]) == win  # backslashes survive the round trip
+
+
+def test_codex_starts_the_server_directly_even_in_wsl(monkeypatch):
+    monkeypatch.setattr(mcp_setup, "in_wsl", lambda: True)
+    assert CODEX.base()["command"] != "wsl.exe"
