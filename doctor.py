@@ -34,7 +34,7 @@ import mcp_setup
 import scope
 import threatintel
 import ui
-from collectors import certspotter, crtsh, crtsh_db, pacing, saved
+from collectors import certspotter, crtsh, crtsh_db, otx, pacing, saved
 from common import USER_AGENT
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -440,14 +440,53 @@ def check_certspotter():
                   "free queries used this hour")
 
 
+def check_otx():
+    """AlienVault OTX: reachable, and whether a key is set (keyless works, with lower limits)."""
+    keyed = otx.api_key() is not None
+    key_note = f"key set in {otx.KEY_VAR}" if keyed else "no key (works, with lower limits)"
+    pacer = pacing.OTX
+    state = pacer.status()
+    if state["cooldown_until"]:
+        until = at_time(state["cooldown_until"])
+        return result(SRC, "otx", WARN,
+                      f"AlienVault OTX cooling down until {until} after a rate limit "
+                      f"(scans skip it until then) · {key_note}",
+                      "wait" if keyed else f"wait, or set a free key in {otx.KEY_VAR}")
+    try:
+        pacer.acquire(max_wait=0)
+    except pacing.Paced as e:
+        return result(SRC, "otx", WARN, f"AlienVault OTX not checked: {e}")
+    try:
+        resp = requests.get(otx.API_URL.format(domain=EXAMPLE), headers=otx.headers(),
+                            timeout=TIMEOUT * 2)  # OTX is slower than the other sources
+    except requests.RequestException as e:
+        return result(SRC, "otx", WARN, f"AlienVault OTX: {net_error(e)}",
+                      "check your internet connection")
+    if resp.status_code == 429:
+        pacer.cool_down(otx.cooldown_seconds(resp))
+        return result(SRC, "otx", WARN, f"AlienVault OTX: rate limited · {key_note}",
+                      "wait" if keyed else f"wait, or set a free key in {otx.KEY_VAR}")
+    if resp.status_code in (401, 403):
+        if keyed:
+            return result(SRC, "otx", WARN, f"AlienVault OTX refused the key in {otx.KEY_VAR}",
+                          "copy the key again from otx.alienvault.com (Settings, API Integration)")
+        return result(SRC, "otx", WARN, "AlienVault OTX wants an API key",
+                      f"set a free key in {otx.KEY_VAR} (otx.alienvault.com)")
+    if resp.status_code != 200:
+        return result(SRC, "otx", WARN, f"AlienVault OTX: HTTP {resp.status_code}",
+                      "try again in a few minutes")
+    return result(SRC, "otx", OK, f"AlienVault OTX reachable · {key_note}")
+
+
 def check_ct_sources():
-    """The three certificate sources, at the same time. Scans need at least one."""
-    checks = [check_crtsh_website, check_crtsh_database, check_certspotter]
+    """The subdomain sources (three certificate logs and OTX), at the same time.
+    Scans need at least one."""
+    checks = [check_crtsh_website, check_crtsh_database, check_certspotter, check_otx]
     with ThreadPoolExecutor(max_workers=len(checks)) as pool:
         out = list(pool.map(lambda check: check(), checks))
     if not any(r["status"] == OK for r in out):
         out.append(result(SRC, "certificates", FAIL,
-                          "no certificate source answered, so scans can't find "
+                          "no subdomain source answered, so scans can't find "
                           "hostnames right now",
                           "try again in a few minutes (--hosts FILE still works)"))
     return out

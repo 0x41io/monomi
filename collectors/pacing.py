@@ -1,5 +1,5 @@
 """
-Shared request pacing for the free Certificate Transparency sources.
+Shared request pacing for the free subdomain sources (CT logs and OTX).
 
 crt.sh (website) and Cert Spotter's free tier both get unhappy when we ask
 too often, and a multi-domain sweep is many separate scans: MCP calls in one
@@ -147,3 +147,6 @@ CRTSH = Pacer("crtsh", "crt.sh", limit=5, window=60)
 # Cert Spotter's free tier allows 100 queries an hour; keep some headroom.
 # Every page we fetch is one query.
 CERTSPOTTER = Pacer("certspotter", "Cert Spotter", limit=90, window=3600)
+# AlienVault OTX doesn't publish its keyless limit; one request per domain,
+# so 60 an hour covers a big sweep, and a 429 starts a cooldown on top.
+OTX = Pacer("otx", "AlienVault OTX", limit=60, window=3600)

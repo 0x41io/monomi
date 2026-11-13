@@ -430,9 +430,9 @@ def test_no_certificate_source_is_a_fail(monkeypatch):
     def down():
         return doctor.result("Sources", "x", WARN, "down")
 
-    for name in ("check_crtsh_website", "check_crtsh_database", "check_certspotter"):
+    for name in ("check_crtsh_website", "check_crtsh_database", "check_certspotter", "check_otx"):
         monkeypatch.setattr(doctor, name, down)
-    assert statuses(doctor.check_ct_sources()) == [WARN, WARN, WARN, FAIL]
+    assert statuses(doctor.check_ct_sources()) == [WARN, WARN, WARN, WARN, FAIL]
 
 
 def test_one_certificate_source_is_enough(monkeypatch):
@@ -442,6 +442,19 @@ def test_one_certificate_source_is_enough(monkeypatch):
                         lambda: doctor.result("Sources", "x", WARN, "down"))
     monkeypatch.setattr(doctor, "check_certspotter",
                         lambda: doctor.result("Sources", "x", OK, "fine"))
+    monkeypatch.setattr(doctor, "check_otx",
+                        lambda: doctor.result("Sources", "x", WARN, "down"))
+    assert FAIL not in statuses(doctor.check_ct_sources())
+
+
+def test_otx_alone_is_enough(monkeypatch):
+    """OTX finds hostnames too, so scans can still run when every CT log is down."""
+    def down():
+        return doctor.result("Sources", "x", WARN, "down")
+
+    for name in ("check_crtsh_website", "check_crtsh_database", "check_certspotter"):
+        monkeypatch.setattr(doctor, name, down)
+    monkeypatch.setattr(doctor, "check_otx", lambda: doctor.result("Sources", "x", OK, "fine"))
     assert FAIL not in statuses(doctor.check_ct_sources())
 
 

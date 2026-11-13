@@ -303,7 +303,9 @@ def ping(name: str = "world") -> str:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str] | None = None) -> dict:
     """Find a domain's subdomains from public Certificate Transparency logs
-    (crt.sh and Cert Spotter). Passive: never contacts the target itself.
+    (crt.sh and Cert Spotter) and AlienVault OTX passive DNS (hostnames seen
+    answering in DNS, including ones with no certificate). Passive: never
+    contacts the target itself.
     Also returns wildcard cert names (*.example.com): a wildcard means there
     are likely more subdomains that CT logs can't list.
     Usually under a minute. If crt.sh is too slow, results come from
@@ -341,7 +343,8 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
         "sources": {
             name: {
                 "found": r["subdomain_count"],
-                "certificates_seen": r.get("certificates_seen"),
+                "certificates_seen": r.get("certificates_seen"),  # CT logs
+                "records_seen": r.get("records_seen"),            # OTX passive DNS
                 "collected_at": r["collected_at"],
                 "from_saved": r.get("from_saved", False),
             }

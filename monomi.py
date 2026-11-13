@@ -16,7 +16,7 @@ import sys
 from datetime import datetime
 
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for
-from collectors import certspotter, crtsh, crtsh_db, saved
+from collectors import certspotter, crtsh, crtsh_db, otx, saved
 from common import is_hostname, now_utc
 from importers import spiderfoot
 import doctor
@@ -192,19 +192,37 @@ FULL_HISTORY_SOURCES = ("crt.sh", "crt.sh database")
 CRTSH_BEHIND = "no certificates for this domain yet"
 
 # Job name in collect_ct() -> the "source" name its result is stored under
-SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert Spotter": "certspotter"}
+SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert Spotter": "certspotter",
+                "AlienVault OTX": "otx"}
 DISPLAY_NAMES = {key: name for name, key in SOURCE_NAMES.items()}  # "certspotter" -> "Cert Spotter"
+# Sources history doesn't track yet (per-source history comes next), by job name and source key
+NOT_IN_HISTORY = {"AlienVault OTX": "otx"}
+
+
+def seen(r: dict) -> int:
+    """How many raw records a source looked at: certificates for CT logs,
+    passive DNS records for OTX."""
+    return r.get("certificates_seen", r.get("records_seen", 0))
+
+
+def seen_line(name: str, r: dict) -> str:
+    """"Cert Spotter: 130 certificates -> 29 hostnames", or records for OTX."""
+    what = "certificates" if "certificates_seen" in r else "passive DNS records"
+    return f"{name}: {seen(r)} {what} -> {r['subdomain_count']} hostnames"
 
 
 def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_BUDGET,
                crtsh_light: bool = False, total_budget: float | None = None) -> None:
-    """Query all Certificate Transparency sources at the same time and merge whatever succeeds."""
+    """Query every subdomain source at the same time and merge whatever succeeds:
+    the Certificate Transparency logs and AlienVault OTX's passive DNS."""
     jobs = {
         "crt.sh": lambda: crtsh.collect(domain, budget=crtsh_budget, light=crtsh_light),
         "crt.sh database": lambda: crtsh_db.collect(domain, budget=min(crtsh_budget, crtsh_db.DEFAULT_BUDGET)),
         "Cert Spotter": lambda: certspotter.collect(domain),
+        "AlienVault OTX": lambda: otx.collect(domain),
     }
-    info("Querying certificate transparency logs (crt.sh, crt.sh database, Cert Spotter, in parallel)...")
+    info("Querying certificate transparency logs and passive DNS "
+         "(crt.sh, crt.sh database, Cert Spotter, AlienVault OTX, in parallel)...")
     pool = ThreadPoolExecutor(max_workers=len(jobs))
     futures = {name: pool.submit(job) for name, job in jobs.items()}
     # Wait for every source, but never longer than total_budget (None = no limit)
@@ -220,7 +238,7 @@ def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_B
         try:
             r = future.result()
             results["sources"][r["source"]] = r
-            good(f"{name}: {r['certificates_seen']} certificates -> {r['subdomain_count']} hostnames")
+            good(seen_line(name, r))
         except RuntimeError as e:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
@@ -238,7 +256,7 @@ def use_saved_copies(results: dict, domain: str) -> None:
     """
     for name, source in SOURCE_NAMES.items():
         r = results["sources"].get(source)
-        if r and r["certificates_seen"] > 0:  # an empty result is no use as a fallback
+        if r and seen(r) > 0:  # an empty result is no use as a fallback
             try:
                 saved.save(domain, r)
             except (OSError, ValueError) as e:
@@ -284,7 +302,9 @@ def flag_silent_crtsh_failure(results: dict) -> None:
         r = results["sources"].get(name)
         if not r or r["certificates_seen"] > 0:
             continue  # didn't run, failed loudly, or found something: nothing to flag
-        others = {other: o["certificates_seen"] for other, o in results["sources"].items() if other != name}
+        # Only other CT logs: passive DNS (OTX) says nothing about what crt.sh should have
+        others = {other: o["certificates_seen"] for other, o in results["sources"].items()
+                  if other != name and "certificates_seen" in o}
         best = max(others, key=others.get, default=None)
         if best is None or others[best] == 0:
             continue  # nobody found anything: a genuine empty result
@@ -584,7 +604,7 @@ def baseline_gaps(results: dict) -> list[str]:
     crtsh_ok = any(name in results["sources"] and not results["sources"][name].get("from_saved")
                    for name in FULL_HISTORY_SOURCES)
     return [name for name in results["errors"]
-            if not (name in FULL_HISTORY_SOURCES and crtsh_ok)]
+            if not (name in FULL_HISTORY_SOURCES and crtsh_ok) and name not in NOT_IN_HISTORY]
 
 
 def gap_reason(results: dict, gaps: list[str]) -> str:
@@ -608,7 +628,8 @@ def show_changes(results: dict) -> None:
     """
     domain = results["target"]
     # History tracks what certificate logs show; a hosts file would add fake [NEW] hosts
-    all_subs = sorted({s for name, r in results["sources"].items() if name != HOSTS_FILE
+    all_subs = sorted({s for name, r in results["sources"].items()
+                       if name != HOSTS_FILE and name not in NOT_IN_HISTORY.values()
                        for s in r["subdomains"]})
     previous = history.load_last(domain)
 
