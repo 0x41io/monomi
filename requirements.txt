@@ -1,7 +1,7 @@
 requests>=2.34.2
 anthropic>=0.40
 rich>=15.0.0
-dnspython>=2.9.1
+dnspython>=2.9.2
 mcp>=2.3.0
 psycopg[binary]>=3.2
 tomlkit>=0.13
