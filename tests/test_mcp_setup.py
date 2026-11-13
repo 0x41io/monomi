@@ -731,3 +731,97 @@ def test_codex_print_and_windows_paths(monkeypatch, capsys):
 def test_codex_starts_the_server_directly_even_in_wsl(monkeypatch):
     monkeypatch.setattr(mcp_setup, "in_wsl", lambda: True)
     assert CODEX.base()["command"] != "wsl.exe"
+
+
+# ---------- OpenCode (v1.13): JSON / JSONC, V1 and V2 shapes ----------
+
+OPENCODE = mcp_setup.CLIENTS["opencode"]
+OC_ENTRY = {"type": "local", "command": ["py", "server"]}
+
+
+def opencode_home(monkeypatch, tmp_path, data=None, name="opencode.json"):
+    """A fake home with ~/.config/opencode; writes the config if data is given."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # what ~ means on Windows
+    monkeypatch.setattr(mcp_setup, "direct_entry", lambda: {"command": "py", "args": ["server"]})
+    f = tmp_path / ".config" / "opencode" / name
+    if data is not None:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+    return f
+
+
+def test_opencode_v1_file_gets_the_v1_shape(monkeypatch, tmp_path, capsys):
+    f = opencode_home(monkeypatch, tmp_path, {"$schema": "https://opencode.ai/config.json",
+                                              "theme": "dark",
+                                              "mcp": {"other": {"type": "local", "command": ["node"]}}})
+    monkeypatch.setattr("builtins.input", lambda question: "y")
+    assert mcp_setup.main(["setup", "--client", "opencode"]) == 0
+    data = json.loads(f.read_text())
+    assert data["mcp"] == {"other": {"type": "local", "command": ["node"]}, NAME: OC_ENTRY}
+    assert data["theme"] == "dark" and data["$schema"].endswith("config.json")
+    assert len(list(f.parent.glob("opencode.json.bak-*"))) == 1
+    assert "quit OpenCode and start it again" in capsys.readouterr().out
+
+    assert mcp_setup.main(["setup", "--client", "opencode"]) == 0  # nothing left to change
+    assert "already set up in OpenCode" in capsys.readouterr().out
+
+
+def test_opencode_v2_file_gets_the_v2_shape(monkeypatch, tmp_path):
+    f = opencode_home(monkeypatch, tmp_path, {"mcp": {"timeout": {"startup": 45000},
+                                                      "servers": {"other": {"type": "local"}}}})
+    assert mcp_setup.setup(yes=True, client=OPENCODE) == 0
+    mcp = json.loads(f.read_text())["mcp"]
+    assert mcp["servers"][NAME] == OC_ENTRY and NAME not in mcp  # never two shapes in one file
+    assert mcp["timeout"] == {"startup": 45000}
+
+
+def test_opencode_new_file_and_print_use_the_v1_shape(monkeypatch, tmp_path, capsys):
+    f = opencode_home(monkeypatch, tmp_path)
+    assert mcp_setup.setup(yes=True, client=OPENCODE) == 0
+    assert json.loads(f.read_text()) == {"mcp": {NAME: OC_ENTRY}}
+    capsys.readouterr()  # drop setup's own messages, keep only what --print shows
+    assert mcp_setup.main(["setup", "--client", "opencode", "--print"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"mcp": {NAME: OC_ENTRY}}
+
+
+def test_opencode_keeps_your_own_keys_in_monomis_object(monkeypatch, tmp_path):
+    f = opencode_home(monkeypatch, tmp_path, {"mcp": {NAME: {
+        "type": "local", "command": ["old"], "environment": {"X": "1"}, "timeout": 20000}}})
+    assert mcp_setup.setup(yes=True, client=OPENCODE) == 0
+    assert json.loads(f.read_text())["mcp"][NAME] == {**OC_ENTRY, "environment": {"X": "1"}, "timeout": 20000}
+
+
+def test_opencode_file_with_comments_is_never_rewritten(monkeypatch, tmp_path):
+    text = '{\n  // my servers\n  "mcp": {"other": {"type": "local", "command": ["node"]},},\n}\n'
+    f = opencode_home(monkeypatch, tmp_path, text, name="opencode.jsonc")
+    with pytest.raises(SetupError, match="comments or trailing commas") as e:
+        mcp_setup.setup(yes=True, client=OPENCODE)
+    assert "--client opencode --print" in str(e.value)  # says how to get the entry instead
+    assert f.read_text() == text and not list(f.parent.glob("*.bak-*"))
+
+
+def test_opencode_jsonc_without_comments_is_edited(monkeypatch, tmp_path):
+    f = opencode_home(monkeypatch, tmp_path, {"mcp": {}}, name="opencode.jsonc")
+    assert OPENCODE.paths() == ([str(f)], str(f.parent / "opencode.json"))
+    assert mcp_setup.setup(yes=True, client=OPENCODE) == 0
+    assert json.loads(f.read_text())["mcp"][NAME] == OC_ENTRY
+
+
+def test_opencode_active_needs_typed_yes(monkeypatch, tmp_path):
+    f = opencode_home(monkeypatch, tmp_path, {"mcp": {NAME: OC_ENTRY}})
+    before = f.read_text()
+    monkeypatch.setattr("builtins.input", lambda question: "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, active=True, client=OPENCODE) == 0
+    assert f.read_text() == before
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    assert mcp_setup.setup(active=True, client=OPENCODE) == 0
+    assert json.loads(f.read_text())["mcp"][NAME]["command"] == ["py", "server", "--allow-active"]
+
+
+def test_opencode_strange_config_is_never_overwritten(monkeypatch, tmp_path):
+    f = opencode_home(monkeypatch, tmp_path, {"mcp": ["not", "an", "object"]})
+    with pytest.raises(SetupError, match="doesn't look like an OpenCode config"):
+        mcp_setup.setup(yes=True, client=OPENCODE)
+    assert not list(f.parent.glob("*.bak-*"))

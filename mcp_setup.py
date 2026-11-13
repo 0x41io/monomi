@@ -397,7 +397,85 @@ class Codex(Client):
         return direct_entry()
 
 
-CLIENTS = {c.key: c for c in (Claude(), Codex())}
+class OpenCode(Client):
+    """OpenCode: JSON in ~/.config/opencode/opencode.json (or .jsonc), with
+    Monomi as {"type": "local", "command": [python, mcp_server.py, ...]}.
+
+    Two shapes: V1 puts servers right under "mcp", V2 under "mcp.servers".
+    V2 still reads V1, but V1 can't read V2, so Monomi writes the V1 shape
+    unless the file already uses mcp.servers, and never mixes the two.
+
+    OpenCode allows comments and trailing commas (JSONC). Python's json
+    can't keep comments, so a file with them is never rewritten: setup
+    stops and says how to get the entry to paste in by hand. Other keys in
+    Monomi's own object (environment, timeout...) are kept."""
+    key = "opencode"
+    label = "OpenCode"
+    restart = "quit OpenCode and start it again so it reads the new config"
+
+    def paths(self):
+        # OpenCode's docs give ~/.config/opencode on Linux and macOS; on
+        # Windows they don't say, so the same folder under your profile is
+        # used and doctor names the path it checked
+        home = os.path.expanduser(os.path.join("~", ".config", "opencode"))
+        files = [os.path.join(home, n) for n in ("opencode.json", "opencode.jsonc")]
+        return [f for f in files if os.path.exists(f)], files[0]
+
+    def load(self, path):
+        text = read_text(path)
+        if not text.strip():
+            return {}
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            raise SetupError(
+                f"{path} can't be read as plain JSON: it probably has comments or trailing "
+                "commas (OpenCode allows those). Rewriting it would delete them, so it "
+                "wasn't touched. Get the entry with `python monomi.py mcp setup --client "
+                "opencode --print` and paste it in by hand. Nothing was changed.")
+        mcp = doc.get("mcp", {}) if isinstance(doc, dict) else None
+        holder = mcp.get("servers", mcp) if isinstance(mcp, dict) else None
+        if not isinstance(holder, dict) or not isinstance(holder.get(NAME, {}), dict):
+            raise SetupError(f"{path} doesn't look like an OpenCode config (expected "
+                             '{"mcp": {...}}). Nothing was changed.')
+        return doc
+
+    @staticmethod
+    def _servers(doc):
+        """Where the servers live: mcp.servers (V2) or mcp itself (V1)."""
+        mcp = doc.get("mcp", {})
+        return mcp["servers"] if isinstance(mcp.get("servers"), dict) else mcp
+
+    def entry(self, doc):
+        server = self._servers(doc).get(NAME)
+        command = server.get("command") if server else None
+        if not command:
+            return None
+        command = [command] if isinstance(command, str) else list(command)
+        return {"command": str(command[0]), "args": [str(a) for a in command[1:]]}
+
+    def with_entry(self, doc, entry):
+        new = json.loads(json.dumps(doc))  # a copy: the loaded one stays as read
+        new.setdefault("mcp", {})
+        servers = self._servers(new)
+        servers[NAME] = {**servers.get(NAME, {}), "type": "local",
+                         "command": [entry["command"], *entry["args"]]}
+        return new
+
+    def dump(self, doc):
+        return json.dumps(doc, indent=2) + "\n"
+
+    def show(self, entry):
+        return json.dumps(self.with_entry({}, entry)["mcp"][NAME], indent=2)
+
+    def printable(self, entry):
+        return json.dumps(self.with_entry({}, entry), indent=2)  # the V1 shape: both versions read it
+
+    def base(self):
+        return direct_entry()
+
+
+CLIENTS = {c.key: c for c in (Claude(), Codex(), OpenCode())}
 
 
 # ---------- The command ----------
