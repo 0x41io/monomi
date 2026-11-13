@@ -71,3 +71,58 @@ def test_a_matched_cve_is_the_door_that_makes_a_side_door_a_path():
     side = [p for p in built["paths"] if "side door" in p["title"]]
     assert side and side[0]["title"].startswith("Use ")
     assert not any("side door" in p["title"] for p in built["leads"])
+
+
+# --- check 4, confirmed twice (v1.13 b1) ---
+
+def takeover_results(confirmed_by="missing"):
+    """The lab plus one claimable takeover lead; confirmed_by "missing" leaves
+    the field out, like a scan saved before v1.13."""
+    results = lab_results()
+    lead = {"host": "oldapp", "cname": "gone-app", "service": "Azure App Service",
+            "claimable": True, "collected_at": None}
+    if confirmed_by != "missing":
+        lead["nxdomain_confirmed_by"] = confirmed_by
+    results["takeover"]["leads"] = [lead]
+    return results
+
+
+def titles(built):
+    return [p["title"] for p in built["paths"]], [p["title"] for p in built["leads"]]
+
+
+def test_takeover_confirmed_over_doh_is_an_attack_path():
+    found, leads = titles(run(takeover_results(["Cloudflare", "Google"]))[0])
+    assert "Take over oldapp" in found and "Take over oldapp" not in leads
+
+
+def test_takeover_on_system_dns_alone_is_a_lead():
+    built, _ = run(takeover_results([]))
+    lead = next(p for p in built["leads"] if p["title"] == "Take over oldapp")
+    assert "system DNS alone" in lead["missing"]
+    assert "Take over oldapp" not in titles(built)[0]
+    # A lead is never part of "fix this first"
+    fix_ids = {eid for a in built["fix_first"]["actions"] for eid in a["evidence"]}
+    assert not fix_ids & {eid for a in lead["actions"] for eid in a["evidence"]}
+
+
+def test_takeover_without_a_record_says_it_was_not_recorded():
+    built, _ = run(takeover_results())
+    lead = next(p for p in built["leads"] if p["title"] == "Take over oldapp")
+    assert "wasn't recorded" in lead["missing"]
+
+
+def test_breaking_check_4_lets_an_unconfirmed_takeover_through(monkeypatch):
+    """Break the rule: without check 4, the same unconfirmed lead is an attack path."""
+    monkeypatch.setattr(gate, "CHECKS", [c for c in gate.CHECKS if c[0] != 4])
+    found, _ = titles(run(takeover_results([]))[0])
+    assert "Take over oldapp" in found
+
+
+def test_the_first_failed_check_is_the_missing_line():
+    c = candidate("A", no_door="no door")
+    c["gate_input"]["nxdomain"] = [{"cname": "gone-app", "nxdomain_confirmed_by": []}]
+    failed = gate.failed_checks(c, {})
+    assert [f["check"] for f in failed] == [4, 5]
+    _, leads = gate.review([c], {})
+    assert "system DNS alone" in leads[0]["missing"]

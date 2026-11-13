@@ -137,7 +137,7 @@ def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
     raise failures[-1]
 
 
-def _confirm_nxdomain(name: str, rtype: str) -> None:
+def _confirm_nxdomain(name: str, rtype: str) -> list[str]:
     """Double-check a "no such name" answer over HTTPS before believing it.
 
     A local DNS cache (e.g. WSL's) can replay an old NXDOMAIN for a host
@@ -145,7 +145,12 @@ def _confirm_nxdomain(name: str, rtype: str) -> None:
     lab). So ask every DoH server: if any says the name exists, raise
     ConflictingAnswers instead of reporting it gone. Servers that can't be
     reached are skipped; if none can, keep the system answer.
+
+    Returns the DoH providers that confirmed the NXDOMAIN, e.g.
+    ["Cloudflare", "Google"]. An empty list means none could be reached, so
+    the answer rests on system DNS alone (the validation gate's check 4).
     """
+    confirmed = []
     for provider, url in DOH_SERVERS.items():
         try:
             result, _ = _ask_doh(url, name, rtype)
@@ -156,6 +161,8 @@ def _confirm_nxdomain(name: str, rtype: str) -> None:
                 f"conflicting answers for {name}: system DNS says it doesn't exist, "
                 f"{provider} DNS-over-HTTPS says it does (often a stale DNS cache)"
             )
+        confirmed.append(provider)
+    return confirmed
 
 
 def get_cname(name: str) -> str | None:
@@ -184,26 +191,39 @@ def get_cname(name: str) -> str | None:
     return records[0] if records else None
 
 
-def name_exists(name: str) -> bool:
-    """Does this DNS name exist at all?
+def check_exists(name: str) -> tuple[bool, list[str]]:
+    """Does this DNS name exist at all, and who confirmed it doesn't?
 
-    False only when DNS says NXDOMAIN ("no such name"); that's the
-    dangling signal. Raises DNSLookupError if no DNS server would answer.
+    Returns (exists, confirmed_by). exists is False only when DNS says
+    NXDOMAIN ("no such name"); that's the dangling signal. confirmed_by
+    lists the DNS-over-HTTPS providers that agreed the name doesn't exist
+    (empty when it exists, or when no DoH server could be reached and the
+    answer rests on system DNS alone).
+    Raises DNSLookupError if no DNS server would answer.
     """
     for resolver in _resolvers():
         try:
             resolver.resolve(name, "A", lifetime=5)
-            return True
+            return True, []
         except dns.resolver.NoAnswer:
-            return True   # the name exists, it just has no IPv4 address
+            return True, []   # the name exists, it just has no IPv4 address
         except dns.resolver.NXDOMAIN:
-            _confirm_nxdomain(name, "A")   # raises ConflictingAnswers if DoH disagrees
-            return False
+            # raises ConflictingAnswers if DoH disagrees
+            return False, _confirm_nxdomain(name, "A")
         except dns.exception.DNSException:
             continue
     # no DNS server answered on port 53 (common in WSL): ask over HTTPS instead
     result, _ = doh_lookup(name, "A")
-    return result != "nxdomain"
+    if result != "nxdomain":
+        return True, []
+    # One DoH server said NXDOMAIN: ask every one, like the system DNS case
+    return False, _confirm_nxdomain(name, "A")
+
+
+def name_exists(name: str) -> bool:
+    """Does this DNS name exist at all? (check_exists without who confirmed it.)"""
+    return check_exists(name)[0]
+
 
 def _query(name: str, rtype: str) -> tuple[str, list[str]]:
     """Ask DNS one question, with the same fallbacks as everything else here.

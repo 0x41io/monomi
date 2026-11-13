@@ -3,6 +3,10 @@ import takeover
 from evidence import build_evidence
 from takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_provider, match_service
 
+# Both DNS-over-HTTPS providers confirmed the NXDOMAIN (see dnscheck.check_exists)
+DOH_BOTH = ["Cloudflare", "Google"]
+
+
 def fake_dns(monkeypatch, cnames, dead):
     """Replace the real DNS lookups with made-up answers.
 
@@ -10,7 +14,7 @@ def fake_dns(monkeypatch, cnames, dead):
     dead:   names that don't exist (NXDOMAIN).
     """
     monkeypatch.setattr(takeover, "get_cname", lambda name: cnames.get(name))
-    monkeypatch.setattr(takeover, "name_exists", lambda name: name not in dead)
+    monkeypatch.setattr(takeover, "check_exists", lambda name: (name not in dead, DOH_BOTH if name in dead else []))
 
 
 # --- matching services ---
@@ -88,6 +92,7 @@ def test_lookalike_domain_is_not_same_domain():
     assert in_domain("wolt.com", "wolt.com")
     assert not in_domain("evilwolt.com", "wolt.com")
 
+
 def test_live_load_balancer_is_just_cname_ok(monkeypatch):
     target = "internal-lb-1553539328.sa-east-1.elb.amazonaws.com"
     fake_dns(monkeypatch, cnames={"amr.example.com": target}, dead=set())
@@ -98,6 +103,7 @@ def test_lookalike_load_balancer_domain_does_not_match():
     assert match_not_claimable("evil-elb.amazonaws.com.attacker.net") is None
 # --- checking many hosts ---
 
+
 def test_one_broken_host_does_not_stop_the_scan(monkeypatch):
     def flaky_cname(name):
         if name == "broken.example.com":
@@ -105,7 +111,7 @@ def test_one_broken_host_does_not_stop_the_scan(monkeypatch):
         return {"app.example.com": "gone.azurewebsites.net"}.get(name)
 
     monkeypatch.setattr(takeover, "get_cname", flaky_cname)
-    monkeypatch.setattr(takeover, "name_exists", lambda name: False)
+    monkeypatch.setattr(takeover, "check_exists", lambda name: (False, DOH_BOTH))
 
     report = check_hosts(["app.example.com", "broken.example.com", "www.example.com"])
     assert report["checked"] == 3
@@ -143,6 +149,7 @@ def test_clean_result_still_becomes_evidence():
     facts = [e["fact"] for e in build_evidence(base_results(report))]
     assert any(f.startswith("Takeover check: none of 4 hostnames") for f in facts)
 
+
 def test_get_cname_returns_the_target(monkeypatch):
     class FakeAnswer:
         target = "MyApp.AzureWebsites.net."
@@ -153,6 +160,7 @@ def test_get_cname_returns_the_target(monkeypatch):
 
     monkeypatch.setattr(dnscheck, "_resolvers", lambda: (FakeResolver(),))
     assert takeover.get_cname("app.example.com") == "myapp.azurewebsites.net"
+
 
 def test_nlb_dangling_cname_is_stale(monkeypatch):
     target = "app-nlb-1a2b3c.elb.us-east-1.amazonaws.com"

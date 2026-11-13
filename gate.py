@@ -15,6 +15,23 @@ Deterministic code only: the AI narrates the result, it never decides a check.
 """
 
 
+def confirmed_twice(candidate: dict, results: dict) -> str | None:
+    """Check 4, confirmed twice: every "doesn't exist" (NXDOMAIN) the path
+    rests on was confirmed over DNS-over-HTTPS, not by system DNS alone.
+    A local DNS cache (WSL's, the lab) can replay an old NXDOMAIN for a name
+    that exists now. Returns why it fails, or None when it passes."""
+    for record in candidate["gate_input"].get("nxdomain", []):
+        confirmed_by = record.get("nxdomain_confirmed_by")
+        if confirmed_by is None:
+            return (f"whether {record['cname']} not existing was double-checked over "
+                    "DNS-over-HTTPS wasn't recorded (scan saved before v1.13)")
+        if not confirmed_by:
+            return (f"{record['cname']} not existing (NXDOMAIN) comes from system DNS alone: "
+                    "DNS-over-HTTPS couldn't be reached to double-check it, so a stale DNS "
+                    "cache can't be ruled out")
+    return None
+
+
 def way_in(candidate: dict, results: dict) -> str | None:
     """Check 5, observed way in: the path's door is an observed fact (a risky
     open service, a matched CVE, a claimable dangling CNAME, a DMARC record).
@@ -28,6 +45,7 @@ def way_in(candidate: dict, results: dict) -> str | None:
 # (number, name, check), run in this order. Numbers match the design in
 # issue #15, so a failed check reads the same in every output.
 CHECKS = [
+    (4, "confirmed twice", confirmed_twice),
     (5, "observed way in", way_in),
 ]
 

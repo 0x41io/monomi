@@ -98,9 +98,10 @@ def _action(facts, what=None, owners=None):
             "owners": owners or _owners(facts)}
 
 
-def _path(title, severity, steps, outcome, actions, door=(), no_door=None):
+def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdomain=()):
     """A candidate attack path. door: the facts that show an observed way in
-    (gate check 5); no_door: why it isn't a path when there are none."""
+    (gate check 5); no_door: why it isn't a path when there are none;
+    nxdomain: the takeover records whose "doesn't exist" it rests on (check 4)."""
     return {
         "title": title,
         "severity": severity,
@@ -108,7 +109,7 @@ def _path(title, severity, steps, outcome, actions, door=(), no_door=None):
         "steps": steps,
         "outcome": outcome,
         "actions": actions,
-        "gate_input": {"door": list(door), "no_door": no_door},
+        "gate_input": {"door": list(door), "no_door": no_door, "nxdomain": list(nxdomain)},
     }
 
 
@@ -149,7 +150,9 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     spoof = kinds.get("email_spoofable", []) + kinds.get("email_partial", [])
     candidates = []  # every rule adds here; gate.review() splits paths from leads
 
-    # A. Subdomain takeover: claim the deleted name, then serve pages on it
+    # A. Subdomain takeover: claim the deleted name, then serve pages on it.
+    # The takeover records say whether DoH confirmed the NXDOMAIN (gate check 4).
+    records = {r["host"]: r for r in (results.get("takeover") or {}).get("leads", [])}
     for lead in kinds.get("takeover_lead", []):
         host = lead["host"]
         steps = [
@@ -162,7 +165,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
                                f"linking to {host}", spoof, "Inference"))
         candidates.append(_path(f"Take over {host}", "High", steps,
                                 f"Phishing pages or stolen cookies on a real {target} subdomain",
-                                [_action([lead])], door=[lead]))
+                                [_action([lead])], door=[lead], nxdomain=[records[host]]))
     for lead in kinds.get("dangling_unknown", []):
         host = lead["host"]
         steps = [
@@ -172,7 +175,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         ]
         candidates.append(_path(f"Take over {host} through an expired name", "Medium", steps,
                                 f"Phishing pages on a real {target} subdomain", [_action([lead])],
-                                door=[lead]))
+                                door=[lead], nxdomain=[records[host]]))
 
     # B. Email impersonation
     for v in spoof:
@@ -445,7 +448,9 @@ def check_paths(report: str, built: dict) -> tuple[list[str], list[str]]:
     """Path and lead IDs the report left out, and IDs it made up (each sorted)."""
     ids = {p["id"] for p in built["paths"] + built.get("leads", [])}
     named = set(re.findall(r"\b[PL]\d+\b", report))
-    order = lambda i: (i[0] != "P", int(i[1:]))  # paths first, then leads
+
+    def order(i):  # paths first, then leads
+        return (i[0] != "P", int(i[1:]))
     return sorted(ids - named, key=order), sorted(named - ids, key=order)
 
 

@@ -99,7 +99,8 @@ def test_cdn_ip_is_never_a_side_door():
 def test_takeover_path_chains_into_spoofed_email():
     results = lab_results()
     results["takeover"]["leads"] = [{"host": "oldapp", "cname": "gone-app", "service": "Azure App Service",
-                                     "claimable": True, "collected_at": None}]
+                                     "claimable": True, "nxdomain_confirmed_by": ["Cloudflare"],
+                                     "collected_at": None}]
     out, ev = run(results)
     # Both are High; the email path is surer (no Lead step), so it comes first
     assert [p["title"] for p in out["paths"][:2]] == ["Send email as lab", "Take over oldapp"]
@@ -148,7 +149,8 @@ def test_one_side_door_per_server_names_every_host_and_has_an_owner():
 def test_paths_are_capped():
     results = lab_results()
     results["takeover"]["leads"] = [{"host": f"app{i}", "cname": f"gone{i}", "service": "Azure App Service",
-                                     "claimable": True, "collected_at": None} for i in range(12)]
+                                     "claimable": True, "nxdomain_confirmed_by": ["Cloudflare"],
+                                     "collected_at": None} for i in range(12)]
     out, _ = run(results)
     assert len(out["paths"]) == 10
     assert out["more"] == 3  # 12 takeovers + email = 13 (the side door is a lead)

@@ -16,7 +16,7 @@ import re
 
 
 from common import now_utc
-from dnscheck import ConflictingAnswers, DNSLookupError, NoSuchHost, ServerFailure, get_cname, name_exists
+from dnscheck import ConflictingAnswers, DNSLookupError, NoSuchHost, ServerFailure, check_exists, get_cname
 
 # Services where a deleted resource's name goes NXDOMAIN AND can usually
 # be re-claimed by anyone who signs up. Each entry: (CNAME ending, name).
@@ -103,6 +103,7 @@ def match_service(target: str) -> str | None:
             return service
     return None
 
+
 def in_domain(name: str, domain: str) -> bool:
     """Is this name the domain itself or under it?
 
@@ -110,6 +111,7 @@ def in_domain(name: str, domain: str) -> bool:
     in_domain('evilwolt.com', 'wolt.com')             -> False
     """
     return name == domain or name.endswith("." + domain)
+
 
 def inspect_host(host: str, domain: str | None = None) -> dict:
     """Check one hostname and report what was found, clean or not.
@@ -126,7 +128,9 @@ def inspect_host(host: str, domain: str | None = None) -> dict:
       "stale"     -> CNAME target is NXDOMAIN, but on a service whose names
                      can't be claimed again: old record, not a takeover risk
       "lead"      -> CNAME target is NXDOMAIN (dangling)
-    "lead" / "stale" hold the full record for that status, else None.
+    "lead" / "stale" hold the full record for that status, else None. Each
+    record has "nxdomain_confirmed_by": the DNS-over-HTTPS providers that
+    agreed the CNAME target doesn't exist (empty = system DNS alone).
     """
     try:
         target = get_cname(host)
@@ -134,20 +138,21 @@ def inspect_host(host: str, domain: str | None = None) -> dict:
         return {"status": "no_such_host", "cname": None, "lead": None, "stale": None}
     if target is None:
         return {"status": "no_cname", "cname": None, "lead": None, "stale": None}
-    if name_exists(target):
+    exists, confirmed_by = check_exists(target)
+    if exists:
         return {"status": "cname_ok", "cname": target, "lead": None, "stale": None}
 
     if domain and in_domain(target, domain):
         stale = {"host": host, "cname": target, "service": "same domain",
                  "reason": f"only the owner of {domain} can create names under it",
-                 "collected_at": now_utc()}
+                 "nxdomain_confirmed_by": confirmed_by, "collected_at": now_utc()}
         return {"status": "stale", "cname": target, "lead": None, "stale": stale}
 
     unclaimable = match_not_claimable(target)
     if unclaimable:
         stale = {"host": host, "cname": target, "service": unclaimable,
                  "reason": "names on this service include a random ID and can't be claimed again",
-                 "collected_at": now_utc()}
+                 "nxdomain_confirmed_by": confirmed_by, "collected_at": now_utc()}
         return {"status": "stale", "cname": target, "lead": None, "stale": stale}
     service = match_service(target)
     lead = {
@@ -155,13 +160,16 @@ def inspect_host(host: str, domain: str | None = None) -> dict:
         "cname": target,
         "service": service,              # None = not a known service
         "claimable": service is not None,
+        "nxdomain_confirmed_by": confirmed_by,
         "collected_at": now_utc(),
     }
     return {"status": "lead", "cname": target, "lead": lead, "stale": None}
 
+
 def check_host(host: str) -> dict | None:
     """Check one hostname. Returns a lead if its CNAME dangles, else None."""
     return inspect_host(host)["lead"]
+
 
 def _safe_check(host: str, domain: str | None = None):
     """inspect_host() that never crashes: returns (host, info, error, status).

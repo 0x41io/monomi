@@ -49,6 +49,7 @@ def use_doh_servers(monkeypatch, *answers):
     """Make DoH answer differently per call, in order: Cloudflare, Google, retry.
     Each answer is a (result, records) tuple or an exception to raise."""
     calls = []
+
     def fake(url, name, rtype):
         answer = answers[len(calls)]
         calls.append(url)
@@ -157,6 +158,7 @@ def test_conflict_lands_in_errors(monkeypatch):
     assert report["leads"] == []
 
 # --- host_status(): one answer per host (the shared helper) ---
+
 
 class Rec:
     """A fake DNS record: to_text() for _query(), target for get_cname()."""
@@ -290,3 +292,44 @@ def test_servfail_lands_in_takeover_errors(monkeypatch):
     report = takeover.check_hosts(["broken.lab.test"])
     assert report["results"]["broken.lab.test"]["status"] == "servfail"
     assert report["leads"] == []
+
+
+# --- check_exists(): who confirmed "doesn't exist" (v1.13, gate check 4) ---
+
+def test_check_exists_lists_every_doh_server_that_confirmed(monkeypatch):
+    use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
+    use_doh(monkeypatch, ("nxdomain", []))
+    assert dnscheck.check_exists("gone.cloud.test") == (False, ["Cloudflare", "Google"])
+
+
+def test_check_exists_unconfirmed_when_doh_unreachable(monkeypatch):
+    # The case gate check 4 catches: system DNS alone said NXDOMAIN
+    use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
+    use_doh(monkeypatch, dnscheck.DNSLookupError("blocked"))
+    assert dnscheck.check_exists("gone.cloud.test") == (False, [])
+
+
+def test_check_exists_names_only_the_servers_that_answered(monkeypatch):
+    use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
+    use_doh_servers(monkeypatch, dnscheck.DNSLookupError("blocked"), ("nxdomain", []))
+    assert dnscheck.check_exists("gone.cloud.test") == (False, ["Google"])
+
+
+def test_check_exists_doh_only_asks_every_server(monkeypatch):
+    # No port 53 at all (WSL): the first DoH answer is double-checked too
+    use_resolvers(monkeypatch, dns.exception.Timeout(), dns.exception.Timeout())
+    use_doh(monkeypatch, ("nxdomain", []))
+    assert dnscheck.check_exists("gone.cloud.test") == (False, ["Cloudflare", "Google"])
+
+
+def test_check_exists_live_name_has_no_confirmations(monkeypatch):
+    use_resolvers(monkeypatch, dns.resolver.NoAnswer())
+    assert dnscheck.check_exists("app.cloud.test") == (True, [])
+
+
+def test_takeover_lead_carries_who_confirmed_it(monkeypatch):
+    monkeypatch.setattr(takeover, "get_cname", lambda name: "gone.azurewebsites.net")
+    use_resolvers(monkeypatch, dns.resolver.NXDOMAIN())
+    use_doh_servers(monkeypatch, ("nxdomain", []), dnscheck.DNSLookupError("blocked"))
+    lead = takeover.inspect_host("app.lab.test")["lead"]
+    assert lead["nxdomain_confirmed_by"] == ["Cloudflare"]
