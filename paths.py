@@ -142,8 +142,21 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
 
     scope: the --scope file (a scope.Scope), for gate check 1, or None.
     Returns {"paths", "leads", "set_aside", "fix_first", "more", "more_leads",
-    "more_set_aside"}.
+    "more_set_aside", "out_of_scope_hosts"}.
+
+    Out-of-scope hosts (gate.out_of_scope_hosts) are left out of every rule's
+    supporting evidence: they never count as a production neighbor, as "behind
+    the CDN" or "pointing straight at" a server, or as the source of a version.
+    A candidate about excluded hosts alone is still built, and check 1 sets it aside.
     """
+    out_of_scope = gate.out_of_scope_hosts(results, scope)
+
+    def inside(hosts):
+        """The in-scope ones, or all of them when none are: then the candidate is
+        about excluded hosts alone, and check 1 sets it aside with the reason."""
+        kept = [h for h in hosts if h not in out_of_scope]
+        return kept or list(hosts)
+
     # Each rule ends with the path's actions (see _action). Evidence that
     # only backs a step up, like the email facts in rule A, is in no action.
     kinds = _by_kind(evidence)
@@ -201,7 +214,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     # C. Services that usually shouldn't face the internet
     for r in kinds.get("risky_service", []):
         ip = r["host"]
-        hosts = ", ".join(exp_ips.get(ip, {}).get("hosts", [])[:3]) or ip
+        on_ip = inside(exp_ips.get(ip, {}).get("hosts", []))
+        hosts = ", ".join(on_ip[:3]) or ip
         steps = [
             _step(f"{ip} ({hosts}) has services open to the internet that usually "
                   "shouldn't be", [r], "Observed"),
@@ -210,7 +224,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         ]
         candidates.append(_path(f"Attack the exposed services on {ip}", "High", steps,
                                 "Direct access to the server or its data", [_action([r])], door=[r],
-                                hosts=exp_ips.get(ip, {}).get("hosts", []), ips=[ip]))
+                                hosts=on_ip, ips=[ip]))
 
     # Which IPs each live host is on, for D and E
     enr = results.get("enrichment") or {}
@@ -233,11 +247,15 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     side_door_ips = set()
     for ips, names in groups.items():
         names = sorted(names, key=lambda r: r["host"])
+        kept = inside([r["host"] for r in names])  # excluded risky hosts drop out of the side door
+        names = [r for r in names if r["host"] in kept]
         hosts = [r["host"] for r in names]
+        # Every host counts here, in scope or not: a crowded IP is a shared
+        # front door whatever the scope file says
         on_ips = [h for h, h_ips in ips_of.items() if ips & set(h_ips)]
         if len(ips) > 1 or len(on_ips) > SHARED_INGRESS:
             continue  # a load balancer or shared front door, so "same server" can't be claimed
-        shared = [h for h in on_ips if h not in hosts
+        shared = [h for h in on_ips if h not in hosts and h not in out_of_scope
                   and categorize(h, target)["category"] in ("apex", "content", "app-api", "uncategorized")]
         if not shared:
             continue
@@ -262,7 +280,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         if risky:
             steps.append(_step(f"{where} also has services open to the internet that usually "
                                "shouldn't be", risky, "Observed"))
-        leaks = [e for e in kinds.get("version_leak", []) if ips & set(ips_of.get(e["host"], []))]
+        leaks = [e for e in kinds.get("version_leak", [])
+                 if ips & set(ips_of.get(e["host"], [])) and e["host"] not in out_of_scope]
         leaks += cves
         if leaks:
             steps.append(_step("The server shows software versions an attacker can match "
@@ -292,9 +311,10 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                      | {ip for e in kinds.get("version_leak", []) for ip in ips_of.get(e["host"], [])}):
         if ip in side_door_ips:
             continue
-        on_ip = sorted(h for h, h_ips in ips_of.items() if ip in h_ips)
+        on_ip = inside(sorted(h for h, h_ips in ips_of.items() if ip in h_ips))
         cves = [e for e in kinds.get("cves", []) if e["host"] == ip]
         leaks = [e for e in kinds.get("version_leak", []) if ip in ips_of.get(e["host"], [])]
+        leaks = [e for e in leaks if e["host"] in on_ip] or leaks  # an excluded host's version only if nothing else
         action = [_action(cves + leaks, f"Upgrade or patch the server software on {ip}")]
         if not cves:
             steps = [_step(f"{ip} shows which software versions it runs", leaks, "Observed"),
@@ -315,17 +335,22 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
 
     # F. Go around the CDN: always a lead (see the top of this file). Built
     # only when a server of the target's own is seen answering web requests.
-    hosts_of = {}  # the target's own public IPs -> hosts pointing straight at them
+    hosts_of = {}  # the target's own public IPs -> in-scope hosts pointing straight at them
     for h, h_ips in sorted(ips_of.items()):
+        if h in out_of_scope:
+            continue
         for ip in h_ips:
             if ip not in not_own and ip not in private.get(h, []):
                 hosts_of.setdefault(ip, []).append(h)
-    fronted = sorted(h for h, h_ips in ips_of.items() if h_ips and all(ip in edge for ip in h_ips))
+    fronted = sorted(h for h, h_ips in ips_of.items()
+                     if h_ips and all(ip in edge for ip in h_ips) and h not in out_of_scope)
     web = {}  # own IP -> facts showing it answers web requests
     for e in kinds.get("open_ports", []):
         if e["host"] in hosts_of and WEB_PORTS & set(exp_ips.get(e["host"], {}).get("ports", [])):
             web.setdefault(e["host"], []).append(e)
     for e in kinds.get("web_tech", []) + kinds.get("version_leak", []):
+        if e["host"] in out_of_scope:
+            continue
         for ip in ips_of.get(e["host"], []):
             if ip in hosts_of:
                 web.setdefault(ip, []).append(e)
@@ -375,7 +400,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     more_set_aside = max(0, len(set_aside) - MAX_PATHS)
     return {"paths": paths, "leads": leads, "set_aside": set_aside[:MAX_PATHS],
             "fix_first": _fix_first(paths), "more": more, "more_leads": more_leads,
-            "more_set_aside": more_set_aside}
+            "more_set_aside": more_set_aside, "out_of_scope_hosts": sorted(out_of_scope)}
 
 
 def _fix_first(paths):
@@ -441,6 +466,7 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
     built.setdefault("more_leads", 0)   # doors stay the paths they were saved as
     built.setdefault("set_aside", [])   # saved before the gate (v1.13): its paths
     built.setdefault("more_set_aside", 0)  # keep their tier, marked "gate not run"
+    built.setdefault("out_of_scope_hosts", [])  # saved before v1.13.1
     for p in built["paths"] + built["leads"]:
         p.setdefault("gate", None)
     if all("actions" in p for p in built["paths"]):
@@ -457,6 +483,14 @@ def upgrade_saved(built: dict, evidence: list[dict]) -> dict:
             p["actions"].append(_action(versions, f"Upgrade or patch the server software on {where}"))
     built["fix_first"] = _fix_first(built["paths"])
     return built
+
+
+def out_of_scope_line(hosts: list[str]) -> str:
+    """The one line every output uses for hosts left out of the attack paths."""
+    shown = ", ".join(hosts[:5]) + (f" and {len(hosts) - 5} more" if len(hosts) > 5 else "")
+    one = len(hosts) == 1
+    return (f"{len(hosts)} out-of-scope host{'' if one else 's'} {'was' if one else 'were'} left "
+            f"out of the evidence for attack paths and leads: {shown}")
 
 
 def check_paths(report: str, built: dict) -> tuple[list[str], list[str]]:
@@ -508,6 +542,8 @@ def paths_appendix(built: dict) -> str:
         lines.append(f"- {p['title']}: {p['why']}")
     if built.get("more_set_aside"):
         lines.append(f"- {built['more_set_aside']} more set aside")
+    if built.get("out_of_scope_hosts"):
+        lines += ["", out_of_scope_line(built["out_of_scope_hosts"])]
     fix = built.get("fix_first")
     if fix:
         t = fix_first_parts(fix)

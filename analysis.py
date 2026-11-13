@@ -187,6 +187,9 @@ because of a note, and never say a program will or won't pay for it.
 infrastructure that isn't the target's own, like a shared CDN edge). If it \
 isn't empty, after the leads add "**Set aside**" and one line per item: \
 "<title>: <why>". Never treat a set-aside item as a path, a lead or a finding.
+- "out_of_scope_hosts" lists hosts outside the scope: the code left them out \
+of every path's and lead's evidence. Never use one of them to support a \
+finding, a path or a lead; you may say how many were left out.
 - If "fix_first" is set, start section 5 with it as "**Fix this first**", \
 with its owners, citing its evidence IDs, and say which paths it closes. \
 When it lists more than one action, head it "**Fix these N first**", list \

@@ -698,7 +698,11 @@ def show_paths(results: dict) -> None:
 
 
 def show_set_aside(built: dict) -> None:
-    """What the validation gate set aside: out of scope, or not the target's own."""
+    """What the validation gate set aside: out of scope, or not the target's own,
+    and how many out-of-scope hosts the rules left out of their evidence."""
+    if built.get("out_of_scope_hosts"):
+        print()
+        info(ui.safe(paths.out_of_scope_line(built["out_of_scope_hosts"])))
     items = built.get("set_aside", [])
     if not items:
         return

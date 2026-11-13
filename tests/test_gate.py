@@ -389,3 +389,95 @@ def test_not_own_ips_names_what_each_ip_is():
     assert gate.not_own_ips(results) == {"198.51.100.1": "a shared CDN edge IP",
                                          "198.51.100.2": "third-party hosting (Zendesk)",
                                          "198.51.100.3": "a shared front door (AWS Global Accelerator)"}
+
+
+# --- out-of-scope hosts never feed a rule (v1.13.1, #19) ---
+
+def scoped_lab(scope_text):
+    """A dotted lab like 41xlab: apex, dev and staging on one server, www behind
+    Cloudflare, a forum pointing straight at its own server, web ports on both
+    servers. Returns (results, scope)."""
+    import scope as scope_mod
+    T = "2026-11-13T12:00:00+00:00"
+    hosts = {
+        "lab.test": ["192.0.2.10"], "dev.lab.test": ["192.0.2.10"],
+        "staging.lab.test": ["192.0.2.10"], "www.lab.test": ["198.51.100.9"],
+        "community.lab.test": ["192.0.2.20"],
+    }
+    providers = {"www.lab.test": "Cloudflare"}
+    names = sorted(hosts)
+    results = {
+        "target": "lab.test", "subdomains": names, "errors": {},
+        "sources": {"certlog": {"source": "certlog", "collected_at": T, "subdomains": names}},
+        "enrichment": {"hosts": {h: {"ips": ips, "dns": "live", "private_ips": [],
+                                     "provider": providers.get(h, "DigitalOcean")}
+                                 for h, ips in hosts.items()},
+                       "private_ip_hosts": [], "collected_at": T},
+        "exposure": {"collected_at": T, "ips": {
+            "192.0.2.10": {"shared_edge": False, "hosts": ["dev.lab.test", "lab.test", "staging.lab.test"],
+                           "ports": [80, 443], "tags": [], "risky": [], "vulns": []},
+            "192.0.2.20": {"shared_edge": False, "hosts": ["community.lab.test"],
+                           "ports": [443], "tags": [], "risky": [], "vulns": []}}},
+    }
+    return results, scope_mod.from_bytes(scope_text.encode())
+
+
+def leads_of(results, s=None):
+    return [p["title"] for p in build(results, s)["leads"]]
+
+
+def test_an_excluded_host_drops_out_of_a_side_door_lead():
+    """The lab case: dev is excluded, staging isn't. The lead stays, about staging alone."""
+    results, s = scoped_lab("lab.test\n*.lab.test\n!dev.lab.test\n")
+    assert "Check whether dev.lab.test and staging.lab.test are a side door into 192.0.2.10" in leads_of(results)
+    titles = leads_of(results, s)
+    assert "Check whether staging.lab.test is a side door into 192.0.2.10" in titles
+    assert not any("dev.lab.test" in t for t in titles)
+    assert build(results, s)["out_of_scope_hosts"] == ["dev.lab.test"]
+
+
+def test_an_excluded_host_never_holds_up_a_go_around_the_cdn_lead():
+    """The bounty-run case: an excluded forum pointing straight at its own server
+    was the evidence for "go around the CDN". Excluded, it isn't any more."""
+    results, s = scoped_lab("lab.test\n*.lab.test\n!community.lab.test\n")
+    assert any("192.0.2.20" in t and "around Cloudflare" in t for t in leads_of(results))
+    built = build(results, s)
+    for p in built["leads"] + built["paths"]:
+        assert "community.lab.test" not in json.dumps(p) and "192.0.2.20" not in p["title"]
+
+
+def test_a_side_door_made_only_of_excluded_hosts_is_set_aside_not_hidden():
+    results, s = scoped_lab("lab.test\n*.lab.test\n!dev.lab.test\n!staging.lab.test\n")
+    built = build(results, s)
+    assert not any("side door" in t for t in leads_of(results, s))
+    aside = next(p for p in built["set_aside"] if "side door" in p["title"])
+    assert aside["gate"]["failed"][0]["check"] == 1 and "excluded by !" in aside["why"]
+
+
+def test_breaking_the_input_filter_brings_the_excluded_host_back(monkeypatch):
+    """Break the rule: with no hosts treated as out of scope, the excluded dev
+    is back in the side door lead (check 1 alone lets it through, as in v1.13)."""
+    results, s = scoped_lab("lab.test\n*.lab.test\n!dev.lab.test\n")
+    monkeypatch.setattr(gate, "out_of_scope_hosts", lambda results, scope=None: set())
+    assert any("dev.lab.test" in t for t in leads_of(results, s))
+
+
+def test_every_output_names_the_hosts_left_out(capsys):
+    from datetime import datetime
+
+    import report
+    from monomi import show_paths
+    results, s = scoped_lab("lab.test\n*.lab.test\n!dev.lab.test\n")
+    results["evidence"] = build_evidence(results)
+    results["paths"] = paths.build_paths(results, results["evidence"], s)
+    show_paths(results)
+    line = "1 out-of-scope host was left out of the evidence for attack paths and leads"
+    for text in (capsys.readouterr().out, report.to_markdown(results, datetime(2026, 11, 13)),
+                 report.to_html(results, datetime(2026, 11, 13))):
+        assert line in text and "dev.lab.test" in text
+
+
+def test_the_left_out_line_reads_right_for_one_and_many():
+    assert paths.out_of_scope_line(["a.test"]).startswith("1 out-of-scope host was left out")
+    many = paths.out_of_scope_line([f"h{i}.test" for i in range(7)])
+    assert many.startswith("7 out-of-scope hosts were left out") and many.endswith("and 2 more")

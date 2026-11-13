@@ -309,6 +309,7 @@
     "fix_first": null,
     "more": 0,
     "more_leads": 0,
-    "more_set_aside": 0
+    "more_set_aside": 0,
+    "out_of_scope_hosts": []
   }
 }

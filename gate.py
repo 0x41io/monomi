@@ -106,6 +106,25 @@ def _under(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+def out_of_scope_hosts(results: dict, scope=None) -> set[str]:
+    """Hosts this scan saw that are out of scope: not among the scan's hosts
+    or under its domain, or not allowed by the --scope file when one was given.
+    The path rules leave these out of their supporting evidence (v1.13.1), so an
+    excluded host can never hold up a path or a lead about other hosts. A
+    candidate that's about excluded hosts alone still reaches check 1, which
+    sets it aside, so nothing disappears without a reason."""
+    target = results.get("target", "")
+    scanned = set(results.get("subdomains", [])) | {target}
+    seen = set(results.get("subdomains", [])) | set((results.get("enrichment") or {}).get("hosts", {}))
+    out = set()
+    for h in seen:
+        if target and h not in scanned and not _under(h, target):
+            out.add(h)
+        elif scope is not None and not scope.match(h).allowed:
+            out.add(h)
+    return out
+
+
 # ---------- The checks: each returns why it fails, or None when it passes ----------
 
 def in_scope(candidate: dict, ctx: Context) -> str | None:

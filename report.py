@@ -330,6 +330,8 @@ def to_html(results: dict, generated) -> str:
         out.append("</ul>")
     if built.get("more_set_aside"):
         out.append(f"<p>{built['more_set_aside']} more set aside</p>")
+    if built.get("out_of_scope_hosts"):
+        out.append(f'<p class="note">{esc(paths.out_of_scope_line(built["out_of_scope_hosts"]))}</p>')
 
     # Same evidence as the Markdown: everything a finding, path or the AI cites
     cites = " ".join(f"[{f['id']}]" for f in found)

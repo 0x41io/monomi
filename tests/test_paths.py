@@ -87,7 +87,7 @@ def test_clean_target_has_no_paths():
     results["email"]["verdict"]["verdict"] = "protected"
     out, _ = run(results)
     assert out == {"paths": [], "leads": [], "set_aside": [], "fix_first": None,
-                   "more": 0, "more_leads": 0, "more_set_aside": 0}
+                   "more": 0, "more_leads": 0, "more_set_aside": 0, "out_of_scope_hosts": []}
 
 
 def test_cdn_ip_is_never_a_side_door():
