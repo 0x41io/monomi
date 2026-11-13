@@ -37,6 +37,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Evidence-backed findings:** before the AI step, Monomi's code turns the collected data into a numbered evidence list (E1, E2, ...), each item a plain fact with its source and UTC collection time. Every finding in the AI report cites the evidence it rests on (e.g. `[E12, E194]`) and is labeled **Observed**, **Inference** or **Lead**. After the report is written, Monomi checks every citation and warns if the AI cited evidence that doesn't exist. Saved reports end with an **Evidence** section listing each cited item, written by code, not by the AI
 - **Attack paths:** Monomi's code chains findings into the ways an attacker would most likely try to get in: a claimable subdomain takeover (made worse when the domain's email is spoofable), email impersonation, services that shouldn't face the internet, known-vulnerable versions, and non-production hosts sharing a server with production. Every step cites evidence and is labeled Observed / Inference / Lead by code, and a path is only as strong as its weakest step. The paths print at the end of every scan that ran a check, with no AI needed. With `--ai`, Claude writes them up in a report section of their own, but can't add, drop or reorder a path or change a label, and Monomi checks the report afterwards. If nothing chains, the answer is "no attack path found", never an invented one
 - **Leads, kept apart from attack paths:** something that looks like a way in but is missing a piece is a lead (L1, L2...), not an attack path, and it says what's missing. A test host on the production server is a lead until a risky open service or a known CVE shows a way into that server. A software version with no matched CVE is a lead. "Go around the CDN" (some hosts behind a CDN, others pointing straight at a web server of the target's own) is always a lead, since a CDN hides its origin. Leads are listed after the attack paths, never count as one, and never appear in "fix this first"
+- **Validation gate (v1.13):** before anything is called an attack path, code runs it through one fixed checklist, in the same order every time: (1) in scope (one of the scan's hosts or under the domain, and allowed by `--scope` when given), (2) the target's own (not a shared CDN edge IP), (3) seen this run (not a saved copy or an import), (4) confirmed twice (a "doesn't exist" was double-checked over DNS-over-HTTPS, not system DNS alone), (5) an observed way in, (6) claimable / reachable (a takeover target on a service known to let deleted names be claimed again; no private IPs). Passing all six makes an attack path (`gate 6/6`); failing 3 to 6 makes a lead that names the failed check; failing 1 or 2 sets the item aside (out of scope, or not the target's own), listed with the reason and never treated as a path or lead. Email spoofing and a version with no matched CVE carry a note that bug bounty programs often exclude them; a note never changes the result. Every output shows the gate: terminal, `--json`, Markdown and HTML exports, and the AI prompt (which must state it as given)
 - **Owners and "fix this first":** every finding carries the roles that would fix it (DNS admin, email admin, web app team, CDN / proxy admin, server / infrastructure admin, cloud / service account owner), worked out by code and never naming people. Recommendations start with their owner, and the report leads with the one fix that closes the most attack paths. When a path needs several fixes (three test hosts on one server), it lists all of them ("Fix these 3 first ... together they close P1") and never says one of them closes it
 - **Next checks:** every scan ends with the checks worth running next and the reason from that scan ("1 IP is a server of the target's own: `--ports` shows its open ports and known CVEs"). Suggestions only: nothing runs unless you add the flag, and `--fingerprint` is marked as active
 - **Known hostnames (`--hosts FILE`):** check hostnames you already know alongside the ones from certificate logs, one per line. Only the target domain and its subdomains are kept, so a file can't point Monomi outside the scan, and the file's hosts stay out of scan history
@@ -45,7 +46,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Report exports (`--export`):** the scan as Markdown, a self-contained HTML page and a findings CSV for ticketing, built by code with or without `--ai` (see [Exporting reports](#exporting-reports))
 - **JSON export** for use in other tools
 - **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
-- **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, changing only Monomi's entry and backing up the old file first (see [MCP server mode](#mcp-server-mode))
+- **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, or with `--client codex|opencode|hermes` to Codex CLI, OpenCode or Hermes Agent, changing only Monomi's entry, keeping the file's comments and layout, and backing up the old file first (see [MCP server mode](#mcp-server-mode))
 - **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) are off by default behind an `--allow-active` gate, only reach hosts in a scope file you approved, and write every request and refusal to an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
 ## Try it (field testers)
@@ -181,7 +182,8 @@ python monomi.py example.com --fingerprint
 # Look for exposed API specs and source maps (ACTIVE: a few requests per host; turns on --enrich)
 python monomi.py example.com --exposed-files
 
-# Only let the active checks reach hosts your scope file allows (see "Scope file" below)
+# Only let the active checks reach hosts your scope file allows (see "Scope file" below);
+# attack paths through hosts the file doesn't allow are set aside, with or without active checks
 python monomi.py example.com --fingerprint --exposed-files --scope scope.txt
 
 # Check email spoofing protection (SPF, DMARC, DKIM; DNS lookups only)
@@ -327,6 +329,8 @@ Rejected lines (they don't count, and setup and doctor show why): a bare `*`, `*
 
 Every call is built to fit the Claude app's 60-second tool limit: `find_subdomains` gives its sources 45 seconds in total, returns whatever finished, and lists skipped sources in `errors`.
 
+**Gated takeover leads (v1.13).** Each `check_takeover` lead has a `gate` (checks 4 and 6 above): `finding` only when DNS-over-HTTPS confirmed the target doesn't exist (see `nxdomain_confirmed_by`) and the service is known to let deleted names be claimed again, otherwise `lead` with each failed check and why. The summary counts them in `leads_passing_gate`. Even a `finding` is unverified: Monomi never claims the name.
+
 **Summary replies (v1.9).** `find_subdomains`, `check_takeover`, `enrich_hosts` and `check_ports` take `detail="summary"` (the default) or `detail="full"`. A summary gives the counts plus the hosts that matter (risky categories, takeover leads and stale records, dangling CNAMEs, origin IPs), and saves the full result to `scans/mcp/` as `full_results_file`. Use `detail="full"` to get everything in the reply.
 
 **Passing hosts as a file.** Instead of copying hostnames into the next tool, pass `find_subdomains`' `full_results_file` (or a `.txt` list, one host per line) as `hosts_file` to `check_takeover`, `enrich_hosts` or `check_ports`. Only files inside Monomi's `scans/` folder are accepted, so an agent can't point a tool at other files on your machine. Big files are checked in batches (200 hosts, 100 for `check_ports`): call again with `start` set to the reply's `batch.next_start` until it is `null`.
@@ -359,18 +363,21 @@ It shows the change and asks before writing (`--yes` skips the question). Only t
 
 Then fully quit the Claude app, not just its window (Windows: right-click its tray icon > Quit; macOS: Cmd+Q), open it again, and ask Claude to run Monomi's `ping` tool. `python monomi.py doctor` also checks the entry. Run setup again after moving the Monomi folder or rebuilding the venv.
 
-**Other MCP clients:** `python monomi.py mcp setup --print` prints the entry for this machine. It looks like this:
+**Other MCP clients (v1.13).** Add `--client` to set up another client, with the same rules (only Monomi's entry changes, a backup first, `--allow-active` and `--scope` still need a typed `yes`). `--print` shows the entry in that client's format without writing anything.
 
-```json
-{
-  "mcpServers": {
-    "monomi": {
-      "command": "/path/to/monomi/venv/bin/python",
-      "args": ["/path/to/monomi/mcp_server.py"]
-    }
-  }
-}
+| `--client` | Config file | Monomi's entry |
+|---|---|---|
+| `claude` (default) | the Claude desktop app's config (every copy on Windows) | `mcpServers.monomi` |
+| `codex` | `$CODEX_HOME/config.toml`, else `~/.codex/config.toml` | `[mcp_servers.monomi]` |
+| `opencode` | `~/.config/opencode/opencode.json` (or `.jsonc`) | `mcp.monomi`, or `mcp.servers.monomi` when the file already uses OpenCode's V2 layout |
+| `hermes` | `$HERMES_HOME/config.yaml`, else `~/.hermes/config.yaml` | `mcp_servers.monomi` |
+
+```bash
+python monomi.py mcp setup --client codex           # show the change, ask, write it
+python monomi.py mcp setup --client hermes --print  # only print the entry
 ```
+
+Comments, key order and indentation in Codex and Hermes configs are kept, and any keys you added to Monomi's own entry (a timeout, env) stay. An OpenCode file with comments (JSONC) is never rewritten, since that would delete them: setup stops and points you to `--print`. `python monomi.py doctor` checks Monomi in every client that has a config file. Any other MCP client: `python monomi.py mcp setup --print` gives the Claude-style JSON entry to adapt.
 ## How it works
 
 ```
@@ -400,7 +407,7 @@ monomi/
 ├── exposed.py            # exposed API specs + JS source maps (--exposed-files, active)
 ├── categorize.py         # rule-based hostname categories
 ├── mcp_server.py         # MCP server mode (7 passive tools + 2 active, gated)
-├── mcp_setup.py          # adds Monomi to the Claude app's MCP config (monomi.py mcp setup)
+├── mcp_setup.py          # adds Monomi to an MCP client's config: Claude, Codex, OpenCode, Hermes (monomi.py mcp setup)
 ├── scope.py              # scope file for active checks: parse, match, hash pinning
 ├── activelog.py          # scans/active.log: every active request and refusal
 ├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
@@ -409,6 +416,7 @@ monomi/
 ├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
 ├── evidence.py           # evidence list, owners, citation check, Evidence section
 ├── paths.py              # attack paths and leads built from the evidence, "fix this first"
+├── gate.py               # validation gate: the fixed checklist that decides path, lead or set aside
 ├── suggest.py            # next checks worth running, from what the scan found
 ├── report.py             # report exports: Markdown, HTML, findings CSV (--export, monomi.py report)
 ├── dnscheck.py           # shared DNS helper: status words, DNS-over-HTTPS double-check
@@ -452,6 +460,8 @@ monomi/
 - Some DNS providers (Cloudflare among them) never say a name doesn't exist, so a retired hostname on those zones shows as **no_address**, not **no_such_host**.
 - DNS answers are cached. Right after a DNS change, a name that was looked up before it existed can still read as **no_such_host** until the zone's negative-cache time runs out (often up to 30 minutes), and a deleted record can keep resolving until its TTL runs out.
 - Attack paths come from fixed rules applied to what the scan saw. A path shows how an attack would most likely go, not proof that it works, and "no attack path found" means no rule matched, not that the target is safe. A lead is weaker still: a question to check, not a finding. Paths are only as complete as the checks that ran.
+- The validation gate checks what the scan's own data can show. "Set aside" means out of scope or on shared infrastructure by Monomi's rules, not proof that nothing is there, and a program note is a reminder to check the program's rules, not a verdict on eligibility.
+- `mcp setup --client` sets a client up in the environment setup runs in: from WSL, Codex, OpenCode and Hermes get WSL paths. A client running natively on Windows that should reach Monomi inside WSL isn't covered (only the Claude app gets the `wsl.exe` launcher). OpenCode's docs don't give a Windows config path, so on Windows setup uses `.config\opencode` under your user folder and `doctor` shows the path it checked.
 
 ## Development
 
@@ -462,7 +472,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules (including golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident), the doctor checks (with fake network calls), the report exports (HTML escaping, CSV formula guard) and MCP setup (with fake config files, never your real one).
+The tests cover hostname filtering, domain cleaning, evidence citation checks, change detection, the email check, the takeover check (using fake DNS records), the IP threat-intel labels, owners, the attack-path rules and the validation gate (each check proven by a test that removes it; golden-file tests: saved and planted scans in `tests/golden/` whose evidence and attack paths must not change by accident), the doctor checks (with fake network calls), the report exports (HTML escaping, CSV formula guard) and MCP setup for every client (with fake config files, never your real one).
 
 ## Roadmap
 
@@ -499,8 +509,9 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 
 - [x] v1.12: a human-approved, fail-closed scope file for the active tools (`mcp setup --scope`, typed `yes`, sha256 pinned at server start; CLI `--scope`). Out-of-scope hosts get no DNS lookup and no request, every URL is re-checked in the fetch layer, and `scans/active.log` records the rule and scope hash for each request plus every refusal, from the CLI and MCP alike
 
+- [x] v1.13: a validation gate (one fixed checklist that decides attack path, lead or set aside, shown in every output and on MCP takeover leads; an unknown dangling CNAME and a takeover resting on system DNS alone are now leads) and `mcp setup --client` for Codex CLI, OpenCode and Hermes Agent, with `doctor` checking every client. Plus an agent skill (`skills/monomi`), a "Try it" section and a field test issue template
+
 **Next**
-- [ ] v1.13: a validation gate (one fixed checklist every result passes before it's called a finding) and `mcp setup` for more clients (Codex CLI, OpenCode, Hermes Agent)
 - [ ] v1.14: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
 - [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step

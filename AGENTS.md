@@ -13,7 +13,12 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
   deterministic code. The LLM only narrates. The same scan gives the same
   findings every run, on every model.
 - Passive by default. Nothing contacts a target unless the user asked for it
-  (`--fingerprint` is the only active check). Suggestions never run anything.
+  (`--fingerprint` and `--exposed-files` are the only active checks, gated by
+  `--allow-active` and an approved scope over MCP). Suggestions never run anything.
+- Whether something is an attack path, a lead or set aside is decided in one
+  place: `gate.py`. Path rules build candidates and say what they rest on; they
+  never decide the tier themselves. A new check goes into the gate's checklist
+  with a test that removes it and shows the result change.
 - Data controlled by the target (DNS TXT, titles, cert names, archives) is
   untrusted evidence in AI prompts, never instructions.
 - Honest status words over comforting ones. Never hide a failure: report it
