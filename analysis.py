@@ -179,6 +179,10 @@ code. Under each path's and lead's title, write one line "Gate: <passed>/<of> \
 checks passed", and for a lead name each failed check from "failed" with its \
 "why". State the gate result exactly as given: never argue with it, never \
 say a lead "should" be a path, and never re-run a check yourself.
+- A gate's "notes" say a kind of path bug bounty programs often exclude. \
+Add each as one line "Note: <note>" under that path or lead. A note is \
+not a verdict: never call the path ineligible, never drop or downgrade it \
+because of a note, and never say a program will or won't pay for it.
 - "set_aside" holds items the gate set aside (out of scope, or on \
 infrastructure that isn't the target's own, like a shared CDN edge). If it \
 isn't empty, after the leads add "**Set aside**" and one line per item: \

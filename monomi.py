@@ -667,6 +667,8 @@ def show_paths(results: dict) -> None:
         for n, s in enumerate(p["steps"], 1):
             print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
         print(f"        => {ui.safe(p['outcome'])}")
+        for note in (p.get("gate") or {}).get("notes", []):
+            print(f"        {ui.paint('Note:', ui.GREY)} {ui.safe(note)}")
         print()
     if built["more"]:
         info(f"{built['more']} lower-ranked path(s) not shown.")
@@ -687,6 +689,8 @@ def show_paths(results: dict) -> None:
         for n, s in enumerate(p["steps"], 1):
             print(f"        {n}. {ui.paint(s['label'], ui.GREY)}: {ui.safe(s['text'])}")
         print(f"        Missing: {ui.safe(p['missing'])}")
+        for note in (p.get("gate") or {}).get("notes", []):
+            print(f"        {ui.paint('Note:', ui.GREY)} {ui.safe(note)}")
     if built.get("more_leads"):
         print()
         info(f"{built['more_leads']} more lead(s) not shown.")

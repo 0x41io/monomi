@@ -23,9 +23,22 @@ The gate input a rule gives (every key optional except door/no_door):
   ips             the IPs it rests on
   nxdomain        takeover records whose "doesn't exist" it rests on
   claim           {"cname", "claimable"} for a takeover
+  program_note    a key of PROGRAM_NOTES, for kinds bug bounty programs often exclude
+
+Program notes are not a check: they never change finding, lead or set
+aside. Whether something is eligible depends on the program's own rules,
+which Monomi can't know, so the note only says to check them.
 """
 
 from internetdb import SHARED_EDGE, edge_from_ip
+
+# Kinds of path bug bounty programs often list as out of scope (gate "notes")
+PROGRAM_NOTES = {
+    "email": ("missing or weak DMARC / email spoofing is often out of scope for bug bounty "
+              "programs: check the program's rules"),
+    "version": ("a software version shown without a matched CVE is often out of scope for bug "
+                "bounty programs: check the program's rules"),
+}
 
 # Failing one of these sets a candidate aside instead of making it a lead:
 # a lead says "investigate this", and nobody should investigate hosts that
@@ -207,8 +220,10 @@ def review(candidates: list[dict], results: dict, evidence=(), scope=None
         out = {k: v for k, v in candidate.items() if k != "gate_input"}
         aside = [f for f in failed if f["check"] in SET_ASIDE_CHECKS]
         result = "set_aside" if aside else "lead" if failed else "finding"
+        note = candidate["gate_input"].get("program_note")
         out["gate"] = {"result": result, "passed": len(CHECKS) - len(failed),
-                       "of": len(CHECKS), "failed": failed, "notes": []}
+                       "of": len(CHECKS), "failed": failed,
+                       "notes": [PROGRAM_NOTES[note]] if note else []}
         if aside:
             set_aside.append({"title": out["title"], "severity": out["severity"],
                               "why": aside[0]["why"], "gate": out["gate"]})

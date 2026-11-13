@@ -442,7 +442,9 @@
           "passed": 6,
           "of": 6,
           "failed": [],
-          "notes": []
+          "notes": [
+            "missing or weak DMARC / email spoofing is often out of scope for bug bounty programs: check the program's rules"
+          ]
         },
         "id": "P1"
       }

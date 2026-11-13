@@ -304,6 +304,7 @@ def to_html(results: dict, generated) -> str:
             out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
                        f"[{id_links(st['evidence'])}]</li>")
         out.append(f"</ol><p>Result: {esc(p['outcome'])}</p>")
+        out += [f'<p class="note">Note: {esc(n)}</p>' for n in (p.get("gate") or {}).get("notes", [])]
     leads = built.get("leads", [])
     if leads:
         out += ["<h3>Leads to investigate</h3>",
@@ -317,6 +318,7 @@ def to_html(results: dict, generated) -> str:
             out.append(f"<li><strong>{esc(st['label'])}:</strong> {esc(st['text'])} "
                        f"[{id_links(st['evidence'])}]</li>")
         out.append(f"</ol><p>Missing: {esc(p['missing'])}</p>")
+        out += [f'<p class="note">Note: {esc(n)}</p>' for n in (p.get("gate") or {}).get("notes", [])]
     if built.get("more_leads"):
         out.append(f"<p>{built['more_leads']} more lead(s) left out</p>")
     set_aside = built.get("set_aside", [])

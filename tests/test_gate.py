@@ -157,7 +157,9 @@ def build(results, scope=None):
 def test_every_path_and_lead_carries_its_gate():
     built, _ = run(lab_results())
     p1 = built["paths"][0]
-    assert p1["gate"] == {"result": "finding", "passed": 6, "of": 6, "failed": [], "notes": []}
+    assert p1["title"] == "Send email as lab"
+    assert p1["gate"] == {"result": "finding", "passed": 6, "of": 6, "failed": [],
+                          "notes": [gate.PROGRAM_NOTES["email"]]}
     for lead in built["leads"]:
         assert lead["gate"]["result"] == "lead"
         assert lead["missing"] == lead["gate"]["failed"][0]["why"]
@@ -299,3 +301,43 @@ def test_scans_saved_before_the_gate_say_it_was_not_run():
     paths.upgrade_saved(built, ev)
     assert built["set_aside"] == [] and built["paths"][0]["gate"] is None
     assert "gate not run (saved before v1.13)" in paths.paths_appendix(built)
+
+
+# --- program notes (v1.13 b3): never a check ---
+
+def test_a_program_note_never_changes_the_result():
+    with_door = candidate("A", door=[1])
+    with_door["gate_input"]["program_note"] = "email"
+    no_door = candidate("B", no_door="no door")
+    no_door["gate_input"]["program_note"] = "email"
+    found, leads, aside = gate.review([with_door, no_door], {})
+    assert [p["title"] for p in found] == ["A"] and [p["title"] for p in leads] == ["B"]
+    for p in found + leads:
+        assert p["gate"]["notes"] == [gate.PROGRAM_NOTES["email"]]
+    assert found[0]["gate"]["passed"] == 6  # a note isn't a failed check
+
+
+def test_a_version_without_a_cve_gets_the_version_note():
+    built, _ = run(lab_results())
+    side = next(p for p in built["leads"] if "side door" in p["title"])
+    assert side["gate"]["notes"] == []  # only the kinds programs often exclude get a note
+    results = lab_results()
+    results["fingerprint"]["hosts"]["lab"]["techs"][0]["version"] = "1.18.0"
+    results["subdomains"].remove("staging")  # no side door, so rule D builds the version lead
+    built, _ = run(results)
+    version = next(p for p in built["leads"] if "has known flaws" in p["title"])
+    assert version["gate"]["notes"] == [gate.PROGRAM_NOTES["version"]]
+
+
+def test_every_output_shows_the_program_note(capsys):
+    from datetime import datetime
+
+    import report
+    from monomi import show_paths
+    results = lab_results()
+    results["evidence"] = build_evidence(results)
+    results["paths"] = paths.build_paths(results, results["evidence"])
+    show_paths(results)
+    for text in (capsys.readouterr().out, report.to_markdown(results, datetime(2026, 11, 13)),
+                 report.to_html(results, datetime(2026, 11, 13))):
+        assert "Note:" in text and "often out of scope for bug bounty programs" in text

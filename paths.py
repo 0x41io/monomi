@@ -101,12 +101,13 @@ def _action(facts, what=None, owners=None):
 
 
 def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdomain=(),
-          hosts=(), ips=(), claim=None):
+          hosts=(), ips=(), claim=None, program_note=None):
     """A candidate attack path, with what the gate checks (see gate.py):
     door: the facts that show an observed way in (check 5); no_door: why it
     isn't a path when there are none; nxdomain: the takeover records whose
     "doesn't exist" it rests on (check 4); hosts / ips: what the attack goes
-    through (checks 1, 2, 6); claim: a takeover's {"cname", "claimable"} (check 6)."""
+    through (checks 1, 2, 6); claim: a takeover's {"cname", "claimable"} (check 6);
+    program_note: a gate.PROGRAM_NOTES key, for kinds programs often exclude (never a check)."""
     return {
         "title": title,
         "severity": severity,
@@ -115,7 +116,8 @@ def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdom
         "outcome": outcome,
         "actions": actions,
         "gate_input": {"door": list(door), "no_door": no_door, "nxdomain": list(nxdomain),
-                       "hosts": list(hosts), "ips": list(ips), "claim": claim},
+                       "hosts": list(hosts), "ips": list(ips), "claim": claim,
+                       "program_note": program_note},
     }
 
 
@@ -186,7 +188,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         ]
         candidates.append(_path(f"Send email as {target}", "High" if spoofable else "Medium", steps,
                                 "Stolen passwords, payments or malware through trusted-looking email",
-                                [_action([v])], door=[v], hosts=[target]))
+                                [_action([v])], door=[v], hosts=[target], program_note="email"))
 
     exp = results.get("exposure") or {}
     exp_ips = exp.get("ips", {})
@@ -298,7 +300,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                        ) + ", so the versions are unverified"
             candidates.append(_path(f"Check whether the software on {ip} has known flaws", "Low", steps,
                                     "Server compromise, if the version is really vulnerable", action,
-                                    no_door=no_door, hosts=on_ip, ips=[ip]))
+                                    no_door=no_door, hosts=on_ip, ips=[ip], program_note="version"))
             continue
         steps = [_step(f"{ip} shows software versions or matching CVEs", cves + leaks, "Observed"),
                  _step("An attacker checks whether the running version really has those flaws "
@@ -480,6 +482,7 @@ def paths_appendix(built: dict) -> str:
         for n, s in enumerate(p["steps"], 1):
             lines.append(f"  {n}. {s['label']}: {s['text']} [{', '.join(s['evidence'])}]")
         lines.append(f"  - Result: {p['outcome']}")
+        lines += [f"  - Note: {n}" for n in (p.get("gate") or {}).get("notes", [])]
     if built.get("more"):
         lines.append(f"- {built['more']} lower-ranked path(s) left out")
     if built.get("leads"):
@@ -491,6 +494,7 @@ def paths_appendix(built: dict) -> str:
         for n, s in enumerate(p["steps"], 1):
             lines.append(f"  {n}. {s['label']}: {s['text']} [{', '.join(s['evidence'])}]")
         lines.append(f"  - Missing: {p['missing']}")
+        lines += [f"  - Note: {n}" for n in (p.get("gate") or {}).get("notes", [])]
     if built.get("more_leads"):
         lines.append(f"- {built['more_leads']} more lead(s) left out")
     if built.get("set_aside"):
