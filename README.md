@@ -309,6 +309,8 @@ fingerprint_hosts(hostnames=[...])
   -> next_checks: --ports (check_ports), --exposed-files (check_exposed_files, active)
 ```
 
+**Agent skill.** [`skills/monomi/SKILL.md`](skills/monomi/SKILL.md) teaches an AI agent to use these tools well: summary replies first, chaining tools with `hosts_file`, `already_ran` for next checks, reporting leads and gaps honestly, and never running an active check on its own. Copy the `skills/monomi` folder into your agent's skills folder or skill bundle.
+
 ### Setting it up
 
 For the Claude desktop app, one command does it:
@@ -385,6 +387,8 @@ monomi/
 │   └── saved.py          # saved per-domain copies of each source, used when a source fails
 ├── importers/
 │   └── spiderfoot.py     # SpiderFoot CSV export parser
+├── skills/
+│   └── monomi/SKILL.md   # agent skill: how to use the MCP tools well
 ├── scans/                # saved scans per domain (git-ignored)
 ├── reports/              # generated reports (git-ignored)
 ├── cache/                # cached AWS IP range list (git-ignored)
@@ -460,7 +464,8 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.12: a human-approved, fail-closed scope file for the active tools (`mcp setup --scope`, typed `yes`, sha256 pinned at server start; CLI `--scope`). Out-of-scope hosts get no DNS lookup and no request, every URL is re-checked in the fetch layer, and `scans/active.log` records the rule and scope hash for each request plus every refusal, from the CLI and MCP alike
 
 **Next**
-- [ ] v1.13: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
+- [ ] v1.13: a validation gate (one fixed checklist every result passes before it's called a finding) and `mcp setup` for more clients (Codex CLI, OpenCode, Hermes Agent)
+- [ ] v1.14: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
 - [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames

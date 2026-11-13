@@ -27,3 +27,4 @@ samples/
 cache/
 .pytest_cache/
 lab-hosts.txt
+lab-scope.txt
