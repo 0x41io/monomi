@@ -1,5 +1,6 @@
 """
-monomi mcp setup: add Monomi to the Claude desktop app's MCP config.
+monomi mcp setup: add Monomi to an MCP client's config (the Claude desktop
+app by default; see CLIENTS for the others).
 
     python monomi.py mcp setup          # show the change, ask, then write it
     python monomi.py mcp setup --yes    # write without asking
@@ -8,6 +9,7 @@ monomi mcp setup: add Monomi to the Claude desktop app's MCP config.
     python monomi.py mcp setup --no-active     # turn ACTIVE tools back off
     python monomi.py mcp setup --scope FILE    # approve the scope file for ACTIVE tools
     python monomi.py mcp setup --no-scope      # clear the approved scope
+    python monomi.py mcp setup --client NAME   # set up another MCP client (see CLIENTS)
 
 Without --allow-active/--no-active or --scope/--no-scope, setup keeps
 whatever the config has now. Turning active tools ON, and setting or
@@ -17,8 +19,13 @@ file's sha256 is saved next to its path, so the server refuses active
 checks if the file is edited after you approved it.
 
 Safe by design: only the "monomi" entry changes (other servers and settings
-stay as they are), the old file is backed up first, a file that isn't valid
-JSON is never overwritten, and the new file is swapped in whole.
+stay as they are), the old file is backed up first, a file that can't be
+read is never overwritten, and the new file is swapped in whole.
+
+Every client stores the same entry inside Monomi: {"command", "args"}, with
+the --allow-active and scope flags in args. A client adapter (Client below)
+only knows where that client's config lives and how to read and write it, so
+the safety rules above are written once and hold for every client.
 """
 
 import argparse
@@ -114,10 +121,11 @@ def with_scope(entry, path, sha256):
     return {**entry, "args": args}
 
 
-def build_entry(on, path, sha256):
+def build_entry(on, path, sha256, base=None):
     """The full entry: the server, the scope pair, then --allow-active last.
-    Always built in this order, so the same settings give the same entry."""
-    return with_active(with_scope(server_entry(), path, sha256), on)
+    Always built in this order, so the same settings give the same entry.
+    base: how the client starts the server (default: the Claude app's way)."""
+    return with_active(with_scope(base or server_entry(), path, sha256), on)
 
 
 # ---------- Where the config is ----------
@@ -214,7 +222,7 @@ def with_entry(config, entry):
     return new
 
 
-def write_config(path, config):
+def write_text(path, text):
     """Back up the old file, then swap the new one in whole. Returns the backup path."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     backup = None
@@ -223,16 +231,102 @@ def write_config(path, config):
         shutil.copy2(path, backup)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write(json.dumps(config, indent=2) + "\n")
+        f.write(text)
     os.replace(tmp, path)  # all at once: a crash can't leave half a file
     return backup
 
 
+def write_config(path, config):
+    """Write a Claude config (JSON). Returns the backup path."""
+    return write_text(path, json.dumps(config, indent=2) + "\n")
+
+
+# ---------- MCP clients ----------
+
+class Client:
+    """One MCP client's config: where it lives, how to read and write it, and
+    how Monomi's entry looks in it. Each method gets or gives the entry in
+    Monomi's own shape, {"command", "args"}; the adapter translates."""
+    key = ""        # the --client name
+    label = ""      # how messages name it, e.g. "the Claude app"
+    restart = ""    # what to do after a change, so the client loads it
+
+    def paths(self):
+        """(config files that exist, the path to create if none do)."""
+        raise NotImplementedError
+
+    def load(self, path):
+        """The parsed config; raises SetupError if it can't be used safely."""
+        raise NotImplementedError
+
+    def entry(self, doc):
+        """Monomi's entry from a parsed config, in Monomi's shape, or None."""
+        raise NotImplementedError
+
+    def with_entry(self, doc, entry):
+        """A copy of the config with Monomi's entry set; everything else kept."""
+        raise NotImplementedError
+
+    def dump(self, doc):
+        """The config as the text to write."""
+        raise NotImplementedError
+
+    def show(self, entry):
+        """Monomi's entry as it will look in this client's file."""
+        raise NotImplementedError
+
+    def printable(self, entry):
+        """What --print shows: the entry inside its section, ready to paste."""
+        raise NotImplementedError
+
+    def base(self):
+        """How this client starts Monomi's server (before scope and active flags)."""
+        raise NotImplementedError
+
+
+class Claude(Client):
+    """The Claude desktop app: JSON, "mcpServers", every copy of the file
+    (Windows can have several). Calls the module's functions by name, so
+    tests that replace them still apply."""
+    key = "claude"
+    label = "the Claude app"
+    restart = ("fully quit the Claude app, not just its window (Windows: "
+               "right-click its tray icon > Quit; macOS: Cmd+Q), open it again, "
+               "and ask Claude to run Monomi's ping tool")
+
+    def paths(self):
+        return config_paths()
+
+    def load(self, path):
+        return load_config(path)
+
+    def entry(self, doc):
+        return doc.get("mcpServers", {}).get(NAME)
+
+    def with_entry(self, doc, entry):
+        return with_entry(doc, entry)
+
+    def dump(self, doc):
+        return json.dumps(doc, indent=2) + "\n"
+
+    def show(self, entry):
+        return json.dumps(entry, indent=2)
+
+    def printable(self, entry):
+        return json.dumps({"mcpServers": {NAME: entry}}, indent=2)
+
+    def base(self):
+        return server_entry()
+
+
+CLIENTS = {c.key: c for c in (Claude(),)}
+
+
 # ---------- The command ----------
 
-def show_entry(label, entry):
+def show_entry(label, entry, client=None):
     print(f"  {ui.paint(label, ui.GREY)}")
-    for line in json.dumps(entry, indent=2).splitlines():
+    for line in (client or CLIENTS["claude"]).show(entry).splitlines():
         print(f"    {line}")
 
 
@@ -298,18 +392,20 @@ def describe_scope(path, sha256):
     return f"{path} (sha256 {sha256[:12]}...)" if path else "none"
 
 
-def setup(yes=False, active=None, scope_file=None, clear_scope=False):
+def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=None):
     """active: True = allow ACTIVE tools, False = turn them off, None = keep each config's setting.
-    scope_file: approve this scope file; clear_scope: remove it; neither = keep each config's."""
+    scope_file: approve this scope file; clear_scope: remove it; neither = keep each config's.
+    client: which MCP client to set up (a Client; default the Claude app)."""
+    client = client or CLIENTS["claude"]
     new_scope = load_new_scope(scope_file) if scope_file else None
-    found, standard = config_paths()
+    found, standard = client.paths()
     targets = found or [standard]
     # Read every file first: if any is broken, nothing gets written anywhere
-    configs = {path: load_config(path) for path in targets}
+    configs = {path: client.load(path) for path in targets}
 
     plans, turning_on, scope_changing = {}, False, False
     for path, cfg in configs.items():
-        old = cfg.get("mcpServers", {}).get(NAME)
+        old = client.entry(cfg)
         on = is_active(old) if active is None else active
         if clear_scope:
             pair = (None, None)
@@ -317,8 +413,9 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False):
             pair = (new_scope.path, new_scope.sha256)
         else:
             pair = scope_args(old)
-        entry = build_entry(on, *pair)
-        plans[path] = (*change(cfg, entry), entry)
+        entry = build_entry(on, *pair, base=client.base())
+        status = "new" if old is None else "unchanged" if old == entry else "changing"
+        plans[path] = (status, old, entry)
         turning_on = turning_on or (on and not is_active(old))
         scope_changing = scope_changing or (new_scope is not None and pair != scope_args(old))
 
@@ -330,13 +427,13 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False):
         print(f"  active tools: {'ON' if is_active(entry) else 'off'}")
         print(f"  scope: {describe_scope(*scope_args(entry))}")
         if status == "changing":
-            show_entry("now:", old)
+            show_entry("now:", old, client)
         if status != "unchanged":
-            show_entry("will be:", entry)
+            show_entry("will be:", entry, client)
 
     to_write = [p for p, (status, _, _) in plans.items() if status != "unchanged"]
     if not to_write:
-        ui.good("Monomi is already set up in the Claude app. Nothing to change.")
+        ui.good(f"Monomi is already set up in {client.label}. Nothing to change.")
         return 0
     if turning_on or scope_changing:
         if not confirm(turning_on, new_scope if scope_changing else None):
@@ -347,13 +444,11 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False):
         return 0
 
     for path in to_write:
-        backup = write_config(path, with_entry(configs[path], plans[path][2]))
+        backup = write_text(path, client.dump(client.with_entry(configs[path], plans[path][2])))
         ui.good(f"Updated {path}")
         if backup:
             ui.info(f"Backup of the old file: {backup}")
-    print("\nNext: fully quit the Claude app, not just its window (Windows: "
-          "right-click its tray icon > Quit; macOS: Cmd+Q), open it again, "
-          "and ask Claude to run Monomi's ping tool. A change to active tools "
+    print(f"\nNext: {client.restart}. A change to active tools "
           "or the scope only takes effect after that restart.")
     if any(is_active(e) and not scope_args(e)[0] for _, _, e in plans.values()):
         ui.warn("ACTIVE tools are on but no scope file is approved, so every active "
@@ -364,8 +459,10 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="monomi.py mcp",
-        description="set up Monomi's MCP server in the Claude desktop app")
+        description="set up Monomi's MCP server in an MCP client (default: the Claude desktop app)")
     parser.add_argument("action", choices=["setup"])
+    parser.add_argument("--client", choices=sorted(CLIENTS), default="claude",
+                        help="which MCP client to set up (default: claude, the Claude desktop app)")
     parser.add_argument("--yes", action="store_true", help="write without asking")
     parser.add_argument("--print", dest="print_only", action="store_true",
                         help="only print the config entry (for other MCP clients)")
@@ -387,13 +484,15 @@ def main(argv=None) -> int:
         ui.disable()
 
     try:
+        client = CLIENTS[args.client]
         if args.print_only:
             s = load_new_scope(args.scope_file) if args.scope_file else None
-            entry = build_entry(bool(args.active), s.path if s else None, s.sha256 if s else None)
-            print(json.dumps({"mcpServers": {NAME: entry}}, indent=2))
+            entry = build_entry(bool(args.active), s.path if s else None, s.sha256 if s else None,
+                                base=client.base())
+            print(client.printable(entry))
             return 0
-        return setup(yes=args.yes, active=args.active,
-                     scope_file=args.scope_file, clear_scope=args.clear_scope)
+        return setup(yes=args.yes, active=args.active, scope_file=args.scope_file,
+                     clear_scope=args.clear_scope, client=client)
     except SetupError as e:
         ui.fail(str(e))
         return 1

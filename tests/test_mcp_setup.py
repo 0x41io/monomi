@@ -536,10 +536,16 @@ def test_print_with_scope(monkeypatch, tmp_path, capsys):
 
 
 def test_scope_flags_match_the_server(tmp_path):
+    import inspect
+
     import mcp_server
     s = scope_file(tmp_path)
     args = mcp_setup.with_scope({"args": []}, str(s), digest(s))["args"]
     assert args[0] == mcp_setup.SCOPE_FLAG and args[2] == mcp_setup.SCOPE_HASH_FLAG
+    # ...and they're the flags the server's own argument parser declares
+    server_args = inspect.getsource(mcp_server.main)
+    for flag in (mcp_setup.SCOPE_FLAG, mcp_setup.SCOPE_HASH_FLAG, mcp_setup.ACTIVE_FLAG):
+        assert f'"{flag}"' in server_args
 
 
 def test_server_accepts_the_entry_setup_writes(monkeypatch, tmp_path):
@@ -552,3 +558,79 @@ def test_server_accepts_the_entry_setup_writes(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", False)
     mcp_server.main(entry["args"][entry["args"].index(mcp_setup.SCOPE_FLAG):])
     assert mcp_server.SCOPE_PROBLEM is None and mcp_server.ALLOW_ACTIVE is True
+
+
+# ---------- client adapters (v1.13): the same rules for every MCP client ----------
+
+class ListClient(mcp_setup.Client):
+    """A made-up client that stores Monomi as one command list under "tools",
+    to prove setup's rules (backup, unchanged, typed yes) don't depend on Claude's shape."""
+    key, label, restart = "listy", "the list client", "restart the list client"
+
+    def __init__(self, path):
+        self.path = str(path)
+
+    def paths(self):
+        return ([self.path] if os.path.exists(self.path) else []), self.path
+
+    def load(self, path):
+        return json.loads(open(path).read()) if os.path.exists(path) else {}
+
+    def entry(self, doc):
+        run = doc.get("tools", {}).get(NAME)
+        return {"command": run[0], "args": run[1:]} if run else None
+
+    def with_entry(self, doc, entry):
+        return {**doc, "tools": {**doc.get("tools", {}), NAME: [entry["command"], *entry["args"]]}}
+
+    def dump(self, doc):
+        return json.dumps(doc) + "\n"
+
+    def show(self, entry):
+        return json.dumps([entry["command"], *entry["args"]])
+
+    def printable(self, entry):
+        return json.dumps({"tools": {NAME: [entry["command"], *entry["args"]]}})
+
+    def base(self):
+        return {"command": "py", "args": ["server"]}
+
+
+def test_the_claude_client_is_the_default(monkeypatch, capsys):
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    assert mcp_setup.main(["setup", "--print"]) == 0  # no --client given
+    assert json.loads(capsys.readouterr().out) == {"mcpServers": {NAME: ENTRY}}
+
+
+def test_any_client_gets_the_same_safe_write(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "list.json"
+    write_json(f, {"theme": "dark", "tools": {"other": ["node", "x"]}})
+    client = ListClient(f)
+    monkeypatch.setattr("builtins.input", lambda question: "y")
+    assert mcp_setup.setup(client=client) == 0
+    data = json.loads(f.read_text())
+    assert data == {"theme": "dark", "tools": {"other": ["node", "x"], NAME: ["py", "server"]}}
+    assert len(list(tmp_path.glob("list.json.bak-*"))) == 1  # backed up first
+    assert "restart the list client" in capsys.readouterr().out
+
+    assert mcp_setup.setup(client=client) == 0  # a second run changes nothing
+    assert "already set up in the list client" in capsys.readouterr().out
+    assert len(list(tmp_path.glob("list.json.bak-*"))) == 1
+
+
+def test_any_client_needs_a_typed_yes_for_active_tools(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "list.json"
+    write_json(f, {"tools": {NAME: ["py", "server"]}})
+    before = f.read_text()
+    monkeypatch.setattr("builtins.input", lambda question: "yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, active=True, client=ListClient(f)) == 0
+    assert f.read_text() == before
+    assert "type it yourself at a terminal" in capsys.readouterr().out
+
+
+def test_client_flag_picks_the_adapter(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "list.json"
+    monkeypatch.setitem(mcp_setup.CLIENTS, "listy", ListClient(f))
+    assert mcp_setup.main(["setup", "--client", "listy", "--print"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"tools": {NAME: ["py", "server"]}}
