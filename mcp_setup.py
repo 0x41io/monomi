@@ -70,6 +70,11 @@ class SetupError(Exception):
     """Something that stops setup before anything is written."""
 
 
+class HasComments(SetupError):
+    """The config has comments (OpenCode's JSONC): fine for the client, but
+    rewriting it would delete them, so setup won't, and doctor can't look inside."""
+
+
 # ---------- What to write ----------
 
 def in_wsl():
@@ -433,7 +438,7 @@ class OpenCode(Client):
         try:
             doc = json.loads(text)
         except ValueError:
-            raise SetupError(
+            raise HasComments(
                 f"{path} can't be read as plain JSON: it probably has comments or trailing "
                 "commas (OpenCode allows those). Rewriting it would delete them, so it "
                 "wasn't touched. Get the entry with `python monomi.py mcp setup --client "

@@ -714,9 +714,90 @@ def check_scope():
 
 # ---------- Running and showing the checks ----------
 
+# ---------- 6. Other MCP clients (v1.13): Codex, OpenCode, Hermes ----------
+
+def client_state(client, path):
+    """(state, Monomi's entry or None) for one client config file. States:
+    ok, different, missing, comments (OpenCode JSONC: can't look inside),
+    broken, unreadable. Like mcp_state, the active and scope flags don't make
+    the entry "different": they're reported on their own."""
+    try:
+        doc = client.load(path)
+    except mcp_setup.HasComments:
+        return "comments", None
+    except mcp_setup.SetupError:
+        return "broken", None
+    except OSError:
+        return "unreadable", None
+    old = client.entry(doc)
+    if old is None:
+        return "missing", None
+    want = mcp_setup.with_scope(client.base(), *mcp_setup.scope_args(old))
+    want = mcp_setup.with_active(want, mcp_setup.is_active(old))
+    return ("ok" if old == want else "different"), old
+
+
+def client_active(label, entry):
+    """The active-tools part of a client's line: (status, words)."""
+    if not mcp_setup.is_active(entry):
+        return OK, "active tools off"
+    path, sha256 = mcp_setup.scope_args(entry)
+    if not path:
+        return WARN, "ACTIVE tools ON but no scope file is approved, so every active check refuses"
+    _, problem = scope.check_pinned(path, sha256)
+    if problem:
+        return WARN, f"ACTIVE tools ON, scope file {path}: {problem}"
+    return WARN, (f"ACTIVE tools ON (scope {mcp_setup.describe_scope(path, sha256)}): "
+                  f"agents in {label} can send requests to hosts in that scope")
+
+
+def check_clients():
+    """Monomi in every other MCP client that has a config file on this machine.
+
+    A client with no config file is listed once on an OK line, never warned
+    about: most people don't use every client. Read-only, like check_mcp.
+    """
+    out, absent = [], []
+    for key, client in mcp_setup.CLIENTS.items():
+        if key == "claude":
+            continue  # check_mcp, check_active and check_scope cover the Claude app
+        fix = f"{SETUP_FIX} --client {key}"
+        found, _ = client.paths()
+        if not found:
+            absent.append(client.label)
+        for path in found:
+            state, entry = client_state(client, path)
+            if state == "ok":
+                status, words = client_active(client.label, entry)
+                out.append(result(MCP, key, status,
+                                  f"{client.label} config points at this Monomi, {words} ({path})",
+                                  f"{fix} --no-active, to turn them off" if status == WARN else None))
+            elif state == "missing":
+                out.append(result(MCP, key, OK,
+                                  f"{client.label} is set up on this machine, Monomi isn't in it "
+                                  f"({path}); to add it: {fix}"))
+            elif state == "comments":
+                out.append(result(MCP, key, OK,
+                                  f"{client.label} config has comments, so doctor can't check "
+                                  f"Monomi's entry in it ({path})"))
+            elif state == "different":
+                out.append(result(MCP, key, WARN,
+                                  f"{client.label} config points at a different Monomi ({path})", fix))
+            elif state == "broken":
+                out.append(result(MCP, key, WARN,
+                                  f"{client.label} config can't be read ({path})",
+                                  f"fix or move that file, then run {fix}"))
+            else:
+                out.append(result(MCP, key, WARN, f"can't open the {client.label} config ({path})",
+                                  "check that file's permissions"))
+    if absent:
+        out.append(result(MCP, "clients", OK, f"no config found for: {', '.join(absent)}"))
+    return out
+
+
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list, check_mcp, check_active, check_scope]
+          check_tor_list, check_mcp, check_active, check_scope, check_clients]
 
 
 def run_all(checks=None):

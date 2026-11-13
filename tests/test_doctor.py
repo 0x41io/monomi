@@ -427,7 +427,9 @@ def test_pacer_status_takes_no_slot():
 
 
 def test_no_certificate_source_is_a_fail(monkeypatch):
-    down = lambda: doctor.result("Sources", "x", WARN, "down")
+    def down():
+        return doctor.result("Sources", "x", WARN, "down")
+
     for name in ("check_crtsh_website", "check_crtsh_database", "check_certspotter"):
         monkeypatch.setattr(doctor, name, down)
     assert statuses(doctor.check_ct_sources()) == [WARN, WARN, WARN, FAIL]
@@ -796,3 +798,96 @@ def test_active_log_with_only_refusals(monkeypatch, tmp_path):
     fake_log(monkeypatch, tmp_path, [json.dumps(ref)])
     _, r = doctor.check_active()
     assert r["detail"] == "no active requests sent yet (1 refusal in scans/active.log)"
+
+
+# ---------- other MCP clients (v1.13): Codex, OpenCode, Hermes ----------
+
+BASE = {"command": "py", "args": ["server"]}
+
+
+def fake_clients(monkeypatch, tmp_path, codex=None, opencode=None, hermes=None):
+    """Point every client at tmp_path; write the configs given as text."""
+    monkeypatch.setattr(doctor.mcp_setup, "direct_entry", lambda: dict(BASE))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    for text, path in ((codex, tmp_path / "codex" / "config.toml"),
+                       (opencode, tmp_path / ".config" / "opencode" / "opencode.json"),
+                       (hermes, tmp_path / "hermes" / "config.yaml")):
+        if text is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+
+def by_name(results):
+    return {r["name"]: r for r in results}
+
+
+CODEX_OK = '[mcp_servers.monomi]\ncommand = "py"\nargs = ["server"]\n'
+
+
+def test_clients_with_no_config_are_one_ok_line(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path)
+    [r] = doctor.check_clients()
+    assert r["status"] == OK and r["detail"] == "no config found for: Codex, OpenCode, Hermes"
+
+
+def test_each_client_points_at_this_monomi(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path, codex=CODEX_OK,
+                 opencode='{"mcp": {"monomi": {"type": "local", "command": ["py", "server"]}}}',
+                 hermes="mcp_servers:\n  monomi:\n    command: py\n    args: [server]\n")
+    results = by_name(doctor.check_clients())
+    assert set(results) == {"codex", "opencode", "hermes"}  # no "not found" line
+    for r in results.values():
+        assert r["status"] == OK and "points at this Monomi, active tools off" in r["detail"]
+
+
+def test_client_without_monomi_says_how_to_add_it_without_warning(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path, codex='model = "x"\n')
+    r = by_name(doctor.check_clients())["codex"]
+    assert r["status"] == OK and "python monomi.py mcp setup --client codex" in r["detail"]
+
+
+def test_client_pointing_elsewhere_is_a_warning(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path, hermes="mcp_servers:\n  monomi:\n    command: other\n")
+    r = by_name(doctor.check_clients())["hermes"]
+    assert r["status"] == WARN and r["fix"] == "python monomi.py mcp setup --client hermes"
+
+
+def test_opencode_with_comments_is_not_called_broken(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path, opencode='{\n  // mine\n  "mcp": {}\n}\n')
+    r = by_name(doctor.check_clients())["opencode"]
+    assert r["status"] == OK and "has comments" in r["detail"]
+
+
+def test_broken_client_config_is_a_warning_not_a_crash(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path, codex='model = "unclosed\n')
+    r = by_name(doctor.check_clients())["codex"]
+    assert r["status"] == WARN and "can't be read" in r["detail"]
+
+
+def test_client_active_flags_dont_make_it_different_but_warn(monkeypatch, tmp_path):
+    scope = tmp_path / "scope.txt"
+    scope.write_text("lab.test\n", encoding="utf-8")
+    sha = doctor.scope.load(str(scope)).sha256
+    on = f'[mcp_servers.monomi]\ncommand = "py"\nargs = ["server", "--scope", "{scope}", "--scope-sha256", "{sha}", "--allow-active"]\n'
+    fake_clients(monkeypatch, tmp_path, codex=on)
+    r = by_name(doctor.check_clients())["codex"]
+    assert r["status"] == WARN and "points at this Monomi, ACTIVE tools ON (scope" in r["detail"]
+    assert r["fix"] == "python monomi.py mcp setup --client codex --no-active, to turn them off"
+
+    scope.write_text("lab.test\nother.test\n", encoding="utf-8")  # edited after approval
+    r = by_name(doctor.check_clients())["codex"]
+    assert "changed since it was approved" in r["detail"]
+
+
+def test_client_check_writes_nothing(monkeypatch, tmp_path):
+    fake_clients(monkeypatch, tmp_path, codex='model = "x"\n', hermes="a: 1\n")
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    doctor.check_clients()
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before
+
+
+def test_doctor_runs_the_clients_check():
+    assert doctor.check_clients in doctor.CHECKS
