@@ -74,17 +74,34 @@ def load_ranges() -> dict:
             raise download_error  # no cache at all: report the download problem
 
 
-def cloudfront_networks() -> list:
-    """All CloudFront edge ranges (IPv4 and IPv6) as ip_network objects."""
+def service_networks(service: str) -> list:
+    """All of one AWS service's ranges (IPv4 and IPv6) as ip_network objects,
+    e.g. "CLOUDFRONT" or "GLOBALACCELERATOR" (Amazon's own service codes)."""
     data = load_ranges()
     nets = []
     for p in data.get("prefixes", []):
-        if p.get("service") == EDGE_SERVICE:
+        if p.get("service") == service:
             nets.append(ipaddress.ip_network(p["ip_prefix"]))
     for p in data.get("ipv6_prefixes", []):
-        if p.get("service") == EDGE_SERVICE:
+        if p.get("service") == service:
             nets.append(ipaddress.ip_network(p["ipv6_prefix"]))
     return nets
+
+
+def cloudfront_networks() -> list:
+    """All CloudFront edge ranges (IPv4 and IPv6) as ip_network objects."""
+    return service_networks(EDGE_SERVICE)
+
+
+# AWS Global Accelerator: Amazon's anycast front door. Its IPs answer for an
+# accelerator that forwards to servers behind it, so they're never the
+# target's own server, and they're not a CDN either.
+ACCELERATOR_SERVICE = "GLOBALACCELERATOR"
+
+
+def accelerator_networks() -> list:
+    """All Global Accelerator edge ranges, from Amazon's list."""
+    return service_networks(ACCELERATOR_SERVICE)
 
 
 def in_networks(ip: str, nets: list) -> bool:

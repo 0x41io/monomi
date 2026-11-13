@@ -1,0 +1,68 @@
+{
+  "target": "accel.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-13T12:00:00+00:00",
+      "subdomains": [
+        "accel.test",
+        "id-uat.accel.test",
+        "id.accel.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "accel.test",
+    "id-uat.accel.test",
+    "id.accel.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "accel.test": {
+        "ips": [
+          "198.51.100.80"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      },
+      "id.accel.test": {
+        "ips": [
+          "192.0.2.90"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS Global Accelerator"
+      },
+      "id-uat.accel.test": {
+        "ips": [
+          "192.0.2.90"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "AWS Global Accelerator"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-13T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "192.0.2.90": {
+        "shared_edge": false,
+        "hosts": [
+          "id.accel.test",
+          "id-uat.accel.test"
+        ],
+        "ports": [
+          443
+        ],
+        "tags": [],
+        "risky": [],
+        "vulns": []
+      }
+    },
+    "collected_at": "2026-11-13T12:00:00+00:00"
+  }
+}

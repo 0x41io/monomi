@@ -1,0 +1,78 @@
+{
+  "target": "forum.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-13T12:00:00+00:00",
+      "subdomains": [
+        "community.forum.test",
+        "forum.test",
+        "staging-community.forum.test",
+        "www.forum.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "community.forum.test",
+    "forum.test",
+    "staging-community.forum.test",
+    "www.forum.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "forum.test": {
+        "ips": [
+          "198.51.100.70"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      },
+      "www.forum.test": {
+        "ips": [
+          "198.51.100.70"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      },
+      "community.forum.test": {
+        "ips": [
+          "203.0.113.60"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Discourse (CDCK)"
+      },
+      "staging-community.forum.test": {
+        "ips": [
+          "203.0.113.60"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Discourse (CDCK)"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-13T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "203.0.113.60": {
+        "shared_edge": false,
+        "hosts": [
+          "community.forum.test",
+          "staging-community.forum.test"
+        ],
+        "ports": [
+          443
+        ],
+        "tags": [],
+        "risky": [],
+        "vulns": []
+      }
+    },
+    "collected_at": "2026-11-13T12:00:00+00:00"
+  }
+}

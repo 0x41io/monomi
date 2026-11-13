@@ -30,7 +30,7 @@ aside. Whether something is eligible depends on the program's own rules,
 which Monomi can't know, so the note only says to check them.
 """
 
-from internetdb import SHARED_EDGE, edge_from_ip
+from internetdb import SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_ip
 
 # Kinds of path bug bounty programs often list as out of scope (gate "notes")
 PROGRAM_NOTES = {
@@ -62,6 +62,25 @@ def edge_ips(results: dict) -> set[str]:
     return edge
 
 
+def not_own_ips(results: dict) -> dict[str, str]:
+    """IPs that aren't the target's own server -> what they are, in words:
+    a shared CDN edge, a third-party host (a store, a forum...) or a shared
+    front door (AWS Global Accelerator). Check 2 and the path rules use this."""
+    out = {ip: "a shared CDN edge IP" for ip in edge_ips(results)}
+    enr = results.get("enrichment") or {}
+    for h in enr.get("hosts", {}).values():
+        provider = h.get("provider")
+        if provider in THIRD_PARTY_HOSTING:
+            kind = f"third-party hosting ({provider})"
+        elif provider in SHARED_FRONT_DOOR:
+            kind = f"a shared front door ({provider})"
+        else:
+            continue
+        for ip in h.get("ips", []):
+            out.setdefault(ip, kind)
+    return out
+
+
 class Context:
     """What every check may look at besides the candidate itself."""
 
@@ -71,7 +90,7 @@ class Context:
         self.scanned = set(results.get("subdomains", [])) | {self.target}
         self.facts = {e["id"]: e for e in evidence}
         self.scope = scope  # the --scope file (a scope.Scope), or None
-        self.edge = edge_ips(results)
+        self.not_own = not_own_ips(results)
         enr = results.get("enrichment") or {}
         self.private = {ip for h in enr.get("hosts", {}).values() for ip in h.get("private_ips", [])}
 
@@ -110,14 +129,16 @@ def in_scope(candidate: dict, ctx: Context) -> str | None:
 
 
 def target_own(candidate: dict, ctx: Context) -> str | None:
-    """Check 2, the target's own: no IP the path rests on is a shared CDN
-    edge server (Cloudflare, Vercel...). What an edge IP shows belongs to
-    the CDN and every site behind it, not to the target."""
-    edge = [ip for ip in candidate["gate_input"].get("ips", []) if ip in ctx.edge]
-    if not edge:
+    """Check 2, the target's own: no IP the path rests on is someone else's
+    server: a shared CDN edge (Cloudflare, Vercel...), third-party hosting (a
+    store, a forum...) or a shared front door (AWS Global Accelerator). What
+    such an IP shows belongs to that service, not to the target."""
+    ips = [ip for ip in candidate["gate_input"].get("ips", []) if ip in ctx.not_own]
+    if not ips:
         return None
-    return (f"{_names(edge)} {'is a shared CDN edge IP' if len(edge) == 1 else 'are shared CDN edge IPs'}: "
-            "what it shows belongs to the CDN and every site behind it, not only "
+    kinds = sorted({ctx.not_own[ip] for ip in ips})
+    return (f"{_names(ips)} {'is' if len(ips) == 1 else 'are'} {' / '.join(kinds)}: what "
+            f"{'it shows' if len(ips) == 1 else 'they show'} belongs to that service, not only "
             f"{ctx.target or 'the target'}")
 
 

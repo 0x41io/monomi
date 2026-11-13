@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import gate
 import paths
 from evidence import build_evidence
@@ -341,3 +343,49 @@ def test_every_output_shows_the_program_note(capsys):
     for text in (capsys.readouterr().out, report.to_markdown(results, datetime(2026, 11, 13)),
                  report.to_html(results, datetime(2026, 11, 13))):
         assert "Note:" in text and "often out of scope for bug bounty programs" in text
+
+
+# --- check 2 learns third-party hosting and shared front doors (v1.13.1, #19) ---
+
+def golden(name):
+    return json.loads((Path(__file__).parent / "golden" / "fixtures" / f"{name}.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("fixture, provider", [
+    ("third-party-forum", "Discourse (CDCK)"),
+    ("global-accelerator", "AWS Global Accelerator"),
+])
+def test_breaking_check_2_brings_back_the_vendors_server(monkeypatch, fixture, provider):
+    """Break the rule: forget one provider, and its server reads as the target's
+    own again: a side door onto it and a way "around the CDN" through it."""
+    built = build(golden(fixture))
+    assert built["paths"] == [] and built["leads"] == []
+
+    monkeypatch.setattr(gate, "THIRD_PARTY_HOSTING", gate.THIRD_PARTY_HOSTING - {provider})
+    monkeypatch.setattr(gate, "SHARED_FRONT_DOOR", gate.SHARED_FRONT_DOOR - {provider})
+    titles = [p["title"] for p in build(golden(fixture))["leads"]]
+    assert any("side door" in t for t in titles) and any("around Cloudflare" in t for t in titles)
+
+
+def test_a_version_on_third_party_hosting_is_set_aside_with_the_vendor_named():
+    results = lab_results()
+    results["subdomains"].append("shop")
+    results["enrichment"]["hosts"]["shop"] = {"ips": ["192.0.2.77"], "provider": "Shopify"}
+    results["fingerprint"]["hosts"]["shop"] = {
+        "collected_at": None, "status": 200, "header_issues": [],
+        "techs": [{"tech": "nginx", "version": "1.18.0", "evidence": "Server header"}]}
+    built, _ = run(results)
+    aside = next(p for p in built["set_aside"] if "192.0.2.77" in p["title"])
+    assert aside["gate"]["failed"][0]["check"] == 2
+    assert "third-party hosting (Shopify)" in aside["why"]
+
+
+def test_not_own_ips_names_what_each_ip_is():
+    results = {"enrichment": {"hosts": {
+        "a": {"ips": ["198.51.100.1"], "provider": "Cloudflare"},
+        "b": {"ips": ["198.51.100.2"], "provider": "Zendesk"},
+        "c": {"ips": ["198.51.100.3"], "provider": "AWS Global Accelerator"},
+        "d": {"ips": ["198.51.100.4"], "provider": "DigitalOcean"}}}}
+    assert gate.not_own_ips(results) == {"198.51.100.1": "a shared CDN edge IP",
+                                         "198.51.100.2": "third-party hosting (Zendesk)",
+                                         "198.51.100.3": "a shared front door (AWS Global Accelerator)"}

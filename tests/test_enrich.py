@@ -40,6 +40,7 @@ def test_enrich_keeps_ips_found_on_second_look(monkeypatch):
     assert data["not_resolving"] == {}
     assert data["resolved"] == 1
 
+
 def test_resolve_one_keeps_where_the_cname_ends(monkeypatch):
     monkeypatch.setattr(enrich.socket, "gethostbyname_ex",
                         lambda h: ("D3RX.cloudfront.net.", [h], ["18.154.101.92", "18.154.101.35"]))
@@ -50,3 +51,26 @@ def test_resolve_one_keeps_where_the_cname_ends(monkeypatch):
 def test_resolve_one_without_cname_has_no_canonical(monkeypatch):
     monkeypatch.setattr(enrich.socket, "gethostbyname_ex", lambda h: (h, [], ["1.2.3.4"]))
     assert enrich._resolve_one("www.example.com")["canonical"] is None
+
+
+# --- Amazon's own range list labels AWS IPs (v1.13.1: Global Accelerator) ---
+
+def test_aws_ips_are_labeled_from_amazons_range_list(monkeypatch):
+    import ipaddress
+    ips = {"cdn.example.com": "13.224.0.5", "front.example.com": "15.197.34.10",
+           "server.example.com": "3.5.0.1"}
+    monkeypatch.setattr(enrich, "resolve", lambda hosts: {h: {"ips": [ips[h]], "canonical": None} for h in hosts})
+    monkeypatch.setattr(enrich, "asn_lookup", lambda public: {ip: {"as_name": "AWS"} for ip in public})
+    # Amazon's list, faked: never downloaded in a test
+    monkeypatch.setattr(enrich.aws_ranges, "cloudfront_networks", lambda: [ipaddress.ip_network("13.224.0.0/14")])
+    monkeypatch.setattr(enrich.aws_ranges, "accelerator_networks", lambda: [ipaddress.ip_network("15.197.34.0/23")])
+
+    hosts = enrich.enrich(list(ips))["hosts"]
+
+    assert hosts["cdn.example.com"]["provider"] == "AWS CloudFront"
+    assert hosts["front.example.com"]["provider"] == "AWS Global Accelerator"
+    assert hosts["server.example.com"]["provider"] == "AWS"  # a plain AWS server stays the target's own
+
+
+def test_cdck_is_named_as_discourse_hosting():
+    assert enrich.friendly_name("CDCK, US") == "Discourse (CDCK)"

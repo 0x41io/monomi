@@ -102,3 +102,12 @@ def test_terminal_says_nothing_when_there_is_nothing_to_add(capsys):
     show_next_checks(results)
     assert capsys.readouterr().out == ""
     assert results["next_checks"] == []
+
+
+def test_third_party_hosting_is_not_one_of_the_targets_own_servers():
+    """v1.13.1: a store on Shopify or a forum on Discourse runs on the vendor's
+    servers, so it doesn't count toward "hosts on the target's own servers"."""
+    results = enriched()
+    results["enrichment"]["hosts"]["shop"] = {"ips": ["192.0.2.77"], "canonical": None,
+                                              "dns": "live", "provider": "Shopify"}
+    assert set(suggest._own_ips(results)) == {"198.51.100.7"}

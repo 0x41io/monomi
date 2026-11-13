@@ -1,0 +1,121 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "accel.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "id-uat.accel.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "id.accel.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "accel.test resolves to 198.51.100.80 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "accel.test"
+    },
+    {
+      "id": "E5",
+      "fact": "id-uat.accel.test resolves to 192.0.2.90 (AWS Global Accelerator)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "id-uat.accel.test"
+    },
+    {
+      "id": "E6",
+      "fact": "id.accel.test resolves to 192.0.2.90 (AWS Global Accelerator)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "id.accel.test"
+    },
+    {
+      "id": "E7",
+      "fact": "id-uat.accel.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'id-uat' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "id-uat.accel.test"
+    },
+    {
+      "id": "E8",
+      "fact": "192.0.2.90 (id.accel.test, id-uat.accel.test) has open ports: 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "open_ports",
+      "host": "192.0.2.90"
+    }
+  ],
+  "paths": {
+    "paths": [],
+    "leads": [],
+    "set_aside": [],
+    "fix_first": null,
+    "more": 0,
+    "more_leads": 0,
+    "more_set_aside": 0
+  }
+}

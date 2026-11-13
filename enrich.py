@@ -38,6 +38,7 @@ def _resolve_one(host: str) -> dict:
         canonical = None
     return {"ips": sorted(set(ips)), "canonical": canonical}
 
+
 def resolve(hosts: list[str], workers: int = 32) -> dict[str, dict]:
     """Resolve many hostnames in parallel: {host: {"ips": [...], "canonical": ...}}.
     Unresolvable hosts get "ips": []."""
@@ -59,8 +60,6 @@ def asn_lookup(ips: list[str], timeout: int = 20) -> dict[str, dict]:
     except OSError as e:
         raise RuntimeError(f"Team Cymru ASN lookup failed: {e}")
     return parse_cymru("".join(c.decode(errors="replace") for c in chunks))
-
-
 
 
 # Why a host has no IPv4 address, as short labels for the provider summary.
@@ -103,6 +102,7 @@ KNOWN_PROVIDERS = [
     ("NETLIFY", "Netlify"),
     ("HUBSPOT", "HubSpot"),
     ("ZENDESK", "Zendesk"),
+    ("CDCK", "Discourse (CDCK)"),  # Civilized Discourse Construction Kit: hosted Discourse forums
 ]
 
 
@@ -184,12 +184,15 @@ def enrich(hosts: list[str]) -> dict:
     if aws_ips:
         try:
             nets = aws_ranges.cloudfront_networks()
+            accelerators = aws_ranges.accelerator_networks()
         except RuntimeError as e:
             cdn_error = str(e)
         else:
             for ip in aws_ips:
                 if aws_ranges.in_networks(ip, nets):
                     ip_info[ip]["provider"] = "AWS CloudFront"
+                elif aws_ranges.in_networks(ip, accelerators):
+                    ip_info[ip]["provider"] = "AWS Global Accelerator"
 
     per_host = {}
     for host in hosts:

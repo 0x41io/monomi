@@ -1,0 +1,147 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "community.forum.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "forum.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "staging-community.forum.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "www.forum.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E5",
+      "fact": "community.forum.test resolves to 203.0.113.60 (Discourse (CDCK))",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "community.forum.test"
+    },
+    {
+      "id": "E6",
+      "fact": "forum.test resolves to 198.51.100.70 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "forum.test"
+    },
+    {
+      "id": "E7",
+      "fact": "staging-community.forum.test resolves to 203.0.113.60 (Discourse (CDCK))",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "staging-community.forum.test"
+    },
+    {
+      "id": "E8",
+      "fact": "www.forum.test resolves to 198.51.100.70 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "www.forum.test"
+    },
+    {
+      "id": "E9",
+      "fact": "staging-community.forum.test is live and its name puts it in the 'non-production' category (label 'staging-community' matched rule word 'staging')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "staging-community.forum.test"
+    },
+    {
+      "id": "E10",
+      "fact": "203.0.113.60 (community.forum.test, staging-community.forum.test) has open ports: 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "open_ports",
+      "host": "203.0.113.60"
+    }
+  ],
+  "paths": {
+    "paths": [],
+    "leads": [],
+    "set_aside": [],
+    "fix_first": null,
+    "more": 0,
+    "more_leads": 0,
+    "more_set_aside": 0
+  }
+}

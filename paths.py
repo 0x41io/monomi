@@ -130,8 +130,11 @@ def _names(hosts, most=3):
     return f"{', '.join(hosts[:-1])} and {hosts[-1]}"
 
 
-# IPs that are shared CDN edge servers (lives in gate.py, which owns check 2)
+# IPs that are shared CDN edge servers, and IPs that aren't the target's own
+# server for any reason (CDN, third-party hosting, shared front door). Both
+# live in gate.py, which owns check 2.
 _edge_ips = gate.edge_ips
+_not_own_ips = gate.not_own_ips
 
 
 def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
@@ -212,7 +215,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     # Which IPs each live host is on, for D and E
     enr = results.get("enrichment") or {}
     ips_of = {h: d.get("ips", []) for h, d in enr.get("hosts", {}).items()}
-    edge = _edge_ips(results)
+    edge = _edge_ips(results)          # CDN edges only: what "behind a CDN" means (rule F)
+    not_own = _not_own_ips(results)    # not the target's server: CDN, third-party host, front door
 
     # E. Side door: risky-named hosts on the same server as production.
     # Private IPs are skipped (nobody on the internet can reach them), hosts
@@ -223,7 +227,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     groups = {}  # set of IPs -> the risky-name facts of every host on exactly those IPs
     for r in kinds.get("risky_name", []):
         ips = frozenset(ip for ip in ips_of.get(r["host"], [])
-                        if ip not in edge and ip not in private.get(r["host"], []))
+                        if ip not in not_own and ip not in private.get(r["host"], []))
         if ips:
             groups.setdefault(ips, []).append(r)
     side_door_ips = set()
@@ -314,7 +318,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     hosts_of = {}  # the target's own public IPs -> hosts pointing straight at them
     for h, h_ips in sorted(ips_of.items()):
         for ip in h_ips:
-            if ip not in edge and ip not in private.get(h, []):
+            if ip not in not_own and ip not in private.get(h, []):
                 hosts_of.setdefault(ip, []).append(h)
     fronted = sorted(h for h, h_ips in ips_of.items() if h_ips and all(ip in edge for ip in h_ips))
     web = {}  # own IP -> facts showing it answers web requests

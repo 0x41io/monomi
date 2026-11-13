@@ -36,6 +36,15 @@ RISKY_PORTS = {
 # the CDN, not to the target's own server.
 SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva", "AWS CloudFront", "Vercel"}
 
+# Services that host the target's site on their own servers (a store, a blog,
+# a help desk, a forum). The site may be the target's, but the server isn't:
+# what it shows belongs to the vendor. Names as enrich.py's KNOWN_PROVIDERS gives them.
+THIRD_PARTY_HOSTING = {"GitHub", "Salesforce", "Shopify", "Squarespace", "WordPress.com",
+                       "Netlify", "HubSpot", "Zendesk", "Discourse (CDCK)"}
+
+# A shared front door that forwards to servers behind it, but isn't a CDN
+SHARED_FRONT_DOOR = {"AWS Global Accelerator"}
+
 # Shodan CPE names (software fingerprints) that mean "this IP is a shared
 # edge server", even when the network owner isn't a CDN: e.g. Cloudflare
 # serving from a customer's own IP range, or Okta running on AWS.

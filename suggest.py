@@ -12,8 +12,9 @@ import paths
 
 
 def _own_ips(results: dict) -> dict:
-    """The target's own public IPs -> the hosts on them (CDN edges and private IPs left out)."""
-    edge = paths._edge_ips(results)
+    """The target's own public IPs -> the hosts on them (CDN edges, third-party
+    hosting, shared front doors and private IPs left out)."""
+    edge = paths._not_own_ips(results)
     own = {}
     for host, d in ((results.get("enrichment") or {}).get("hosts") or {}).items():
         for ip in d.get("ips", []):
