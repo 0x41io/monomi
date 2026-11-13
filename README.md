@@ -48,6 +48,19 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, changing only Monomi's entry and backing up the old file first (see [MCP server mode](#mcp-server-mode))
 - **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) are off by default behind an `--allow-active` gate, only reach hosts in a scope file you approved, and write every request and refusal to an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
+## Try it (field testers)
+
+Monomi is being field-tested by bug bounty hunters who already run recon through an AI agent. If that's you, one pass takes about ten minutes:
+
+1. **Install** (see [Installation](#installation)) and run `python monomi.py doctor`. Every line should be `[+]`, or a `[!]` warning with its fix.
+2. **Run it passively on a program you're already in scope for.** Passive checks never contact the target's own servers: they read public sources and make DNS lookups.
+   ```bash
+   python monomi.py your-target.example --ports --email --takeover --json run.json
+   ```
+   Or over MCP: run `python monomi.py mcp setup`, restart your client, and give your agent the [Monomi skill](skills/monomi/SKILL.md).
+3. **Leave the active checks off on a first run.** If you try them later, approve a scope file first and check what it refuses (see [Scope file](#mcp-server-mode)).
+4. **Tell us what broke** with a [field test issue](https://github.com/0x41io/monomi/issues/new?template=field-test.md). The version is in the banner (`by Øx41 · v...`). Leave out secrets, tokens and anything outside the program's scope, and redact target names if the program doesn't allow disclosure.
+
 ## Installation
 
 Requires Python 3.10+.
@@ -284,6 +297,29 @@ example.com          # exactly this host
 ```
 
 Approve it with `python monomi.py mcp setup --scope scope.txt`. Setup shows every rule and every rejected line, asks you to type `yes` at a real terminal (`--yes` never skips it, so an agent can't approve a scope for you), and saves the file's path and its sha256 in the Claude config. At startup the server reads the file once and refuses all active checks if it changed since you approved it, so editing the file means approving it again. `--no-scope` removes it. No MCP tool has a scope argument: an agent can't pass, widen or change the scope.
+
+**What a refusal looks like.** These are real outputs from v1.12, with the scope file above:
+
+- **A host the scope doesn't allow** gets no DNS lookup and no request. It comes back in `out_of_scope` with the reason, and the other hosts in the call still run:
+  ```json
+  "out_of_scope": [
+    {"host": "blog.example.com", "reason": "excluded by !blog.example.com"},
+    {"host": "shop.example.net", "reason": "no rule matches"}
+  ]
+  ```
+- **The scope file was edited after you approved it**: the whole call is refused and nothing is sent, until you approve the file again:
+  ```
+  fingerprint_hosts is an ACTIVE check and nothing was sent: the scope file changed since it
+  was approved, so active checks refuse until you approve it again: `python monomi.py mcp setup
+  --scope /path/to/scope.txt` (and type yes). Only the person running Monomi can approve a scope
+  (the scope can't be passed to a tool), then fully restart the Claude app.
+  ```
+  The server's startup line (on stderr) and `python monomi.py doctor` say the same thing before any tool is called.
+- **Every refusal is logged** in `scans/active.log`, one JSON line each, with the scope's sha256 at the time:
+  ```json
+  {"time": "2026-11-13T17:21:27+00:00", "event": "refused", "via": "mcp", "tool": "fingerprint_hosts", "host": "shop.example.net", "reason": "no rule matches", "scope_sha256": "b39e8ee5..."}
+  ```
+  A refusal of the whole call has `"host": null`. Requests that were sent are logged the same way with `"event": "request"` and the rule that allowed them.
 
 Out-of-scope hosts are dropped before any DNS lookup and come back in `out_of_scope` with the reason, and every URL is checked again right before it's fetched (homepage, HTTP fallback, scripts, source maps). `scans/active.log` records each request with the rule that allowed it and the scope's sha256, plus every refusal (out-of-scope hosts, active off, no or changed scope), and whether it came from the CLI or MCP. On the CLI, `--scope FILE` is optional (you're the one running it) but strict when given.
 
