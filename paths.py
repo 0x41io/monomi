@@ -18,6 +18,10 @@ The same bar goes for software versions: a version a server shows is only
 an attack path once a known CVE is matched to it; until then it is a lead.
 Leads are never part of "fix this first".
 
+The rules here don't decide path or lead themselves: each builds a
+candidate that names its door (the observed way in, if any), and gate.py
+runs every candidate through the same checks (see gate.py).
+
 One lead is only ever a lead: "go around the CDN". Some hosts sit behind a
 CDN while others point straight at a web server of the target's own. If
 that server is also the CDN's origin, the CDN can be skipped, but a CDN
@@ -29,6 +33,8 @@ only closed when every one of its actions is done.
 """
 
 import re
+
+import gate
 from categorize import categorize
 from evidence import OWNERS
 from internetdb import SHARED_EDGE, edge_from_ip
@@ -92,7 +98,9 @@ def _action(facts, what=None, owners=None):
             "owners": owners or _owners(facts)}
 
 
-def _path(title, severity, steps, outcome, actions):
+def _path(title, severity, steps, outcome, actions, door=(), no_door=None):
+    """A candidate attack path. door: the facts that show an observed way in
+    (gate check 5); no_door: why it isn't a path when there are none."""
     return {
         "title": title,
         "severity": severity,
@@ -100,6 +108,7 @@ def _path(title, severity, steps, outcome, actions):
         "steps": steps,
         "outcome": outcome,
         "actions": actions,
+        "gate_input": {"door": list(door), "no_door": no_door},
     }
 
 
@@ -138,7 +147,7 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
     kinds = _by_kind(evidence)
     target = results.get("target", "")
     spoof = kinds.get("email_spoofable", []) + kinds.get("email_partial", [])
-    paths, leads = [], []
+    candidates = []  # every rule adds here; gate.review() splits paths from leads
 
     # A. Subdomain takeover: claim the deleted name, then serve pages on it
     for lead in kinds.get("takeover_lead", []):
@@ -151,8 +160,9 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         if spoof:
             steps.append(_step(f"They send email that appears to come from {target}, "
                                f"linking to {host}", spoof, "Inference"))
-        paths.append(_path(f"Take over {host}", "High", steps,
-                           f"Phishing pages or stolen cookies on a real {target} subdomain", [_action([lead])]))
+        candidates.append(_path(f"Take over {host}", "High", steps,
+                                f"Phishing pages or stolen cookies on a real {target} subdomain",
+                                [_action([lead])], door=[lead]))
     for lead in kinds.get("dangling_unknown", []):
         host = lead["host"]
         steps = [
@@ -160,8 +170,9 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             _step("If that name's domain is free to register, an attacker buys it "
                   f"and controls what {host} serves", [lead], "Lead"),
         ]
-        paths.append(_path(f"Take over {host} through an expired name", "Medium", steps,
-                           f"Phishing pages on a real {target} subdomain", [_action([lead])]))
+        candidates.append(_path(f"Take over {host} through an expired name", "Medium", steps,
+                                f"Phishing pages on a real {target} subdomain", [_action([lead])],
+                                door=[lead]))
 
     # B. Email impersonation
     for v in spoof:
@@ -172,8 +183,9 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             _step(f"An attacker sends phishing email from an @{target} address "
                   "to staff, customers or partners", [v], "Inference"),
         ]
-        paths.append(_path(f"Send email as {target}", "High" if spoofable else "Medium", steps,
-                           "Stolen passwords, payments or malware through trusted-looking email", [_action([v])]))
+        candidates.append(_path(f"Send email as {target}", "High" if spoofable else "Medium", steps,
+                                "Stolen passwords, payments or malware through trusted-looking email",
+                                [_action([v])], door=[v]))
 
     exp = results.get("exposure") or {}
     exp_ips = exp.get("ips", {})
@@ -190,8 +202,8 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             _step("An attacker tries logins, password guessing or known exploits "
                   "against those services directly", [r], "Inference"),
         ]
-        paths.append(_path(f"Attack the exposed services on {ip}", "High", steps,
-                           "Direct access to the server or its data", [_action([r])]))
+        candidates.append(_path(f"Attack the exposed services on {ip}", "High", steps,
+                                "Direct access to the server or its data", [_action([r])], door=[r]))
 
     # Which IPs each live host is on, for D and E
     enr = results.get("enrichment") or {}
@@ -248,16 +260,10 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             steps.append(_step("The server shows software versions an attacker can match "
                                "to public exploits (versions must be verified)", leaks, "Lead"))
         side_door_ips.update(ips)
-        if not risky and not cves:
-            lead = _path(f"Check whether {who} {'is' if one else 'are'} a side door into {where}",
-                         "Medium", steps, f"Access to the server that also runs {shared[0]}",
-                         [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
-                          for r in names])
-            lead["missing"] = (f"nothing shows a way into {'this host' if one else 'these hosts'} yet "
-                               + (f"(no risky open service or known CVE on {where})" if looked else
-                                  f"(open services and known CVEs on {where} weren't looked up: --ports wasn't run)"))
-            leads.append(lead)
-            continue
+        door = risky + cves  # a way into the server itself (gate check 5)
+        no_door = (f"nothing shows a way into {'this host' if one else 'these hosts'} yet "
+                   + (f"(no risky open service or known CVE on {where})" if looked else
+                      f"(open services and known CVEs on {where} weren't looked up: --ports wasn't run)"))
         # One action per risky host: each one is its own door, so all of them
         # must be dealt with. The version leaks only back the last step up.
         # The action says what to do; why the name is risky stays in the evidence.
@@ -266,8 +272,10 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         if cves:
             # The CVE is on the server itself, so closing the doors isn't enough
             actions.append(_action(leaks, f"Upgrade or patch the server software on {where}"))
-        paths.append(_path(f"Use {who} as a side door into {where}", "Medium", steps,
-                           f"Access to the server that also runs {shared[0]}", actions))
+        title = (f"Use {who} as a side door into {where}" if door else
+                 f"Check whether {who} {'is' if one else 'are'} a side door into {where}")
+        candidates.append(_path(title, "Medium", steps, f"Access to the server that also runs {shared[0]}",
+                                actions, door=door, no_door=no_door))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped).
     # A matched CVE makes it an attack path; a version on its own is only a lead.
@@ -281,18 +289,19 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
         if not cves:
             steps = [_step(f"{ip} shows which software versions it runs", leaks, "Observed"),
                      _step("An attacker looks those versions up for known flaws", leaks, "Lead")]
-            lead = _path(f"Check whether the software on {ip} has known flaws", "Low", steps,
-                         "Server compromise, if the version is really vulnerable", action)
-            lead["missing"] = (f"no known CVE is matched to {ip} in this scan" if looked else
-                               f"known CVEs for {ip} weren't looked up (--ports wasn't run)"
-                               ) + ", so the versions are unverified"
-            leads.append(lead)
+            no_door = (f"no known CVE is matched to {ip} in this scan" if looked else
+                       f"known CVEs for {ip} weren't looked up (--ports wasn't run)"
+                       ) + ", so the versions are unverified"
+            candidates.append(_path(f"Check whether the software on {ip} has known flaws", "Low", steps,
+                                    "Server compromise, if the version is really vulnerable", action,
+                                    no_door=no_door))
             continue
         steps = [_step(f"{ip} shows software versions or matching CVEs", cves + leaks, "Observed"),
                  _step("An attacker checks whether the running version really has those flaws "
                        "and tries public exploits", cves + leaks, "Lead")]
-        paths.append(_path(f"Exploit known flaws on {ip}", "Medium", steps,
-                           "Server compromise, if the version is really vulnerable", action))
+        candidates.append(_path(f"Exploit known flaws on {ip}", "Medium", steps,
+                                "Server compromise, if the version is really vulnerable", action,
+                                door=cves))
 
     # F. Go around the CDN: always a lead (see the top of this file). Built
     # only when a server of the target's own is seen answering web requests.
@@ -330,15 +339,16 @@ def build_paths(results: dict, evidence: list[dict]) -> dict:
             _step(f"If {where} is also the server behind {who}, an attacker can send requests to it "
                   f"directly and skip {cdn}'s protection", front_facts + direct_facts, "Inference"),
         ]
-        lead = _path(f"Check whether {who} can be reached around {cdn} through {where}", "Low", steps,
-                     f"Attacks {cdn} would have blocked reach the server",
-                     [_action([resolves[h] for h in hosts_of[ip][:3] if h in resolves] or web[ip][:1],
-                              f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
-                              [OWNERS["server"], OWNERS["cdn"]]) for ip in own_ips[:3]])
-        lead["missing"] = (f"nothing shows that {where} is the server behind {who} "
-                           "(a CDN hides its origin from outside)")
-        leads.append(lead)
+        candidates.append(_path(
+            f"Check whether {who} can be reached around {cdn} through {where}", "Low", steps,
+            f"Attacks {cdn} would have blocked reach the server",
+            [_action([resolves[h] for h in hosts_of[ip][:3] if h in resolves] or web[ip][:1],
+                     f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
+                     [OWNERS["server"], OWNERS["cdn"]]) for ip in own_ips[:3]],
+            no_door=(f"nothing shows that {where} is the server behind {who} "
+                     "(a CDN hides its origin from outside)")))
 
+    paths, leads = gate.review(candidates, results)
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
     more = max(0, len(paths) - MAX_PATHS)
     paths = paths[:MAX_PATHS]
