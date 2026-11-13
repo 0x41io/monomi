@@ -3,6 +3,6 @@ anthropic>=0.40
 rich>=15.0.0
 dnspython>=2.9.1
 mcp>=2.3.0
-psycopg[binary]>=3.2
+psycopg[binary]>=3.3.8
 tomlkit>=0.13
 ruamel.yaml>=0.18
