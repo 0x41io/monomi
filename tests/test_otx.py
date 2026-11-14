@@ -229,6 +229,22 @@ def test_doctor_otx_network_error(monkeypatch):
     assert doctor.check_otx()["status"] == WARN
 
 
+def test_doctor_otx_asks_for_the_small_general_section(monkeypatch):
+    """The first live doctor run timed out asking for example.com's passive
+    DNS (a huge list). The check asks for the domain's small general section."""
+    calls = []
+    doctor_answer(monkeypatch, Resp(200, {}), calls)
+    doctor.check_otx()
+    assert calls[0]["url"].endswith("/indicators/domain/example.com/general")
+
+
+def test_doctor_otx_timeout_names_the_real_wait_and_the_key(monkeypatch):
+    monkeypatch.setenv(otx.KEY_VAR, "abc")
+    doctor_answer(monkeypatch, doctor.requests.Timeout())
+    r = doctor.check_otx()
+    assert f"timed out after {doctor.OTX_TIMEOUT}s" in r["detail"] and "key set" in r["detail"]
+
+
 # --- MCP ---
 
 def test_find_subdomains_reports_otx_records(monkeypatch):

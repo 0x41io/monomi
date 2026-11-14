@@ -253,10 +253,10 @@ def short(e):
     return text[:80]
 
 
-def net_error(e):
+def net_error(e, timeout=TIMEOUT):
     """A requests error in plain words, instead of its long internal text."""
     if isinstance(e, requests.Timeout):
-        return f"timed out after {TIMEOUT}s"
+        return f"timed out after {timeout}s"
     if isinstance(e, requests.ConnectionError):
         return "couldn't connect"
     if isinstance(e, requests.HTTPError) and e.response is not None:
@@ -440,6 +440,10 @@ def check_certspotter():
                   "free queries used this hour")
 
 
+OTX_CHECK_URL = otx.API_URL.format(domain=EXAMPLE).replace("/passive_dns", "/general")
+OTX_TIMEOUT = 20  # OTX is slower than the other sources
+
+
 def check_otx():
     """AlienVault OTX: reachable, and whether a key is set (keyless works, with lower limits)."""
     keyed = otx.api_key() is not None
@@ -457,11 +461,12 @@ def check_otx():
     except pacing.Paced as e:
         return result(SRC, "otx", WARN, f"AlienVault OTX not checked: {e}")
     try:
-        resp = requests.get(otx.API_URL.format(domain=EXAMPLE), headers=otx.headers(),
-                            timeout=TIMEOUT * 2)  # OTX is slower than the other sources
+        # The domain's small "general" section, not its passive DNS: example.com
+        # is looked up so often that its passive DNS list takes over 20s to send
+        resp = requests.get(OTX_CHECK_URL, headers=otx.headers(), timeout=OTX_TIMEOUT)
     except requests.RequestException as e:
-        return result(SRC, "otx", WARN, f"AlienVault OTX: {net_error(e)}",
-                      "check your internet connection")
+        return result(SRC, "otx", WARN, f"AlienVault OTX: {net_error(e, OTX_TIMEOUT)} · {key_note}",
+                      "it's sometimes slow; scans wait longer (30s) and use the other sources meanwhile")
     if resp.status_code == 429:
         pacer.cool_down(otx.cooldown_seconds(resp))
         return result(SRC, "otx", WARN, f"AlienVault OTX: rate limited · {key_note}",
