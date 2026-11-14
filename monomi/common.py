@@ -5,7 +5,7 @@ Shared helpers used across monomi: version info, hostname checks, timestamps.
 import re
 from datetime import datetime, timezone
 
-VERSION = "1.14.0"
+VERSION = "1.14.1"
 USER_AGENT = f"0x41-monomi/{VERSION} (passive OSINT research)"
 # Active checks (--fingerprint, --exposed-files) contact the target's own
 # servers, so they say so plainly: a site owner reading their logs should

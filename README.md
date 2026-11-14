@@ -67,14 +67,14 @@ Monomi is being field-tested by bug bounty hunters who already run recon through
 
 ## Installation
 
-Requires Python 3.10+.
+Requires Python 3.14+.
 
 ```bash
 git clone https://github.com/0x41io/monomi.git
 cd monomi
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .                # installs the requirements and Monomi itself
 python monomi.py doctor         # check the setup
 python monomi.py mcp setup      # optional: add Monomi to the Claude app
 ```
@@ -84,12 +84,12 @@ python monomi.py mcp setup      # optional: add Monomi to the Claude app
 Monomi runs on Windows without WSL. In PowerShell:
 
 ```powershell
-python --version                # must be 3.10 or newer
+python --version                # must be 3.14 or newer
 git clone https://github.com/0x41io/monomi.git
 cd monomi
 python -m venv venv
 venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -e .
 python monomi.py doctor         # check the setup
 python monomi.py mcp setup      # optional: add Monomi to the Claude app
 ```
@@ -98,6 +98,28 @@ If something goes wrong:
 - **`python` isn't found, or opens the Microsoft Store:** install Python from python.org (tick **"Add python.exe to PATH"**). If `python` still opens the Store or runs an old version, open **Settings > Apps > Advanced app settings > App execution aliases**, turn off the "App Installer" and older Python entries for `python.exe` / `python3.exe`, and turn on the new ones. Then open a new PowerShell window.
 - **"running scripts is disabled on this system"** when activating: run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
 - **The prompt shows `(venv)` but the command isn't found:** another venv is active. Run `deactivate`, then activate the one inside the `monomi` folder.
+
+`pip install -e .` installs Monomi as the `monomi` package in editable mode: Python uses this folder's code directly, so a `git pull` takes effect right away. It also adds the commands `monomi` (the same as `python monomi.py`) and `monomi-mcp`, and `python -m monomi` works too. `pip install -r requirements.txt` still works if you only want `python monomi.py`.
+
+### Where Monomi keeps its data
+
+Scans, reports and the AWS range cache go in `scans/`, `reports/` and `cache/`:
+
+1. inside the folder set in the `MONOMI_HOME` environment variable, if it's set
+2. else in this repo folder, when Monomi runs from a copy of the repo (`python monomi.py`, or `pip install -e .`)
+3. else in `~/.monomi` (a plain `pip install .`), so nothing is written inside Python's own package folder
+
+`python monomi.py doctor` shows which folder is used and why. Over MCP, `hosts_file` only reads files inside that folder's `scans/`.
+
+### Using Monomi from other tools
+
+Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import it:
+
+```python
+from monomi import emailauth, evidence, takeover
+```
+
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.14.1"`. It isn't on PyPI yet.
 
 ### API key (only for `--ai`)
 
@@ -136,7 +158,7 @@ python monomi.py doctor
 ```
 
 It checks, in about 10 seconds:
-- **Setup:** the Python version, every package in `requirements.txt` (installed and new enough), and that `scans/`, `reports/` and `cache/` can be written to
+- **Setup:** the Python version, every package in `requirements.txt` (installed and new enough), and that `scans/`, `reports/` and `cache/` can be written to (and which folder holds them, see [Where Monomi keeps its data](#where-monomi-keeps-its-data))
 - **Claude API:** whether `ANTHROPIC_API_KEY` is set (only its first 7 characters are ever shown), whether the API accepts it (one free call that lists models, no tokens used), and which model `--ai` would use
 - **DNS:** system DNS and public DNS on port 53, and DNS-over-HTTPS (Cloudflare and Google). A VPN's DNS can drop lookups under load, and doctor says so when port 53 fails
 - **Sources:** crt.sh (website and database), Cert Spotter (how much of the free hourly quota is used, or when a cooldown ends), AlienVault OTX (and whether `OTX_API_KEY` is set), Shodan InternetDB, Amazon's IP range list and the Tor exit list
@@ -414,52 +436,59 @@ Certificate Transparency (CT) is a public log of every TLS certificate issued by
 ## Project structure
 
 ```
-monomi/
-├── monomi.py             # CLI entry point
-├── doctor.py             # setup check: packages, API key, DNS, sources, MCP (monomi.py doctor)
-├── analysis.py           # Claude analysis layer
-├── enrich.py             # DNS + ASN/provider enrichment
-├── internetdb.py         # Shodan InternetDB: open ports + CVEs per IP
-├── fingerprint.py        # HTTP header fingerprinting (--fingerprint, active)
-├── headers.py            # security headers check (reads the --fingerprint response)
-├── exposed.py            # exposed API specs + JS source maps (--exposed-files, active)
-├── categorize.py         # rule-based hostname categories
-├── mcp_server.py         # MCP server mode (7 passive tools + 2 active, gated)
-├── mcp_setup.py          # adds Monomi to an MCP client's config: Claude, Codex, OpenCode, Hermes (monomi.py mcp setup)
-├── scope.py              # scope file for active checks: parse, match, hash pinning
-├── activelog.py          # scans/active.log: every active request and refusal
-├── emailauth.py          # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
-├── takeover.py           # dangling CNAME / subdomain takeover check (--takeover)
-├── threatintel.py        # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
-├── aws_ranges.py         # AWS CloudFront detection (Amazon's IP range list, cached daily)
-├── evidence.py           # evidence list, owners, citation check, Evidence section
-├── paths.py              # attack paths and leads built from the evidence, "fix this first"
-├── gate.py               # validation gate: the fixed checklist that decides path, lead or set aside
-├── suggest.py            # next checks worth running, from what the scan found
-├── report.py             # report exports: Markdown, HTML, findings CSV (--export, monomi.py report)
-├── dnscheck.py           # shared DNS helper: status words, DNS-over-HTTPS double-check
-├── history.py            # scan history per source + change detection
-├── ui.py                 # colored banner + terminal output
-├── common.py             # shared helpers: version, hostname checks, timestamps
-├── collectors/
-│   ├── crtsh.py          # crt.sh collector (with retries)
-│   ├── crtsh_db.py       # crt.sh database collector (PostgreSQL)
-│   ├── certspotter.py    # Cert Spotter collector (pagination, rate-limit retry, partial lists)
-│   ├── otx.py            # AlienVault OTX passive DNS collector (optional OTX_API_KEY)
-│   ├── pacing.py         # shared request pacing for crt.sh, Cert Spotter and OTX
-│   └── saved.py          # saved per-domain copies of each source, used when a source fails
-├── importers/
-│   ├── spiderfoot.py     # SpiderFoot CSV export parser
-│   └── subfinder.py      # subfinder output reader (--subfinder)
+monomi/                     # the repo
+├── monomi.py               # runs the CLI: python monomi.py example.com (a wrapper for monomi/cli.py)
+├── mcp_server.py           # starts the MCP server; the Claude app config points here (wrapper)
+├── pyproject.toml          # makes Monomi installable: pip install -e .
+├── monomi/                 # the monomi package: all the code
+│   ├── __init__.py         # package marker, monomi.__version__
+│   ├── __main__.py         # python -m monomi
+│   ├── home.py             # where data lives: MONOMI_HOME, the repo folder, or ~/.monomi
+│   ├── cli.py              # the command line (was monomi.py)
+│   ├── doctor.py           # setup check: packages, API key, DNS, sources, MCP (monomi.py doctor)
+│   ├── analysis.py         # Claude analysis layer
+│   ├── enrich.py           # DNS + ASN/provider enrichment
+│   ├── internetdb.py       # Shodan InternetDB: open ports + CVEs per IP
+│   ├── fingerprint.py      # HTTP header fingerprinting (--fingerprint, active)
+│   ├── headers.py          # security headers check (reads the --fingerprint response)
+│   ├── exposed.py          # exposed API specs + JS source maps (--exposed-files, active)
+│   ├── categorize.py       # rule-based hostname categories
+│   ├── mcp_server.py       # MCP server mode (7 passive tools + 2 active, gated)
+│   ├── mcp_setup.py        # adds Monomi to an MCP client's config: Claude, Codex, OpenCode, Hermes (monomi.py mcp setup)
+│   ├── scope.py            # scope file for active checks: parse, match, hash pinning
+│   ├── activelog.py        # scans/active.log: every active request and refusal
+│   ├── emailauth.py        # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
+│   ├── takeover.py         # dangling CNAME / subdomain takeover check (--takeover)
+│   ├── threatintel.py      # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
+│   ├── aws_ranges.py       # AWS CloudFront detection (Amazon's IP range list, cached daily)
+│   ├── evidence.py         # evidence list, owners, citation check, Evidence section
+│   ├── paths.py            # attack paths and leads built from the evidence, "fix this first"
+│   ├── gate.py             # validation gate: the fixed checklist that decides path, lead or set aside
+│   ├── suggest.py          # next checks worth running, from what the scan found
+│   ├── report.py           # report exports: Markdown, HTML, findings CSV (--export, monomi.py report)
+│   ├── dnscheck.py         # shared DNS helper: status words, DNS-over-HTTPS double-check
+│   ├── history.py          # scan history per source + change detection
+│   ├── ui.py               # colored banner + terminal output
+│   ├── common.py           # shared helpers: version, hostname checks, timestamps
+│   ├── collectors/
+│   │   ├── crtsh.py        # crt.sh collector (with retries)
+│   │   ├── crtsh_db.py     # crt.sh database collector (PostgreSQL)
+│   │   ├── certspotter.py  # Cert Spotter collector (pagination, rate-limit retry, partial lists)
+│   │   ├── otx.py          # AlienVault OTX passive DNS collector (optional OTX_API_KEY)
+│   │   ├── pacing.py       # shared request pacing for crt.sh, Cert Spotter and OTX
+│   │   └── saved.py        # saved per-domain copies of each source, used when a source fails
+│   └── importers/
+│       ├── spiderfoot.py   # SpiderFoot CSV export parser
+│       └── subfinder.py    # subfinder output reader (--subfinder)
 ├── skills/
-│   └── monomi/SKILL.md   # agent skill: how to use the MCP tools well
-├── scans/                # saved scans per domain (git-ignored)
-├── reports/              # generated reports (git-ignored)
-├── cache/                # cached AWS IP range list (git-ignored)
-├── tests/                # pytest suite (run: pytest)
-├── pytest.ini            # pytest settings
+│   └── monomi/SKILL.md     # agent skill: how to use the MCP tools well
+├── scans/                  # saved scans per domain (git-ignored)
+├── reports/                # generated reports (git-ignored)
+├── cache/                  # cached AWS IP range list (git-ignored)
+├── tests/                  # pytest suite (run: pytest)
+├── pytest.ini              # pytest settings
 ├── requirements.txt
-└── requirements-dev.txt  # requirements + pytest, for development
+└── requirements-dev.txt    # requirements + pytest, for development
 ```
 
 ## Limitations
@@ -535,6 +564,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.13: a validation gate (one fixed checklist that decides attack path, lead or set aside, shown in every output and on MCP takeover leads; an unknown dangling CNAME and a takeover resting on system DNS alone are now leads) and `mcp setup --client` for Codex CLI, OpenCode and Hermes Agent, with `doctor` checking every client. Plus an agent skill (`skills/monomi`), a "Try it" section and a field test issue template
 - [x] v1.13.1: gate fixes from the first bug bounty field run: out-of-scope hosts never feed a path rule (anything about them alone is set aside, and outputs say how many were left out), check 2 knows third-party hosting and AWS Global Accelerator (not just CDNs), and dangling CNAMEs to AWS API Gateway names are stale, not leads
 - [x] v1.14: finds more: AlienVault OTX passive DNS as a fourth source (optional free key, `doctor` check), subfinder import (`--subfinder`, MCP `subfinder_file`), history kept per source (a failed, cut-short or new source can't make hosts look new or gone), cut-short sources marked **partial** (fixes fake [GONE] hosts after Cert Spotter was rate-limited mid-way), and honest cooldown wording when a source is skipped
+- [x] v1.14.1: installable package: the code moves into `monomi/`, `pip install -e .` installs it (plus `monomi` and `monomi-mcp` commands, `python -m monomi`), so other tools like Akashi can `from monomi import ...`. Data stays where it was when running from the repo, `MONOMI_HOME` can move it, and a plain install uses `~/.monomi`. `python monomi.py` and existing MCP configs keep working unchanged. Requires Python 3.14+
 
 **Next**
 - [ ] "Go around the CDN" leads per server, so a big organization doesn't get one lead covering a hundred hosts; fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
@@ -550,7 +580,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [ ] Plugin system for data sources
 - [ ] Per-target scan history (SQLite)
 - [ ] HTML graph export
-- [ ] Installable package (`pip install monomi`)
+- [ ] Publish on PyPI (`pip install monomi`)
 - [ ] Web interface
 
 ## License

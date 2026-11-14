@@ -26,13 +26,14 @@ from datetime import datetime
 
 import requests
 
-from monomi import activelog, aws_ranges, dnscheck, home, internetdb, mcp_setup, scope, threatintel, ui
+from monomi import (activelog, aws_ranges, dnscheck, home, internetdb, mcp_setup, scope,
+                    threatintel, ui)
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, pacing, saved
 from monomi.common import USER_AGENT
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 REQUIREMENTS = os.path.join(home.REPO_DIR, "requirements.txt")  # only in a copy of the repo
-MIN_PYTHON = (3, 10)
+MIN_PYTHON = (3, 14)  # same as requires-python in pyproject.toml
 # Built from pieces so chat apps don't turn it into a link when pasting
 CONSOLE = "console.anthropic" + ".com"
 

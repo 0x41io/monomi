@@ -28,6 +28,22 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
 - Must run on Linux, macOS, WSL and native Windows. No Linux-only modules
   without a Windows path (the v1.9.1 `fcntl` crash).
 
+## Code layout (since v1.14.1)
+
+- All code lives in the `monomi/` package. A new module goes in `monomi/`
+  (or `monomi/collectors/`, `monomi/importers/`), never at the repo root.
+- Imports between Monomi's own files are absolute: `from monomi import scope`,
+  `from monomi.ui import warn`. Never a bare `import scope`: installed, that
+  would be a loose top-level module (tests/test_package.py catches it).
+- The CLI is `monomi/cli.py`. The root `monomi.py` and `mcp_server.py` are
+  wrappers that only call `main()`. Keep them that way, with no logic, since
+  existing commands and MCP configs point at them.
+- Data folders (`scans/`, `reports/`, `cache/`) come from
+  `home.data_dir(...)`. Never build a path from `__file__` anywhere else.
+  Code files (`requirements.txt`, the wrapper the MCP config starts) come from
+  `home.REPO_DIR` and only exist when running from a copy of the repo.
+- Install for development with `pip install -e .` (editable).
+
 ## Before you write code
 
 1. **Check with Roi before any change of direction**: anything beyond what
@@ -50,7 +66,7 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
 
 ## Release checklist (every release, no exceptions)
 
-- [ ] `VERSION` in `common.py` bumped
+- [ ] `VERSION` in `monomi/common.py` bumped
 - [ ] README roadmap: release added under done **and** removed from "Next"
 - [ ] Tests for every tool or function touched (behavior, not key presence)
 - [ ] Full test suite passes: `source venv/bin/activate && pytest -q`
@@ -69,9 +85,11 @@ Roi is learning as he goes and types or applies every change himself.
 - Explain in depth what each piece of code does and why.
 - Say exactly where every piece goes: which file and where in it. His
   keyboard has no Home or End key.
-- Preferred: one patch file he saves to Downloads and applies with
-  `git apply` from `/mnt/c/Users/17203/Downloads`, then `pytest` and
-  `md5sum` to prove the files match the tested copy.
+- Preferred: patch files made with `git format-patch -M` (renames kept),
+  saved to Downloads and applied with `git am` from
+  `/mnt/c/Users/17203/Downloads` (makes the commit with its message;
+  `git am --abort` undoes a failed one), then `pytest`. Test-apply each
+  patch on a clean copy first and check the tree matches the tested copy.
 - If pasting instead: heredocs at the bash prompt (never inside nano),
   each paste under ~4 KB, never three backticks in a row, and no real
   domain names in pasted code (his chat app turns them into links). Build

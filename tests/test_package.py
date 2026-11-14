@@ -95,3 +95,11 @@ def test_pyproject_reads_the_version_and_dependencies_from_their_one_home():
     assert project["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "monomi.common.VERSION"}
     assert project["tool"]["setuptools"]["dynamic"]["dependencies"] == {"file": ["requirements.txt"]}
     assert project["project"]["scripts"] == {"monomi": "monomi.cli:main", "monomi-mcp": "monomi.mcp_server:main"}
+
+
+def test_doctor_and_pyproject_agree_on_the_minimum_python():
+    import tomllib
+    from monomi import doctor
+    with open(os.path.join(REPO, "pyproject.toml"), "rb") as f:
+        wanted = tomllib.load(f)["project"]["requires-python"]
+    assert wanted == ">=" + ".".join(map(str, doctor.MIN_PYTHON))
