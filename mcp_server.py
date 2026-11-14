@@ -32,6 +32,7 @@ import exposed
 import scope
 import internetdb
 import threatintel
+from importers import subfinder
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -248,21 +249,28 @@ def clean_hosts(hostnames: list[str], limit: int = MAX_HOSTS) -> tuple[list[str]
     return hosts[:limit], max(len(hosts) - limit, 0), rejected[:20]
 
 
-def load_hosts_file(path: str) -> list[str]:
-    """Hostnames from a file in Monomi's scans folder: a .json file with a
-    "hostnames" list (what find_subdomains saves) or a .txt file with one
-    host per line ("#" starts a comment). Files anywhere else are refused,
-    so an agent can't be tricked into reading other files (like ~/.bashrc)."""
+def scans_file(path: str, what: str, endings: tuple[str, ...]) -> str:
+    """The real path of a file inside Monomi's scans folder, or a ToolError.
+    Files anywhere else are refused, so an agent can't be tricked into
+    reading other files (like ~/.bashrc)."""
     if not os.path.isabs(path):
         path = os.path.join(SCANS_DIR, path)  # "mcp/x.json" means scans/mcp/x.json
     real = os.path.realpath(path)  # follows ../ and symlinks to where the file really is
     scans = os.path.realpath(SCANS_DIR)
     if os.path.commonpath([real, scans]) != scans:
-        raise ToolError(f"hosts_file must be inside Monomi's scans folder ({scans})")
-    if not real.lower().endswith((".json", ".txt")):
-        raise ToolError("hosts_file must be a .json or .txt file")
+        raise ToolError(f"{what} must be inside Monomi's scans folder ({scans})")
+    if not real.lower().endswith(endings):
+        raise ToolError(f"{what} must be a {' or '.join(endings)} file")
     if not os.path.isfile(real):
-        raise ToolError(f"hosts_file not found: {path}")
+        raise ToolError(f"{what} not found: {path}")
+    return real
+
+
+def load_hosts_file(path: str) -> list[str]:
+    """Hostnames from a file in Monomi's scans folder: a .json file with a
+    "hostnames" list (what find_subdomains saves) or a .txt file with one
+    host per line ("#" starts a comment)."""
+    real = scans_file(path, "hosts_file", (".json", ".txt"))
     with open(real) as f:
         if not real.lower().endswith(".json"):
             return [line.split("#")[0] for line in f]
@@ -301,7 +309,8 @@ def ping(name: str = "world") -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
-def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str] | None = None) -> dict:
+def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str] | None = None,
+                    subfinder_file: str | None = None) -> dict:
     """Find a domain's subdomains from public Certificate Transparency logs
     (crt.sh and Cert Spotter) and AlienVault OTX passive DNS (hostnames seen
     answering in DNS, including ones with no certificate). Passive: never
@@ -323,13 +332,25 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
     call's results (suggestions only, nothing runs). Pass the tools you
     already called as "already_ran" (e.g. ["check_takeover"]) to leave
     them out. "cli_only" suggestions need the Monomi CLI, not a tool.
+    subfinder_file: a subfinder output file (plain, -oJ or -oI) inside
+    Monomi's scans folder, e.g. "subfinder/example.txt"; its hostnames are
+    added as the "subfinder" source. Monomi never runs subfinder itself.
     """
     ran = check_already_ran(already_ran)
     domain = clean_domain(domain)
+    imported = None
+    if subfinder_file is not None:  # check the file before spending time on the sources
+        real = scans_file(subfinder_file, "subfinder_file", (".txt", ".json", ".jsonl"))
+        try:
+            imported = subfinder.to_source(subfinder.load(real, domain), real)
+        except (OSError, ValueError) as e:
+            raise ToolError(f"can't read subfinder_file: {e}")
 
     results = {"sources": {}, "errors": {}}
     with contextlib.redirect_stdout(sys.stderr):
         collect_ct(results, domain, crtsh_budget=CRTSH_BUDGET, crtsh_light=True, total_budget=TOTAL_BUDGET)
+    if imported:
+        results["sources"]["subfinder"] = imported
     hostnames = sorted({h for r in results["sources"].values() for h in r["subdomains"]})
     wildcards = sorted({w for r in results["sources"].values() for w in r.get("wildcards", [])})
     categories = categorize_all(hostnames, domain)
@@ -348,6 +369,7 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
                 "collected_at": r["collected_at"],
                 "from_saved": r.get("from_saved", False),
                 "partial": r.get("partial"),  # why the list was cut short, or None
+                **({"file": r["file"], "skipped": r["skipped"]} if "file" in r else {}),
             }
             for name, r in results["sources"].items()
         },

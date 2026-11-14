@@ -71,6 +71,8 @@ def build_evidence(results: dict) -> list[dict]:
                       "collected_at": r.get("collected_at")}
             if r.get("from_saved"):
                 source["from_saved"] = True  # not this scan's data (validation gate check 3)
+            if r.get("imported_at"):
+                source["imported_at"] = r["imported_at"]  # another tool's list (subfinder)
             seen_by.setdefault(host, []).append(source)
     for host in results["subdomains"]:
         names = ", ".join(s["name"] for s in seen_by[host])

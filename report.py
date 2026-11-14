@@ -28,7 +28,7 @@ SEVERITIES = ("High", "Medium", "Low")
 # Cells starting with these can run as formulas in Excel / Sheets
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 # How source keys are shown (the same names the terminal uses)
-SOURCE_LABELS = {"certspotter": "Cert Spotter", "otx": "AlienVault OTX"}
+SOURCE_LABELS = {"certspotter": "Cert Spotter", "otx": "AlienVault OTX", "subfinder": "subfinder import"}
 CSV_COLUMNS = ["id", "host", "finding", "owners", "attack_paths",
                "worst_path_severity", "fix_first", "source", "collected_at"]
 

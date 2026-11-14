@@ -18,7 +18,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from collectors import certspotter, crtsh, crtsh_db, otx, saved
 from common import is_hostname, now_utc
-from importers import spiderfoot
+from importers import spiderfoot, subfinder
 import doctor
 import emailauth
 import enrich
@@ -90,6 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
+    parser.add_argument("--subfinder", metavar="FILE",
+                        help="also check the hostnames in a subfinder output file (plain, -oJ or -oI); "
+                             "Monomi never runs subfinder itself")
     parser.add_argument("--investigate-ip", nargs="+", metavar="IP",
                         help="look into suspicious IP(s): Tor/VPN/hosting signs, network owner, Shodan (asks public sources, never the IP)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
@@ -164,6 +167,22 @@ def add_hosts_file(results: dict, path: str, domain: str) -> bool:
         warn(f"Skipped {ui.safe(line)}")
     if len(skipped) > 10:
         warn(f"...and {len(skipped) - 10} more skipped lines")
+    return True
+
+
+def add_subfinder(results: dict, path: str, domain: str) -> bool:
+    """--subfinder: add the output file's hostnames as their own source. False if unreadable."""
+    try:
+        loaded = subfinder.load(path, domain)
+    except (OSError, ValueError) as e:
+        fail(f"Can't read the subfinder file: {e}")
+        return False
+    r = subfinder.to_source(loaded, path)
+    results["sources"]["subfinder"] = r
+    good(f"subfinder: {r['subdomain_count']} hostnames from {short_path(path)} "
+         f"(written {r['collected_at']})")
+    for line in r["skipped"]:
+        warn(f"Skipped {line}")
     return True
 
 
@@ -677,8 +696,10 @@ def show_changes(results: dict) -> None:
     if previous is None:
         info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
         if notes:
+            one = len(notes) == 1
             warn(f"Not complete: {'; '.join(notes.values())}. "
-                 "Those sources join the baseline once they work fully.")
+                 f"{'That source joins' if one else 'Those sources join'} the baseline once "
+                 f"{'it works' if one else 'they work'} fully.")
         return
 
     changes = history.compare(previous, entries)
@@ -695,8 +716,9 @@ def show_changes(results: dict) -> None:
              f"{'' if len(hosts) == 1 else 's'} only it found {'is' if len(hosts) == 1 else 'are'} "
              "its starting point, not marked new.")
     if notes:
-        warn(f"Not complete: {'; '.join(notes.values())}. Hosts those sources saw last time "
-             "are kept, so none is marked gone because of it.")
+        one = len(notes) == 1
+        warn(f"Not complete: {'; '.join(notes.values())}. Hosts {'that source' if one else 'those sources'} "
+             f"saw last time are kept, so none is marked gone because of {'it' if one else 'them'}.")
 
 
 def show_paths(results: dict) -> None:
@@ -1010,6 +1032,8 @@ def main() -> int:
     else:
         collect_ct(results, domain)
     if args.hosts and not add_hosts_file(results, args.hosts, domain):
+        return 1
+    if args.subfinder and not add_subfinder(results, args.subfinder, domain):
         return 1
 
     if not any(r["subdomains"] for r in results["sources"].values()):

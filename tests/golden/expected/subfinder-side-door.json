@@ -1,0 +1,357 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "ct-uat.subfind.test was found by subfinder",
+      "sources": [
+        {
+          "name": "subfinder",
+          "collected_at": "2026-11-13T11:00:00+00:00",
+          "imported_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "ct-uat2.subfind.test was found by subfinder",
+      "sources": [
+        {
+          "name": "subfinder",
+          "collected_at": "2026-11-13T11:00:00+00:00",
+          "imported_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "ct-uat3.subfind.test was found by subfinder",
+      "sources": [
+        {
+          "name": "subfinder",
+          "collected_at": "2026-11-13T11:00:00+00:00",
+          "imported_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "ct.subfind.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E5",
+      "fact": "subfind.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-13T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E6",
+      "fact": "ct-uat.subfind.test resolves to 192.0.2.50 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct-uat.subfind.test"
+    },
+    {
+      "id": "E7",
+      "fact": "ct-uat2.subfind.test resolves to 192.0.2.50 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct-uat2.subfind.test"
+    },
+    {
+      "id": "E8",
+      "fact": "ct-uat3.subfind.test resolves to 192.0.2.50 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct-uat3.subfind.test"
+    },
+    {
+      "id": "E9",
+      "fact": "ct.subfind.test resolves to 192.0.2.50 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "ct.subfind.test"
+    },
+    {
+      "id": "E10",
+      "fact": "subfind.test resolves to 192.0.2.50 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "subfind.test"
+    },
+    {
+      "id": "E11",
+      "fact": "ct-uat.subfind.test is live and its name puts it in the 'non-production' category (part 'uat' of label 'ct-uat' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "ct-uat.subfind.test"
+    },
+    {
+      "id": "E12",
+      "fact": "ct-uat2.subfind.test is live and its name puts it in the 'non-production' category (part 'uat2' of label 'ct-uat2' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "ct-uat2.subfind.test"
+    },
+    {
+      "id": "E13",
+      "fact": "ct-uat3.subfind.test is live and its name puts it in the 'non-production' category (part 'uat3' of label 'ct-uat3' matched rule word 'uat')",
+      "sources": [
+        {
+          "name": "hostname rules",
+          "collected_at": "2000-01-01T00:00:00Z"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "risky_name",
+      "host": "ct-uat3.subfind.test"
+    },
+    {
+      "id": "E14",
+      "fact": "192.0.2.50 (subfind.test) has open ports: 80, 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "open_ports",
+      "host": "192.0.2.50"
+    },
+    {
+      "id": "E15",
+      "fact": "Shodan InternetDB lists 1 CVE(s) for 192.0.2.50 (subfind.test), matched from software version banners: CVE-2099-0005",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "cves",
+      "host": "192.0.2.50"
+    }
+  ],
+  "paths": {
+    "paths": [
+      {
+        "title": "Use ct-uat.subfind.test, ct-uat2.subfind.test and ct-uat3.subfind.test as a side door into 192.0.2.50",
+        "severity": "Medium",
+        "strength": "Lead",
+        "steps": [
+          {
+            "text": "ct-uat.subfind.test, ct-uat2.subfind.test and ct-uat3.subfind.test are live and named like non-production hosts",
+            "evidence": [
+              "E11",
+              "E12",
+              "E13"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "They are on the same IP (192.0.2.50) as ct.subfind.test and subfind.test",
+            "evidence": [
+              "E6",
+              "E7",
+              "E8",
+              "E9",
+              "E10"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "Non-production sites are often less protected, so ct-uat.subfind.test, ct-uat2.subfind.test and ct-uat3.subfind.test are likely first targets, and getting in there may mean getting into the same server",
+            "evidence": [
+              "E11",
+              "E12",
+              "E13"
+            ],
+            "label": "Inference"
+          },
+          {
+            "text": "The server shows software versions an attacker can match to public exploits (versions must be verified)",
+            "evidence": [
+              "E15"
+            ],
+            "label": "Lead"
+          }
+        ],
+        "outcome": "Access to the server that also runs ct.subfind.test",
+        "actions": [
+          {
+            "what": "Take ct-uat.subfind.test off the internet or restrict who can reach it",
+            "evidence": [
+              "E11"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          },
+          {
+            "what": "Take ct-uat2.subfind.test off the internet or restrict who can reach it",
+            "evidence": [
+              "E12"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          },
+          {
+            "what": "Take ct-uat3.subfind.test off the internet or restrict who can reach it",
+            "evidence": [
+              "E13"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          },
+          {
+            "what": "Upgrade or patch the server software on 192.0.2.50",
+            "evidence": [
+              "E15"
+            ],
+            "owners": [
+              "server / infrastructure admin"
+            ]
+          }
+        ],
+        "gate": {
+          "result": "finding",
+          "passed": 6,
+          "of": 6,
+          "failed": [],
+          "notes": []
+        },
+        "id": "P1"
+      }
+    ],
+    "leads": [],
+    "set_aside": [],
+    "fix_first": {
+      "actions": [
+        {
+          "what": "Take ct-uat.subfind.test off the internet or restrict who can reach it",
+          "evidence": [
+            "E11"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        },
+        {
+          "what": "Take ct-uat2.subfind.test off the internet or restrict who can reach it",
+          "evidence": [
+            "E12"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        },
+        {
+          "what": "Take ct-uat3.subfind.test off the internet or restrict who can reach it",
+          "evidence": [
+            "E13"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        },
+        {
+          "what": "Upgrade or patch the server software on 192.0.2.50",
+          "evidence": [
+            "E15"
+          ],
+          "owners": [
+            "server / infrastructure admin"
+          ]
+        }
+      ],
+      "closes": [
+        "P1"
+      ],
+      "partial": [],
+      "still_required_actions": []
+    },
+    "more": 0,
+    "more_leads": 0,
+    "more_set_aside": 0,
+    "out_of_scope_hosts": []
+  }
+}

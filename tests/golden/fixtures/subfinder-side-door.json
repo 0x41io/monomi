@@ -1,0 +1,114 @@
+{
+  "target": "subfind.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-13T12:00:00+00:00",
+      "subdomains": [
+        "subfind.test",
+        "ct.subfind.test"
+      ]
+    },
+    "subfinder": {
+      "source": "subfinder",
+      "file": "subfinder-out.txt",
+      "collected_at": "2026-11-13T11:00:00+00:00",
+      "imported_at": "2026-11-13T12:00:00+00:00",
+      "subdomain_count": 3,
+      "subdomains": [
+        "ct-uat.subfind.test",
+        "ct-uat2.subfind.test",
+        "ct-uat3.subfind.test"
+      ],
+      "found_by": {
+        "ct-uat.subfind.test": [
+          "otx"
+        ],
+        "ct-uat2.subfind.test": [
+          "otx"
+        ],
+        "ct-uat3.subfind.test": [
+          "otx"
+        ]
+      },
+      "skipped": []
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "ct-uat.subfind.test",
+    "ct-uat2.subfind.test",
+    "ct-uat3.subfind.test",
+    "ct.subfind.test",
+    "subfind.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "ct-uat.subfind.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "ct-uat2.subfind.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "ct-uat3.subfind.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "ct.subfind.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "subfind.test": {
+        "ips": [
+          "192.0.2.50"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "192.0.2.50": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [
+          "CVE-2099-0005"
+        ],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "subfind.test"
+        ],
+        "provider": "DigitalOcean",
+        "shared_edge": false,
+        "risky": []
+      }
+    },
+    "nothing_seen": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}
