@@ -8,6 +8,15 @@ renames, moves or drops one of these, this test fails before Akashi breaks.
 Changing something on purpose? Update this file in the same commit, say so in
 the release notes, and bump the Monomi version Akashi pins.
 
+Since v1.15 every path, lead and set-aside item also has "rule" (which rule
+built it, one of RULES) and "targets" (what it's about: always "hosts" and
+"ips", plus the keys RULE_KEYS lists for its rule). Akashi picks its proof by
+"rule" and builds its requests from "targets", never from the text. It may
+only rely on a targets key listed here for that rule. "fronted" on an
+around_cdn lead is every host behind the CDN: Akashi caps how many it tries.
+Saved scans start with "monomi_version" (X.Y.Z, compared as numbers with
+common.parse_version); Akashi refuses scans older than 1.15.0.
+
 Lead types Akashi v0.1 proves (design decision 2):
   takeover        "Take over <host>" paths and leads   (fixture: takeover-lead)
   around the CDN  rule F "can be reached around <CDN>" (fixtures: cves-edge-vs-own, 41xlab)
@@ -23,8 +32,10 @@ from pathlib import Path
 
 import pytest
 
-from monomi import activelog, dnscheck, evidence, fingerprint, scope, takeover
-from monomi.paths import build_paths
+import test_gate
+import test_paths
+from monomi import activelog, cli, common, dnscheck, evidence, fingerprint, scope, takeover
+from monomi.paths import RULES, build_paths
 
 FIXTURES = Path(__file__).parent / "golden" / "fixtures"
 
@@ -46,7 +57,19 @@ PATH_KEYS = {"id", "rule", "targets", "title", "severity", "strength", "steps", 
 LEAD_KEYS = PATH_KEYS | {"missing"}
 GATE_KEYS = {"result", "passed", "of", "failed", "notes"}
 EVIDENCE_KEYS = {"id", "fact", "sources", "owners", "kind", "host"}
-CONTRACT_SCANS = ["takeover-lead", "cves-edge-vs-own", "41xlab"]
+CONTRACT_SCANS = ["takeover-lead", "cves-edge-vs-own", "41xlab", "two-origins"]
+
+# The extra "targets" keys each rule has, besides "hosts" and "ips"
+RULE_KEYS = {
+    "takeover": {"cname", "service", "claimable", "nxdomain_confirmed_by"},
+    "takeover_unknown": {"cname", "service", "claimable", "nxdomain_confirmed_by"},
+    "email_spoofing": {"verdict"},
+    "exposed_service": {"services"},
+    "known_cves": {"cves", "versions"},
+    "version_check": {"versions"},
+    "side_door": {"shared_with"},
+    "around_cdn": {"fronted", "cdn"},
+}
 
 
 @pytest.mark.parametrize("name", CONTRACT_SCANS)
@@ -84,6 +107,119 @@ def test_evidence_items_keep_their_shape(name):
         assert item["id"] == f"E{n}"
         for source in item["sources"]:
             assert set(source) == {"name", "collected_at"}
+
+
+# ---------- 1b. rule + targets on every item (v1.15) ----------
+
+def built_scans():
+    """Every scan the contract checks: the golden fixtures, plus small built
+    scans for the rules no fixture has (an exposed service, a version-only
+    lead) and for a set-aside item (a version seen on a CDN edge IP)."""
+    for name in CONTRACT_SCANS:
+        yield (name, *scan(name))
+    exposed = test_paths.lab_results()
+    exposed["subdomains"].append("db")
+    exposed["exposure"] = {"ips": {"198.51.100.20": {"shared_edge": False, "hosts": ["db"], "ports": [5432],
+                                                     "tags": [], "risky": ["5432/PostgreSQL"], "vulns": []}}}
+    version = test_paths.lab_results()
+    version["enrichment"]["hosts"].pop("staging")  # no side door left, so the version is its own lead
+    for name, results in [("exposed-service", exposed), ("version-only", version),
+                          ("edge-version", test_gate.edge_version_results())]:
+        ev = evidence.build_evidence(results)
+        yield name, results, ev, build_paths(results, ev)
+
+
+def all_items(built):
+    return built["paths"] + built["leads"] + built["set_aside"]
+
+
+def test_rule_names_are_fixed():
+    # Akashi picks its proof by these names: renaming one breaks it
+    assert RULES == ("takeover", "takeover_unknown", "email_spoofing", "exposed_service",
+                     "known_cves", "version_check", "side_door", "around_cdn")
+    assert set(RULE_KEYS) == set(RULES)
+
+
+@pytest.mark.parametrize("name, results, ev, built", list(built_scans()), ids=lambda x: x if isinstance(x, str) else "")
+def test_every_item_has_rule_and_targets(name, results, ev, built):
+    for item in all_items(built):
+        assert item["rule"] in RULES, item["title"]
+        targets = item["targets"]
+        assert set(targets) == {"hosts", "ips"} | RULE_KEYS[item["rule"]], (item["rule"], sorted(targets))
+        assert isinstance(targets["hosts"], list) and isinstance(targets["ips"], list)
+        assert all(isinstance(h, str) for h in targets["hosts"] + targets["ips"])
+        for v in targets.get("versions", []):
+            assert set(v) == {"host", "tech", "version"}
+
+
+def test_every_rule_is_covered():
+    seen = {item["rule"] for *_, built in built_scans() for item in all_items(built)}
+    assert seen == set(RULES)  # a new rule needs a scan here that produces it
+
+
+def contains_key(data, key):
+    if isinstance(data, dict):
+        return key in data or any(contains_key(v, key) for v in data.values())
+    if isinstance(data, list):
+        return any(contains_key(v, key) for v in data)
+    return False
+
+
+@pytest.mark.parametrize("name, results, ev, built", list(built_scans()), ids=lambda x: x if isinstance(x, str) else "")
+def test_gate_input_never_leaves_the_gate(name, results, ev, built):
+    # Searched all the way down, not only each item's own keys
+    assert not contains_key(built, "gate_input")
+
+
+def test_set_aside_items_have_rule_and_targets():
+    _, _, built = next((r, e, b) for n, r, e, b in built_scans() if n == "edge-version")
+    aside = next(i for i in built["set_aside"] if i["rule"] == "version_check")
+    assert aside["targets"]["ips"] == ["203.0.113.9"]
+    assert set(aside) == {"rule", "targets", "title", "severity", "why", "gate"}
+
+
+# Exact targets per rule, on the scans above
+EXPECTED_TARGETS = {
+    ("takeover-lead", "P1"): ("takeover", {
+        "hosts": ["old-app.takeover.test"], "ips": [], "cname": "old-app-zz9.azurewebsites.net",
+        "service": "Azure App Service", "claimable": True, "nxdomain_confirmed_by": ["Cloudflare", "Google"]}),
+    ("takeover-lead", "L1"): ("takeover_unknown", {
+        "hosts": ["legacy-cdn.takeover.test"], "ips": [], "cname": "gone-zz9.unknownhost.test",
+        "service": None, "claimable": False, "nxdomain_confirmed_by": ["Cloudflare", "Google"]}),
+    ("41xlab", "P1"): ("email_spoofing", {"hosts": ["41xlab.com"], "ips": [], "verdict": "spoofable"}),
+    ("41xlab", "L1"): ("side_door", {"hosts": ["dev.41xlab.com", "staging.41xlab.com"],
+                                     "ips": ["64.227.89.72"], "shared_with": ["41xlab.com"]}),
+    ("41xlab", "L2"): ("around_cdn", {"hosts": ["41xlab.com", "dev.41xlab.com", "staging.41xlab.com"],
+                                      "ips": ["64.227.89.72"], "fronted": ["www.41xlab.com"], "cdn": "Cloudflare"}),
+    ("cves-edge-vs-own", "P1"): ("known_cves", {"hosts": ["cves.test"], "ips": ["203.0.113.10"],
+                                                "cves": ["CVE-2099-0001", "CVE-2099-0002"], "versions": []}),
+    ("two-origins", "L1"): ("around_cdn", {"hosts": ["app.origins.test", "origins.test"], "ips": ["203.0.113.10"],
+                                           "fronted": ["www.origins.test"], "cdn": "Cloudflare"}),
+    ("two-origins", "L2"): ("around_cdn", {"hosts": ["api.origins.test"], "ips": ["203.0.113.20"],
+                                           "fronted": ["www.origins.test"], "cdn": "Cloudflare"}),
+    ("exposed-service", "P2"): ("exposed_service", {"hosts": ["db"], "ips": ["198.51.100.20"],
+                                                    "services": ["5432/PostgreSQL"]}),
+    ("version-only", "L2"): ("version_check", {"hosts": ["lab"], "ips": ["198.51.100.7"],
+                                               "versions": [{"host": "lab", "tech": "nginx", "version": "1.28.3"}]}),
+}
+
+
+@pytest.mark.parametrize("where", list(EXPECTED_TARGETS), ids=lambda w: f"{w[0]}-{w[1]}")
+def test_exact_targets(where):
+    built = next(b for n, r, e, b in built_scans() if n == where[0])
+    item = by_id(built["paths"] + built["leads"])[where[1]]
+    assert (item["rule"], item["targets"]) == EXPECTED_TARGETS[where]
+
+
+# ---------- 1c. Which Monomi saved the scan ----------
+
+def test_saved_scan_has_a_version_akashi_can_compare(tmp_path, capsys):
+    path = tmp_path / "scan.json"
+    cli.save_json({"target": "lab"}, str(path))
+    saved = json.loads(path.read_text())
+    assert list(saved)[0] == "monomi_version"
+    assert common.scan_version(saved) == common.parse_version(common.VERSION) is not None
+    assert common.scan_version({"target": "lab"}) is None  # a scan saved before v1.15.0
 
 
 # ---------- 2. Takeover ----------
@@ -213,6 +349,9 @@ API = {
     # takeover service lists
     takeover.match_service: "(target: str) -> str | None",
     takeover.match_not_claimable: "(target: str) -> str | None",
+    # which Monomi saved a scan (Akashi refuses anything older than 1.15.0)
+    common.parse_version: "(text) -> tuple[int, int, int] | None",
+    common.scan_version: "(results: dict) -> tuple[int, int, int] | None",
     # building what Akashi reads from a saved scan
     evidence.build_evidence: "(results: dict) -> list[dict]",
     build_paths: "(results: dict, evidence: list[dict], scope=None) -> dict",
