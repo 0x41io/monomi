@@ -196,3 +196,20 @@ def test_hosts_file_fence_follows_monomi_home(tmp_path):
     assert result["inside"] == ["a.lab.test\n"]
     assert result["outside"].startswith("refused: hosts_file must be inside Monomi's scans folder")
     assert str(data / "scans") in result["outside"]
+
+
+# ---------- tests never touch the real data folder ----------
+
+def test_tests_run_with_a_throwaway_data_folder():
+    # tests/conftest.py sets MONOMI_HOME before Monomi loads, so a test can't
+    # write into the real scans/ folder or the real scans/active.log
+    test_home = os.environ[home.ENV_VAR]  # set by conftest.py (never import conftest: it would run again)
+    assert os.path.basename(test_home).startswith("monomi-tests-")
+    from monomi import activelog, cli, history, mcp_server, mcp_setup, report
+    from monomi.collectors import saved
+    assert home.data_home() == test_home != REPO
+    for path in (history.SCANS_DIR, mcp_server.SCANS_DIR, mcp_server.ACTIVE_LOG, mcp_setup.ACTIVE_LOG,
+                 report.REPORTS_DIR, cli.REPORTS_DIR):
+        assert path.startswith(test_home), path
+    # The per-test fixtures go further still: each test gets its own folder
+    assert not activelog.PATH.startswith(REPO) and not saved.SCANS_DIR.startswith(REPO)

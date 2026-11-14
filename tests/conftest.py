@@ -1,7 +1,23 @@
-import pytest
+import os
+import shutil
+import tempfile
 
-from monomi import activelog, dnscheck
-from monomi.collectors import otx, pacing, saved
+# Before any Monomi module loads: point every data folder (scans/, reports/,
+# cache/, scans/active.log) at a throwaway folder. Monomi builds those paths
+# once, when a module is imported, so this has to come first. It keeps tests
+# (including tests that start Monomi in a subprocess, which inherit this) from
+# ever writing into the real scans/ folder or the real active-request log.
+TEST_HOME = tempfile.mkdtemp(prefix="monomi-tests-")
+os.environ["MONOMI_HOME"] = TEST_HOME
+
+import pytest  # noqa: E402
+
+from monomi import activelog, dnscheck  # noqa: E402
+from monomi.collectors import otx, pacing, saved  # noqa: E402
+
+
+def pytest_sessionfinish(session, exitstatus):
+    shutil.rmtree(TEST_HOME, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
