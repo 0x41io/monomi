@@ -1,0 +1,64 @@
+{
+  "target": "takeover.test",
+  "sources": {
+    "hosts file": {
+      "source": "hosts file",
+      "subdomains": [
+        "old-app.takeover.test",
+        "legacy-cdn.takeover.test",
+        "www.takeover.test"
+      ],
+      "collected_at": "2026-11-08T12:00:00+00:00"
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "legacy-cdn.takeover.test",
+    "old-app.takeover.test",
+    "www.takeover.test"
+  ],
+  "takeover": {
+    "leads": [
+      {
+        "host": "old-app.takeover.test",
+        "cname": "old-app-zz9.azurewebsites.net",
+        "service": "Azure App Service",
+        "claimable": true,
+        "nxdomain_confirmed_by": [
+          "Cloudflare",
+          "Google"
+        ],
+        "collected_at": "2026-11-08T12:00:00+00:00"
+      },
+      {
+        "host": "legacy-cdn.takeover.test",
+        "cname": "gone-zz9.unknownhost.test",
+        "service": null,
+        "claimable": false,
+        "nxdomain_confirmed_by": [
+          "Cloudflare",
+          "Google"
+        ],
+        "collected_at": "2026-11-08T12:00:00+00:00"
+      }
+    ],
+    "stale": [],
+    "results": {
+      "old-app.takeover.test": {
+        "status": "lead",
+        "cname": "old-app-zz9.azurewebsites.net"
+      },
+      "legacy-cdn.takeover.test": {
+        "status": "lead",
+        "cname": "gone-zz9.unknownhost.test"
+      },
+      "www.takeover.test": {
+        "status": "no_cname",
+        "cname": null
+      }
+    },
+    "checked": 3,
+    "errors": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}

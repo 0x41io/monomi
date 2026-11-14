@@ -119,7 +119,7 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.14.1"`. It isn't on PyPI yet.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.14.1"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
 
 ### API key (only for `--ai`)
 

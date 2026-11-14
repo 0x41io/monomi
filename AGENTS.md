@@ -43,6 +43,11 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
   Code files (`requirements.txt`, the wrapper the MCP config starts) come from
   `home.REPO_DIR` and only exist when running from a copy of the repo.
 - Install for development with `pip install -e .` (editable).
+- `tests/test_contract.py` locks what Akashi reads: the shape of paths,
+  leads, gate blocks and evidence, the takeover / around-the-CDN / email
+  fields, status words, and the signatures of the functions Akashi imports.
+  If it fails, you broke Akashi. Change it only on purpose, in the same
+  commit, and say so in the release notes.
 
 ## Before you write code
 

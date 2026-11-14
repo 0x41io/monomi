@@ -1,0 +1,194 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "legacy-cdn.takeover.test was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "old-app.takeover.test was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "www.takeover.test was found by hosts file",
+      "sources": [
+        {
+          "name": "hosts file",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "old-app.takeover.test has a CNAME to old-app-zz9.azurewebsites.net (Azure App Service), and that target does not exist (NXDOMAIN); this service lets deleted names be claimed again",
+      "sources": [
+        {
+          "name": "DNS CNAME lookups (takeover check)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin",
+        "cloud / service account owner"
+      ],
+      "kind": "takeover_lead",
+      "host": "old-app.takeover.test"
+    },
+    {
+      "id": "E5",
+      "fact": "legacy-cdn.takeover.test has a CNAME to gone-zz9.unknownhost.test, and that target does not exist (NXDOMAIN); not a known service, so who can claim it is unknown",
+      "sources": [
+        {
+          "name": "DNS CNAME lookups (takeover check)",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "DNS admin"
+      ],
+      "kind": "dangling_unknown",
+      "host": "legacy-cdn.takeover.test"
+    }
+  ],
+  "paths": {
+    "paths": [
+      {
+        "title": "Take over old-app.takeover.test",
+        "severity": "High",
+        "strength": "Lead",
+        "steps": [
+          {
+            "text": "old-app.takeover.test points to a deleted cloud resource on a service that lets deleted names be claimed again",
+            "evidence": [
+              "E4"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "An attacker claims that name and controls what old-app.takeover.test serves",
+            "evidence": [
+              "E4"
+            ],
+            "label": "Lead"
+          }
+        ],
+        "outcome": "Phishing pages or stolen cookies on a real takeover.test subdomain",
+        "actions": [
+          {
+            "what": "old-app.takeover.test has a CNAME to old-app-zz9.azurewebsites.net (Azure App Service), and that target does not exist (NXDOMAIN); this service lets deleted names be claimed again",
+            "evidence": [
+              "E4"
+            ],
+            "owners": [
+              "DNS admin",
+              "cloud / service account owner"
+            ]
+          }
+        ],
+        "gate": {
+          "result": "finding",
+          "passed": 6,
+          "of": 6,
+          "failed": [],
+          "notes": []
+        },
+        "id": "P1"
+      }
+    ],
+    "leads": [
+      {
+        "title": "Take over legacy-cdn.takeover.test through an expired name",
+        "severity": "Medium",
+        "strength": "Lead",
+        "steps": [
+          {
+            "text": "legacy-cdn.takeover.test points to a name that no longer exists, on an unknown service",
+            "evidence": [
+              "E5"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "If that name's domain is free to register, an attacker buys it and controls what legacy-cdn.takeover.test serves",
+            "evidence": [
+              "E5"
+            ],
+            "label": "Lead"
+          }
+        ],
+        "outcome": "Phishing pages on a real takeover.test subdomain",
+        "actions": [
+          {
+            "what": "legacy-cdn.takeover.test has a CNAME to gone-zz9.unknownhost.test, and that target does not exist (NXDOMAIN); not a known service, so who can claim it is unknown",
+            "evidence": [
+              "E5"
+            ],
+            "owners": [
+              "DNS admin"
+            ]
+          }
+        ],
+        "gate": {
+          "result": "lead",
+          "passed": 5,
+          "of": 6,
+          "failed": [
+            {
+              "check": 6,
+              "name": "claimable / reachable",
+              "why": "who can claim gone-zz9.unknownhost.test is unknown: it isn't on a service Monomi knows lets deleted names be claimed again, and whether its domain can be registered wasn't checked"
+            }
+          ],
+          "notes": []
+        },
+        "missing": "who can claim gone-zz9.unknownhost.test is unknown: it isn't on a service Monomi knows lets deleted names be claimed again, and whether its domain can be registered wasn't checked",
+        "id": "L1"
+      }
+    ],
+    "set_aside": [],
+    "fix_first": {
+      "actions": [
+        {
+          "what": "old-app.takeover.test has a CNAME to old-app-zz9.azurewebsites.net (Azure App Service), and that target does not exist (NXDOMAIN); this service lets deleted names be claimed again",
+          "evidence": [
+            "E4"
+          ],
+          "owners": [
+            "DNS admin",
+            "cloud / service account owner"
+          ]
+        }
+      ],
+      "closes": [
+        "P1"
+      ],
+      "partial": [],
+      "still_required_actions": []
+    },
+    "more": 0,
+    "more_leads": 0,
+    "more_set_aside": 0,
+    "out_of_scope_hosts": []
+  }
+}
