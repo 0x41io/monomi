@@ -14,14 +14,17 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 ---
 
 ## Features
-- **Subdomain discovery** from Certificate Transparency logs via three sources, asked in parallel:
+- **Subdomain discovery** from four sources, asked in parallel:
   - [crt.sh](https://crt.sh) website (broadest coverage, includes expired certificates)
   - crt.sh's public certificate database (same data as the website, queried directly over PostgreSQL; often answers when the website is slow or down)
   - [Cert Spotter](https://sslmate.com/certspotter/) (currently valid certificates, more reliable; waits and retries when rate-limited)
-- **Automatic fallback:** if a source is down, the scan continues with the others. A scan is only left out of history when both crt.sh sources fail, since crt.sh is the only one with full certificate history
+  - [AlienVault OTX](https://otx.alienvault.com) passive DNS (hostnames DNS sensors have seen answer, including ones that never had a certificate). Works without a key, but keyless requests get rate-limited almost at once, so set a free key in `OTX_API_KEY` (see [OTX key](#otx-key-recommended))
+- **subfinder import (`--subfinder FILE`):** add the hostnames from a [subfinder](https://github.com/projectdiscovery/subfinder) output file (plain, `-oJ` or `-oI`). Monomi never runs subfinder itself: run it, then pass the file. Only the target and its subdomains are kept, hosts get the same checks and validation gate as any other, facts say they were imported, and they stay out of scan history (they're only there on runs that pass the file). Over MCP, `find_subdomains` takes `subfinder_file` (a file inside Monomi's `scans/` folder)
+- **Automatic fallback:** if a source is down, the scan continues with the others
 - **Saved source copies:** every good answer from a source is saved per domain (`scans/<domain>/sources/`). If that source fails on a later run, Monomi uses the saved copy (up to 30 days old) and labels it `from_saved` with its original collection time, so an outage only costs fresh data, not the hosts found before
 - **Shared pacing:** crt.sh (5 requests a minute) and Cert Spotter's free tier are paced across every run and domain, so multi-domain sweeps stay under their limits. After Cert Spotter rate-limits, it is skipped for the rest of the cooldown instead of failing on every domain
-- **Honest source status:** when the crt.sh database answers with 0 certificates while another source found some, crt.sh is reported as **behind** (it can take days to index new certificates), not as failed
+- **Honest source status:** when the crt.sh database answers with 0 certificates while another source found some, crt.sh is reported as **behind** (it can take days to index new certificates), not as failed. A source that stops early (Cert Spotter rate-limited after its first page, or a page or row cap reached) keeps what it got but is marked **partial**, and the scan says its list may be incomplete
+- **History per source:** change detection keeps each source's list separately. A source that failed or was cut short keeps its hosts from the last scan, so it never makes hosts look **[GONE]**; a source that's new to a domain (OTX on its first run) starts from what it finds, so it never makes hosts look **[NEW]**. Every scan is saved, and an incomplete one says which source and why
 - **Merged, de-duplicated results**
 - **Hosting enrichment (`--enrich`):** resolves each host to its IP and looks up the network owner (ASN), provider, and country via Team Cymru's free IP-to-ASN service. Shows a host table, a hosting breakdown chart, and flags hosts that point to private/internal IPs in public DNS. Hosts with no IPv4 address get a second DNS look that says why: **no_such_host** (the name doesn't exist, double-checked with two DNS-over-HTTPS servers, Cloudflare and Google), **dangling_cname** (a CNAME pointing to a deleted name), **ipv6_only**, **no_address** (the name exists but has no address, often a retired host), **conflicting** (system DNS and DNS-over-HTTPS disagree, so it's unknown), **servfail** (the DNS servers tried but couldn't get an answer, even after a retry: often a broken zone or a rate limit) or **lookup_failed**. Every check uses the same DNS helper and the same status words
 - **Open ports and CVEs (`--ports`):** looks up each IP in [Shodan InternetDB](https://internetdb.shodan.io/) (free, no key, passive: Shodan's existing data, no traffic to the target). Flags risky internet-facing services (RDP, SMB, databases, Docker API), counts known CVEs, and separates shared CDN edge IPs (Cloudflare, Fastly, Akamai, Imperva, Vercel, and AWS CloudFront, detected from [Amazon's published IP ranges](https://ip-ranges.amazonaws.com/ip-ranges.json)) so their ports aren't blamed on the target. Edge IPs are also caught from Shodan's service fingerprints (CPEs), which finds Cloudflare and Okta on IP ranges they don't own, and each one says why it was flagged (`edge_reason`). A hostname whose CNAME points to an edge service (CloudFront, Okta, Fastly, Akamai, Cloudflare, Imperva, Azure Front Door, Vercel) also marks its IPs as edge. Only IPs that matter get a row
@@ -114,6 +117,16 @@ By default the tool uses the newest Claude Sonnet model available to your key. T
 export CLAUDE_MODEL="model-id-here"
 ```
 
+### OTX key (recommended)
+
+AlienVault OTX answers without a key, but keyless requests were rate-limited on the first try in testing. A free key raises the limit:
+
+1. Make an account at [otx.alienvault.com](https://otx.alienvault.com)
+2. Copy the **OTX Key** from Settings (API Integration)
+3. `export OTX_API_KEY="your-otx-key"` (add it to `~/.bashrc` to keep it)
+
+Without a key, scans still run on the other sources and say OTX was rate-limited. `python monomi.py doctor` shows whether a key is set (never the key itself).
+
 ### Check your setup
 
 Run this after installing, and whenever a scan looks off:
@@ -126,7 +139,7 @@ It checks, in about 10 seconds:
 - **Setup:** the Python version, every package in `requirements.txt` (installed and new enough), and that `scans/`, `reports/` and `cache/` can be written to
 - **Claude API:** whether `ANTHROPIC_API_KEY` is set (only its first 7 characters are ever shown), whether the API accepts it (one free call that lists models, no tokens used), and which model `--ai` would use
 - **DNS:** system DNS and public DNS on port 53, and DNS-over-HTTPS (Cloudflare and Google). A VPN's DNS can drop lookups under load, and doctor says so when port 53 fails
-- **Sources:** crt.sh (website and database), Cert Spotter (how much of the free hourly quota is used, or when a cooldown ends), Shodan InternetDB, Amazon's IP range list and the Tor exit list
+- **Sources:** crt.sh (website and database), Cert Spotter (how much of the free hourly quota is used, or when a cooldown ends), AlienVault OTX (and whether `OTX_API_KEY` is set), Shodan InternetDB, Amazon's IP range list and the Tor exit list
 - **MCP:** whether the Claude desktop app's config has Monomi in it and points at this copy of Monomi (read-only; `python monomi.py mcp setup` fixes it)
 
 ```
@@ -194,6 +207,10 @@ python monomi.py example.com --takeover
 
 # Also check hostnames you already know (one per line), e.g. ones certificate logs miss
 python monomi.py example.com --takeover --hosts known-hosts.txt
+
+# Add subfinder's results (run subfinder first; Monomi never runs it)
+subfinder -d example.com -silent -oJ -o example-subfinder.json
+python monomi.py example.com --takeover --subfinder example-subfinder.json
 
 # Investigate suspicious IPs: Tor exit, VPN/proxy, hosting, CDN edge (asks public sources, never the IP)
 python monomi.py --investigate-ip 171.25.193.25 8.8.8.8
@@ -382,16 +399,17 @@ Comments, key order and indentation in Codex and Hermes configs are kept, and an
 
 ```
 domain ──► crt.sh website ───┐
-domain ──► crt.sh database ──┼──► merge + de-duplicate ──► terminal / JSON
-domain ──► Cert Spotter ─────┘   (or SpiderFoot CSV    │
-                                  via --import)        ├──► DNS + ASN (--enrich)
+domain ──► crt.sh database ──┤
+domain ──► Cert Spotter ─────┼──► merge + de-duplicate ──► terminal / JSON
+domain ──► AlienVault OTX ───┤   (or SpiderFoot CSV    │
+subfinder file (--subfinder) ┘    via --import)        ├──► DNS + ASN (--enrich)
                                                        ├──► Shodan InternetDB (--ports)
                                                        ├──► email / takeover / fingerprint checks
                                                        └──► evidence ──► attack paths (code)
                                                                               └──► Claude (--ai) ──► Markdown report
 ```
 
-Certificate Transparency (CT) is a public log of every TLS certificate issued by trusted authorities. Certificates list the hostnames they cover, so CT logs reveal subdomains an organization has requested certificates for, without touching the organization's servers.
+Certificate Transparency (CT) is a public log of every TLS certificate issued by trusted authorities. Certificates list the hostnames they cover, so CT logs reveal subdomains an organization has requested certificates for, without touching the organization's servers. Passive DNS (OTX) adds hostnames that DNS sensors saw answer, including ones that never had a certificate.
 
 ## Project structure
 
@@ -420,17 +438,19 @@ monomi/
 ├── suggest.py            # next checks worth running, from what the scan found
 ├── report.py             # report exports: Markdown, HTML, findings CSV (--export, monomi.py report)
 ├── dnscheck.py           # shared DNS helper: status words, DNS-over-HTTPS double-check
-├── history.py            # scan history + change detection
+├── history.py            # scan history per source + change detection
 ├── ui.py                 # colored banner + terminal output
 ├── common.py             # shared helpers: version, hostname checks, timestamps
 ├── collectors/
 │   ├── crtsh.py          # crt.sh collector (with retries)
 │   ├── crtsh_db.py       # crt.sh database collector (PostgreSQL)
-│   ├── certspotter.py    # Cert Spotter collector (pagination, rate-limit retry)
-│   ├── pacing.py         # shared request pacing for crt.sh and Cert Spotter
+│   ├── certspotter.py    # Cert Spotter collector (pagination, rate-limit retry, partial lists)
+│   ├── otx.py            # AlienVault OTX passive DNS collector (optional OTX_API_KEY)
+│   ├── pacing.py         # shared request pacing for crt.sh, Cert Spotter and OTX
 │   └── saved.py          # saved per-domain copies of each source, used when a source fails
 ├── importers/
-│   └── spiderfoot.py     # SpiderFoot CSV export parser
+│   ├── spiderfoot.py     # SpiderFoot CSV export parser
+│   └── subfinder.py      # subfinder output reader (--subfinder)
 ├── skills/
 │   └── monomi/SKILL.md   # agent skill: how to use the MCP tools well
 ├── scans/                # saved scans per domain (git-ignored)
@@ -444,7 +464,8 @@ monomi/
 
 ## Limitations
 
-- CT logs only show hosts that have had TLS certificates; hosts behind wildcard certificates or without TLS won't appear.
+- CT logs only show hosts that have had TLS certificates; hosts behind wildcard certificates or without TLS won't appear. OTX passive DNS and a subfinder import fill some of that gap, but only with what those sources have seen.
+- Passive DNS and subfinder's sources include old and sometimes garbled names (a wide run can add hundreds of hostnames that no longer resolve, or never did). `--enrich` shows which are live; nothing is treated as a finding just for being listed.
 - A hostname appearing in CT logs doesn't mean it's currently live. `--enrich` shows which ones still have DNS records, but a DNS record doesn't prove a server is up.
 - AI analysis only sees what Monomi collected (hostnames, plus DNS/hosting, Shodan or SpiderFoot data when those options are used). Every finding cites numbered evidence and is labeled Observed / Inference / Lead, but treat findings as leads to verify, not confirmed issues. The citation check confirms that every cited evidence ID exists; it can't prove an ID fully supports the sentence, so spot-check important findings against the report's Evidence section.
 - `--fingerprint` only sees the homepage of each host over HTTPS. Behind a CDN (Cloudflare, Vercel, Fastly) it mostly sees the CDN, not the origin server, and many servers hide their versions.
@@ -455,7 +476,8 @@ monomi/
 - A takeover `no_cname` status only means DNS returned no CNAME record. Some DNS providers (e.g. Cloudflare) answer the same way for names that don't exist, so it doesn't prove a host is live.
 - `--investigate-ip` only uses free public sources. The Tor exit list is authoritative, but VPN and proxy labels come from reverse DNS names and Shodan tags, so many commercial VPNs won't be caught; "no anonymizer found" doesn't prove there isn't one. A country is where the network is registered, never where the person using the IP is.
 - crt.sh (website and database) and Cert Spotter are free services and are sometimes slow or rate-limited. Over MCP, sources still running after 45 seconds are skipped so the call fits the Claude app's tool limit. Pacing keeps sweeps under the limits, so a big multi-domain sweep runs slower on purpose.
-- crt.sh can fall days behind the CT logs, so a new domain may show 0 crt.sh results while Cert Spotter finds certificates. Monomi reports this as **behind** and doesn't save a history baseline until crt.sh catches up, so hosts aren't later flagged as new by mistake.
+- crt.sh can fall days behind the CT logs, so a new domain may show 0 crt.sh results while Cert Spotter finds certificates. Monomi reports this as **behind**, and history keeps crt.sh's last list until it catches up, so hosts aren't later flagged as new or gone by mistake.
+- A source that failed or was cut short keeps its last list in history, so a host that really disappeared is only reported **[GONE]** once every source that had it works fully again.
 - A saved source copy is only used when the live source fails, and it can be up to 30 days old: hosts added or removed since then won't show.
 - Some DNS providers (Cloudflare among them) never say a name doesn't exist, so a retired hostname on those zones shows as **no_address**, not **no_such_host**.
 - DNS answers are cached. Right after a DNS change, a name that was looked up before it existed can still read as **no_such_host** until the zone's negative-cache time runs out (often up to 30 minutes), and a deleted record can keep resolving until its TTL runs out.
@@ -512,10 +534,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 
 - [x] v1.13: a validation gate (one fixed checklist that decides attack path, lead or set aside, shown in every output and on MCP takeover leads; an unknown dangling CNAME and a takeover resting on system DNS alone are now leads) and `mcp setup --client` for Codex CLI, OpenCode and Hermes Agent, with `doctor` checking every client. Plus an agent skill (`skills/monomi`), a "Try it" section and a field test issue template
 - [x] v1.13.1: gate fixes from the first bug bounty field run: out-of-scope hosts never feed a path rule (anything about them alone is set aside, and outputs say how many were left out), check 2 knows third-party hosting and AWS Global Accelerator (not just CDNs), and dangling CNAMEs to AWS API Gateway names are stale, not leads
+- [x] v1.14: finds more: AlienVault OTX passive DNS as a fourth source (optional free key, `doctor` check), subfinder import (`--subfinder`, MCP `subfinder_file`), history kept per source (a failed, cut-short or new source can't make hosts look new or gone), cut-short sources marked **partial** (fixes fake [GONE] hosts after Cert Spotter was rate-limited mid-way), and honest cooldown wording when a source is skipped
 
 **Next**
-- [ ] v1.14: finds more: subfinder import and a free passive DNS source (AlienVault OTX) for subdomain breadth beyond CT logs
-- [ ] "Go around the CDN" leads per server, so a big organization doesn't get one lead covering a hundred hosts; fewer "non-production" false positives on names like `prod-...-demo`
+- [ ] "Go around the CDN" leads per server, so a big organization doesn't get one lead covering a hundred hosts; fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
 - [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames

@@ -36,8 +36,11 @@ yourself.
 None of these contact the target's own servers.
 
 1. `find_subdomains(domain)` lists subdomains from Certificate Transparency
-   logs, each with a category. Wildcard certs mean more hosts likely exist
-   than the logs show.
+   logs and AlienVault OTX passive DNS, each with a category. Wildcard certs
+   mean more hosts likely exist than the logs show. If the user ran
+   subfinder and saved its output inside Monomi's `scans/` folder, pass it
+   as `subfinder_file`. A source with `partial` set stopped early, so its
+   list may be incomplete: say so.
 2. Pass its `full_results_file` as `hosts_file` to the next tools, instead
    of copying hostnames into the chat:
    - `check_takeover(hosts_file=..., domain=...)`: dangling CNAMEs. Always
