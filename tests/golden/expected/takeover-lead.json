@@ -74,6 +74,20 @@
   "paths": {
     "paths": [
       {
+        "rule": "takeover",
+        "targets": {
+          "hosts": [
+            "old-app.takeover.test"
+          ],
+          "ips": [],
+          "cname": "old-app-zz9.azurewebsites.net",
+          "service": "Azure App Service",
+          "claimable": true,
+          "nxdomain_confirmed_by": [
+            "Cloudflare",
+            "Google"
+          ]
+        },
         "title": "Take over old-app.takeover.test",
         "severity": "High",
         "strength": "Lead",
@@ -118,6 +132,20 @@
     ],
     "leads": [
       {
+        "rule": "takeover_unknown",
+        "targets": {
+          "hosts": [
+            "legacy-cdn.takeover.test"
+          ],
+          "ips": [],
+          "cname": "gone-zz9.unknownhost.test",
+          "service": null,
+          "claimable": false,
+          "nxdomain_confirmed_by": [
+            "Cloudflare",
+            "Google"
+          ]
+        },
         "title": "Take over legacy-cdn.takeover.test through an expired name",
         "severity": "Medium",
         "strength": "Lead",

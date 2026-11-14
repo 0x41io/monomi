@@ -265,7 +265,8 @@ def review(candidates: list[dict], results: dict, evidence=(), scope=None
                        "of": len(CHECKS), "failed": failed,
                        "notes": [PROGRAM_NOTES[note]] if note else []}
         if aside:
-            set_aside.append({"title": out["title"], "severity": out["severity"],
+            set_aside.append({"rule": out["rule"], "targets": out["targets"],
+                              "title": out["title"], "severity": out["severity"],
                               "why": aside[0]["why"], "gate": out["gate"]})
         elif failed:
             out["missing"] = failed[0]["why"]

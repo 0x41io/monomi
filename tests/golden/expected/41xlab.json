@@ -405,6 +405,14 @@
   "paths": {
     "paths": [
       {
+        "rule": "email_spoofing",
+        "targets": {
+          "hosts": [
+            "41xlab.com"
+          ],
+          "ips": [],
+          "verdict": "spoofable"
+        },
         "title": "Send email as 41xlab.com",
         "severity": "High",
         "strength": "Inference",
@@ -451,6 +459,19 @@
     ],
     "leads": [
       {
+        "rule": "side_door",
+        "targets": {
+          "hosts": [
+            "dev.41xlab.com",
+            "staging.41xlab.com"
+          ],
+          "ips": [
+            "64.227.89.72"
+          ],
+          "shared_with": [
+            "41xlab.com"
+          ]
+        },
         "title": "Check whether dev.41xlab.com and staging.41xlab.com are a side door into 64.227.89.72",
         "severity": "Medium",
         "strength": "Lead",
@@ -527,6 +548,21 @@
         "id": "L1"
       },
       {
+        "rule": "around_cdn",
+        "targets": {
+          "hosts": [
+            "41xlab.com",
+            "dev.41xlab.com",
+            "staging.41xlab.com"
+          ],
+          "ips": [
+            "64.227.89.72"
+          ],
+          "fronted": [
+            "www.41xlab.com"
+          ],
+          "cdn": "Cloudflare"
+        },
         "title": "Check whether www.41xlab.com can be reached around Cloudflare through 64.227.89.72",
         "severity": "Low",
         "strength": "Inference",

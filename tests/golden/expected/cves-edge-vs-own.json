@@ -86,6 +86,20 @@
   "paths": {
     "paths": [
       {
+        "rule": "known_cves",
+        "targets": {
+          "hosts": [
+            "cves.test"
+          ],
+          "ips": [
+            "203.0.113.10"
+          ],
+          "cves": [
+            "CVE-2099-0001",
+            "CVE-2099-0002"
+          ],
+          "versions": []
+        },
         "title": "Exploit known flaws on 203.0.113.10",
         "severity": "Medium",
         "strength": "Lead",
@@ -129,6 +143,19 @@
     ],
     "leads": [
       {
+        "rule": "around_cdn",
+        "targets": {
+          "hosts": [
+            "cves.test"
+          ],
+          "ips": [
+            "203.0.113.10"
+          ],
+          "fronted": [
+            "www.cves.test"
+          ],
+          "cdn": "Cloudflare"
+        },
         "title": "Check whether www.cves.test can be reached around Cloudflare through 203.0.113.10",
         "severity": "Low",
         "strength": "Inference",

@@ -209,6 +209,21 @@
   "paths": {
     "paths": [
       {
+        "rule": "side_door",
+        "targets": {
+          "hosts": [
+            "ct-uat.sidedoor.test",
+            "ct-uat2.sidedoor.test",
+            "ct-uat3.sidedoor.test"
+          ],
+          "ips": [
+            "192.0.2.40"
+          ],
+          "shared_with": [
+            "ct.sidedoor.test",
+            "sidedoor.test"
+          ]
+        },
         "title": "Use ct-uat.sidedoor.test, ct-uat2.sidedoor.test and ct-uat3.sidedoor.test as a side door into 192.0.2.40",
         "severity": "Medium",
         "strength": "Lead",

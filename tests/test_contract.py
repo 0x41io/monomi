@@ -42,7 +42,7 @@ def by_id(items):
 
 # ---------- 1. The shape of every path, lead and evidence item ----------
 
-PATH_KEYS = {"id", "title", "severity", "strength", "steps", "outcome", "actions", "gate"}
+PATH_KEYS = {"id", "rule", "targets", "title", "severity", "strength", "steps", "outcome", "actions", "gate"}
 LEAD_KEYS = PATH_KEYS | {"missing"}
 GATE_KEYS = {"result", "passed", "of", "failed", "notes"}
 EVIDENCE_KEYS = {"id", "fact", "sources", "owners", "kind", "host"}

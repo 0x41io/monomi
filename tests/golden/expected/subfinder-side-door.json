@@ -212,6 +212,21 @@
   "paths": {
     "paths": [
       {
+        "rule": "side_door",
+        "targets": {
+          "hosts": [
+            "ct-uat.subfind.test",
+            "ct-uat2.subfind.test",
+            "ct-uat3.subfind.test"
+          ],
+          "ips": [
+            "192.0.2.50"
+          ],
+          "shared_with": [
+            "ct.subfind.test",
+            "subfind.test"
+          ]
+        },
         "title": "Use ct-uat.subfind.test, ct-uat2.subfind.test and ct-uat3.subfind.test as a side door into 192.0.2.50",
         "severity": "Medium",
         "strength": "Lead",

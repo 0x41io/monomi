@@ -69,6 +69,20 @@ SIDE_DOOR_WORDS = {
 }
 
 
+# Every "rule" a path, lead or set-aside item can have. Tools like Akashi pick
+# their proof by this name, so a name never changes once released
+# (tests/test_contract.py locks this set).
+RULES = ("takeover", "takeover_unknown", "email_spoofing", "exposed_service",
+         "known_cves", "version_check", "side_door", "around_cdn")
+
+
+def _versions(results, hosts):
+    """[{host, tech, version}] that --fingerprint saw on these hosts (versions only)."""
+    fp = (results.get("fingerprint") or {}).get("hosts", {})
+    return [{"host": h, "tech": t["tech"], "version": t["version"]}
+            for h in hosts for t in fp.get(h, {}).get("techs", []) if t["version"]]
+
+
 def _by_kind(evidence):
     """{kind: [facts]} for every fact that has a kind."""
     found = {}
@@ -100,15 +114,30 @@ def _action(facts, what=None, owners=None):
             "owners": owners or _owners(facts)}
 
 
+def _targets(hosts=(), ips=(), **extra):
+    """What a path or lead is about, for tools that act on it (Akashi).
+
+    Always "hosts" and "ips" (maybe empty), so every item can be checked
+    against a scope file the same way, plus rule-specific keys. Built from
+    the scan's own data, never from the text of the path.
+    """
+    return {"hosts": list(hosts), "ips": list(ips), **extra}
+
+
 def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdomain=(),
-          hosts=(), ips=(), claim=None, program_note=None):
+          hosts=(), ips=(), claim=None, program_note=None, *, rule, targets):
     """A candidate attack path, with what the gate checks (see gate.py):
     door: the facts that show an observed way in (check 5); no_door: why it
     isn't a path when there are none; nxdomain: the takeover records whose
     "doesn't exist" it rests on (check 4); hosts / ips: what the attack goes
     through (checks 1, 2, 6); claim: a takeover's {"cname", "claimable"} (check 6);
-    program_note: a gate.PROGRAM_NOTES key, for kinds programs often exclude (never a check)."""
+    program_note: a gate.PROGRAM_NOTES key, for kinds programs often exclude (never a check).
+    rule: which rule built it, one of RULES; targets: see _targets(). Both are
+    saved with the scan, unlike the gate input, which never leaves the gate."""
+    assert rule in RULES, rule
     return {
+        "rule": rule,
+        "targets": targets,
         "title": title,
         "severity": severity,
         "strength": max((s["label"] for s in steps), key=LABEL_RANK.get),
@@ -180,7 +209,11 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         candidates.append(_path(f"Take over {host}", "High", steps,
                                 f"Phishing pages or stolen cookies on a real {target} subdomain",
                                 [_action([lead])], door=[lead], nxdomain=[records[host]], hosts=[host],
-                                claim={"cname": records[host]["cname"], "claimable": True}))
+                                claim={"cname": records[host]["cname"], "claimable": True},
+                                rule="takeover",
+                                targets=_targets([host], cname=records[host]["cname"],
+                                                 service=records[host].get("service"), claimable=True,
+                                                 nxdomain_confirmed_by=records[host].get("nxdomain_confirmed_by"))))
     for lead in kinds.get("dangling_unknown", []):
         host = lead["host"]
         steps = [
@@ -191,7 +224,11 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         candidates.append(_path(f"Take over {host} through an expired name", "Medium", steps,
                                 f"Phishing pages on a real {target} subdomain", [_action([lead])],
                                 door=[lead], nxdomain=[records[host]], hosts=[host],
-                                claim={"cname": records[host]["cname"], "claimable": False}))
+                                claim={"cname": records[host]["cname"], "claimable": False},
+                                rule="takeover_unknown",
+                                targets=_targets([host], cname=records[host]["cname"],
+                                                 service=records[host].get("service"), claimable=False,
+                                                 nxdomain_confirmed_by=records[host].get("nxdomain_confirmed_by"))))
 
     # B. Email impersonation
     for v in spoof:
@@ -204,7 +241,10 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         ]
         candidates.append(_path(f"Send email as {target}", "High" if spoofable else "Medium", steps,
                                 "Stolen passwords, payments or malware through trusted-looking email",
-                                [_action([v])], door=[v], hosts=[target], program_note="email"))
+                                [_action([v])], door=[v], hosts=[target], program_note="email",
+                                rule="email_spoofing",
+                                targets=_targets([target], verdict=(results.get("email") or {})
+                                                 .get("verdict", {}).get("verdict"))))
 
     exp = results.get("exposure") or {}
     exp_ips = exp.get("ips", {})
@@ -224,7 +264,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         ]
         candidates.append(_path(f"Attack the exposed services on {ip}", "High", steps,
                                 "Direct access to the server or its data", [_action([r])], door=[r],
-                                hosts=on_ip, ips=[ip]))
+                                hosts=on_ip, ips=[ip], rule="exposed_service",
+                                targets=_targets(on_ip, [ip], services=exp_ips.get(ip, {}).get("risky", []))))
 
     # Which IPs each live host is on, for D and E
     enr = results.get("enrichment") or {}
@@ -302,7 +343,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         title = (f"Use {who} as a side door into {where}" if door else
                  f"Check whether {who} {'is' if one else 'are'} a side door into {where}")
         candidates.append(_path(title, "Medium", steps, f"Access to the server that also runs {shared[0]}",
-                                actions, door=door, no_door=no_door, hosts=hosts, ips=sorted(ips)))
+                                actions, door=door, no_door=no_door, hosts=hosts, ips=sorted(ips),
+                                rule="side_door", targets=_targets(hosts, sorted(ips), shared_with=shared)))
 
     # D. Known-vulnerable versions (IPs already covered by a side door are skipped).
     # A matched CVE makes it an attack path; a version on its own is only a lead.
@@ -324,14 +366,21 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                        ) + ", so the versions are unverified"
             candidates.append(_path(f"Check whether the software on {ip} has known flaws", "Low", steps,
                                     "Server compromise, if the version is really vulnerable", action,
-                                    no_door=no_door, hosts=on_ip, ips=[ip], program_note="version"))
+                                    no_door=no_door, hosts=on_ip, ips=[ip], program_note="version",
+                                    rule="version_check",
+                                    targets=_targets(on_ip, [ip], versions=_versions(
+                                        results, sorted({e["host"] for e in leaks})))))
             continue
         steps = [_step(f"{ip} shows software versions or matching CVEs", cves + leaks, "Observed"),
                  _step("An attacker checks whether the running version really has those flaws "
                        "and tries public exploits", cves + leaks, "Lead")]
         candidates.append(_path(f"Exploit known flaws on {ip}", "Medium", steps,
                                 "Server compromise, if the version is really vulnerable", action,
-                                door=cves, hosts=on_ip or exp_ips.get(ip, {}).get("hosts", []), ips=[ip]))
+                                door=cves, hosts=on_ip or exp_ips.get(ip, {}).get("hosts", []), ips=[ip],
+                                rule="known_cves",
+                                targets=_targets(on_ip or exp_ips.get(ip, {}).get("hosts", []), [ip],
+                                                 cves=exp_ips.get(ip, {}).get("vulns", []),
+                                                 versions=_versions(results, sorted({e["host"] for e in leaks})))))
 
     # F. Go around the CDN: always a lead (see the top of this file). Built
     # only when a server of the target's own is seen answering web requests.
@@ -358,7 +407,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         own_ips = sorted(web)
         direct = sorted({h for ip in own_ips for h in hosts_of[ip]})
         vendors = {enr["hosts"][h].get("provider") for h in fronted} & SHARED_EDGE
-        cdn = vendors.pop() if len(vendors) == 1 else "the CDN"
+        cdn_name = vendors.pop() if len(vendors) == 1 else None  # None: hosts behind more than one CDN
+        cdn = cdn_name or "the CDN"
         where, who, straight = _names(own_ips), _names(fronted), _names(direct)
         resolves = {e["host"]: e for e in kinds.get("resolves", [])}
         # Cite the hosts the text names (up to 3 a side), not every host in a big scan
@@ -382,7 +432,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                      [OWNERS["server"], OWNERS["cdn"]]) for ip in own_ips[:3]],
             no_door=(f"nothing shows that {where} is the server behind {who} "
                      "(a CDN hides its origin from outside)"),
-            hosts=direct, ips=own_ips))
+            hosts=direct, ips=own_ips, rule="around_cdn",
+            targets=_targets(direct, own_ips, fronted=fronted, cdn=cdn_name)))
 
     paths, leads, set_aside = gate.review(candidates, results, evidence, scope)
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
