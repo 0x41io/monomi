@@ -404,36 +404,41 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
             if ip in hosts_of:
                 web.setdefault(ip, []).append(e)
     if fronted and web:
-        own_ips = sorted(web)
-        direct = sorted({h for ip in own_ips for h in hosts_of[ip]})
         vendors = {enr["hosts"][h].get("provider") for h in fronted} & SHARED_EDGE
         cdn_name = vendors.pop() if len(vendors) == 1 else None  # None: hosts behind more than one CDN
         cdn = cdn_name or "the CDN"
-        where, who, straight = _names(own_ips), _names(fronted), _names(direct)
+        who = _names(fronted)
+        one = len(fronted) == 1
         resolves = {e["host"]: e for e in kinds.get("resolves", [])}
-        # Cite the hosts the text names (up to 3 a side), not every host in a big scan
+        # Cite the hosts the text names (up to 3), not every host in a big scan
         front_facts = [resolves[h] for h in fronted[:3] if h in resolves]
-        direct_facts = [resolves[h] for h in direct[:3] if h in resolves]
-        web_facts = [f for ip in own_ips[:3] for f in web[ip][:1]]
-        one, one_direct = len(fronted) == 1, len(direct) == 1
-        steps = [
-            _step(f"{who} {'is' if one else 'are'} behind {cdn}, which filters traffic before it "
-                  "reaches the real server", front_facts, "Observed"),
-            _step(f"{straight} {'points' if one_direct else 'point'} straight at {where}, with no CDN "
-                  "in front, and a web server answers there", direct_facts + web_facts, "Observed"),
-            _step(f"If {where} is also the server behind {who}, an attacker can send requests to it "
-                  f"directly and skip {cdn}'s protection", front_facts + direct_facts, "Inference"),
-        ]
-        candidates.append(_path(
-            f"Check whether {who} can be reached around {cdn} through {where}", "Low", steps,
-            f"Attacks {cdn} would have blocked reach the server",
-            [_action([resolves[h] for h in hosts_of[ip][:3] if h in resolves] or web[ip][:1],
-                     f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
-                     [OWNERS["server"], OWNERS["cdn"]]) for ip in own_ips[:3]],
-            no_door=(f"nothing shows that {where} is the server behind {who} "
-                     "(a CDN hides its origin from outside)"),
-            hosts=direct, ips=own_ips, rule="around_cdn",
-            targets=_targets(direct, own_ips, fronted=fronted, cdn=cdn_name)))
+        # One lead per origin server: each one is checked on its own (is THIS
+        # server behind the CDN?), so a big organization gets a lead per server,
+        # not one lead covering every server. The usual lead cap applies.
+        for ip in sorted(web):
+            direct = hosts_of[ip]
+            one_direct = len(direct) == 1
+            straight = _names(direct)
+            direct_facts = [resolves[h] for h in direct[:3] if h in resolves]
+            web_facts = web[ip][:1]
+            steps = [
+                _step(f"{who} {'is' if one else 'are'} behind {cdn}, which filters traffic before it "
+                      "reaches the real server", front_facts, "Observed"),
+                _step(f"{straight} {'points' if one_direct else 'point'} straight at {ip}, with no CDN "
+                      "in front, and a web server answers there", direct_facts + web_facts, "Observed"),
+                _step(f"If {ip} is also the server behind {who}, an attacker can send requests to it "
+                      f"directly and skip {cdn}'s protection", front_facts + direct_facts, "Inference"),
+            ]
+            candidates.append(_path(
+                f"Check whether {who} can be reached around {cdn} through {ip}", "Low", steps,
+                f"Attacks {cdn} would have blocked reach the server",
+                [_action(direct_facts or web_facts,
+                         f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
+                         [OWNERS["server"], OWNERS["cdn"]])],
+                no_door=(f"nothing shows that {ip} is the server behind {who} "
+                         "(a CDN hides its origin from outside)"),
+                hosts=direct, ips=[ip], rule="around_cdn",
+                targets=_targets(direct, [ip], fronted=fronted, cdn=cdn_name)))
 
     paths, leads, set_aside = gate.review(candidates, results, evidence, scope)
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))

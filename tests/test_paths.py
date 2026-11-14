@@ -578,3 +578,38 @@ def test_missing_line_says_none_found_only_when_shodan_was_asked():
     out, ev = run(results)
     (lead,) = other_leads(out)
     assert lead["missing"] == "no known CVE is matched to 198.51.100.7 in this scan, so the versions are unverified"
+
+
+def two_origin_results(origins=2):
+    """lab_results() plus more servers of the target's own, each with a web
+    server seen on it (the fingerprint), and www still behind the CDN."""
+    results = lab_results()
+    for n in range(1, origins):
+        name, ip = f"app{n}", f"198.51.100.{100 + n}"
+        results["subdomains"].append(name)
+        results["enrichment"]["hosts"][name] = {"ips": [ip], "provider": "DigitalOcean"}
+        results["fingerprint"]["hosts"][name] = {
+            "collected_at": None, "status": 200, "header_issues": [],
+            "techs": [{"tech": "nginx", "version": None, "evidence": "Server header"}]}
+    return results
+
+
+def test_cdn_leads_are_one_per_origin_server():
+    out, ev = run(two_origin_results())
+    leads = cdn_lead(out)
+    assert [lead["targets"]["ips"] for lead in leads] == [["198.51.100.101"], ["198.51.100.7"]]
+    for lead in leads:
+        (ip,) = lead["targets"]["ips"]
+        assert lead["title"].endswith(f"through {ip}")
+        assert lead["targets"]["fronted"] == ["www"] and lead["targets"]["cdn"] == "Cloudflare"
+        assert [a["what"].split(" from ")[0] for a in lead["actions"]] == [f"Only accept web traffic on {ip}"]
+    # Each lead names only the hosts pointing straight at its own server
+    assert [lead["targets"]["hosts"] for lead in leads] == [["app1"], ["lab", "staging"]]
+
+
+def test_many_origin_servers_use_the_usual_lead_cap():
+    from monomi.paths import MAX_PATHS
+    out, ev = run(two_origin_results(origins=MAX_PATHS + 3))
+    assert len(out["leads"]) == MAX_PATHS
+    # the 13 CDN leads plus the side door lead: everything past the cap is counted, not lost
+    assert out["more_leads"] == MAX_PATHS + 3 + 1 - MAX_PATHS

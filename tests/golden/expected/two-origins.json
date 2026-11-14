@@ -1,0 +1,295 @@
+{
+  "evidence": [
+    {
+      "id": "E1",
+      "fact": "api.origins.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E2",
+      "fact": "app.origins.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E3",
+      "fact": "origins.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E4",
+      "fact": "www.origins.test was found by certspotter",
+      "sources": [
+        {
+          "name": "certspotter",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": null,
+      "host": null
+    },
+    {
+      "id": "E5",
+      "fact": "api.origins.test resolves to 203.0.113.20 (Hetzner)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "api.origins.test"
+    },
+    {
+      "id": "E6",
+      "fact": "app.origins.test resolves to 203.0.113.10 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "app.origins.test"
+    },
+    {
+      "id": "E7",
+      "fact": "origins.test resolves to 203.0.113.10 (DigitalOcean)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "origins.test"
+    },
+    {
+      "id": "E8",
+      "fact": "www.origins.test resolves to 198.51.100.40 (Cloudflare)",
+      "sources": [
+        {
+          "name": "DNS + ASN lookup",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [],
+      "kind": "resolves",
+      "host": "www.origins.test"
+    },
+    {
+      "id": "E9",
+      "fact": "203.0.113.10 (app.origins.test, origins.test) has open ports: 80, 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "open_ports",
+      "host": "203.0.113.10"
+    },
+    {
+      "id": "E10",
+      "fact": "203.0.113.20 (api.origins.test) has open ports: 80, 443",
+      "sources": [
+        {
+          "name": "Shodan InternetDB",
+          "collected_at": "2026-11-08T12:00:00+00:00"
+        }
+      ],
+      "owners": [
+        "server / infrastructure admin"
+      ],
+      "kind": "open_ports",
+      "host": "203.0.113.20"
+    }
+  ],
+  "paths": {
+    "paths": [],
+    "leads": [
+      {
+        "rule": "around_cdn",
+        "targets": {
+          "hosts": [
+            "app.origins.test",
+            "origins.test"
+          ],
+          "ips": [
+            "203.0.113.10"
+          ],
+          "fronted": [
+            "www.origins.test"
+          ],
+          "cdn": "Cloudflare"
+        },
+        "title": "Check whether www.origins.test can be reached around Cloudflare through 203.0.113.10",
+        "severity": "Low",
+        "strength": "Inference",
+        "steps": [
+          {
+            "text": "www.origins.test is behind Cloudflare, which filters traffic before it reaches the real server",
+            "evidence": [
+              "E8"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "app.origins.test and origins.test point straight at 203.0.113.10, with no CDN in front, and a web server answers there",
+            "evidence": [
+              "E6",
+              "E7",
+              "E9"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "If 203.0.113.10 is also the server behind www.origins.test, an attacker can send requests to it directly and skip Cloudflare's protection",
+            "evidence": [
+              "E8",
+              "E6",
+              "E7"
+            ],
+            "label": "Inference"
+          }
+        ],
+        "outcome": "Attacks Cloudflare would have blocked reach the server",
+        "actions": [
+          {
+            "what": "Only accept web traffic on 203.0.113.10 from Cloudflare, or put its hosts behind Cloudflare too",
+            "evidence": [
+              "E6",
+              "E7"
+            ],
+            "owners": [
+              "server / infrastructure admin",
+              "CDN / proxy admin"
+            ]
+          }
+        ],
+        "gate": {
+          "result": "lead",
+          "passed": 5,
+          "of": 6,
+          "failed": [
+            {
+              "check": 5,
+              "name": "observed way in",
+              "why": "nothing shows that 203.0.113.10 is the server behind www.origins.test (a CDN hides its origin from outside)"
+            }
+          ],
+          "notes": []
+        },
+        "missing": "nothing shows that 203.0.113.10 is the server behind www.origins.test (a CDN hides its origin from outside)",
+        "id": "L1"
+      },
+      {
+        "rule": "around_cdn",
+        "targets": {
+          "hosts": [
+            "api.origins.test"
+          ],
+          "ips": [
+            "203.0.113.20"
+          ],
+          "fronted": [
+            "www.origins.test"
+          ],
+          "cdn": "Cloudflare"
+        },
+        "title": "Check whether www.origins.test can be reached around Cloudflare through 203.0.113.20",
+        "severity": "Low",
+        "strength": "Inference",
+        "steps": [
+          {
+            "text": "www.origins.test is behind Cloudflare, which filters traffic before it reaches the real server",
+            "evidence": [
+              "E8"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "api.origins.test points straight at 203.0.113.20, with no CDN in front, and a web server answers there",
+            "evidence": [
+              "E5",
+              "E10"
+            ],
+            "label": "Observed"
+          },
+          {
+            "text": "If 203.0.113.20 is also the server behind www.origins.test, an attacker can send requests to it directly and skip Cloudflare's protection",
+            "evidence": [
+              "E8",
+              "E5"
+            ],
+            "label": "Inference"
+          }
+        ],
+        "outcome": "Attacks Cloudflare would have blocked reach the server",
+        "actions": [
+          {
+            "what": "Only accept web traffic on 203.0.113.20 from Cloudflare, or put its hosts behind Cloudflare too",
+            "evidence": [
+              "E5"
+            ],
+            "owners": [
+              "server / infrastructure admin",
+              "CDN / proxy admin"
+            ]
+          }
+        ],
+        "gate": {
+          "result": "lead",
+          "passed": 5,
+          "of": 6,
+          "failed": [
+            {
+              "check": 5,
+              "name": "observed way in",
+              "why": "nothing shows that 203.0.113.20 is the server behind www.origins.test (a CDN hides its origin from outside)"
+            }
+          ],
+          "notes": []
+        },
+        "missing": "nothing shows that 203.0.113.20 is the server behind www.origins.test (a CDN hides its origin from outside)",
+        "id": "L2"
+      }
+    ],
+    "set_aside": [],
+    "fix_first": null,
+    "more": 0,
+    "more_leads": 0,
+    "more_set_aside": 0,
+    "out_of_scope_hosts": []
+  }
+}

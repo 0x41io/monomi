@@ -1,0 +1,112 @@
+{
+  "target": "origins.test",
+  "sources": {
+    "certspotter": {
+      "source": "certspotter",
+      "collected_at": "2026-11-08T12:00:00+00:00",
+      "subdomains": [
+        "origins.test",
+        "www.origins.test",
+        "app.origins.test",
+        "api.origins.test"
+      ]
+    }
+  },
+  "errors": {},
+  "subdomains": [
+    "api.origins.test",
+    "app.origins.test",
+    "origins.test",
+    "www.origins.test"
+  ],
+  "enrichment": {
+    "hosts": {
+      "www.origins.test": {
+        "ips": [
+          "198.51.100.40"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Cloudflare"
+      },
+      "origins.test": {
+        "ips": [
+          "203.0.113.10"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "app.origins.test": {
+        "ips": [
+          "203.0.113.10"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "DigitalOcean"
+      },
+      "api.origins.test": {
+        "ips": [
+          "203.0.113.20"
+        ],
+        "dns": "live",
+        "private_ips": [],
+        "provider": "Hetzner"
+      }
+    },
+    "private_ip_hosts": [],
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  },
+  "exposure": {
+    "ips": {
+      "198.51.100.40": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "www.origins.test"
+        ],
+        "provider": "Cloudflare",
+        "shared_edge": true,
+        "risky": []
+      },
+      "203.0.113.10": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "app.origins.test",
+          "origins.test"
+        ],
+        "provider": "DigitalOcean",
+        "shared_edge": false,
+        "risky": []
+      },
+      "203.0.113.20": {
+        "ports": [
+          80,
+          443
+        ],
+        "vulns": [],
+        "tags": [],
+        "cpes": [],
+        "hosts": [
+          "api.origins.test"
+        ],
+        "provider": "Hetzner",
+        "shared_edge": false,
+        "risky": []
+      }
+    },
+    "nothing_seen": {},
+    "collected_at": "2026-11-08T12:00:00+00:00"
+  }
+}
