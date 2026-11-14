@@ -883,7 +883,9 @@ def test_client_active_flags_dont_make_it_different_but_warn(monkeypatch, tmp_pa
     scope = tmp_path / "scope.txt"
     scope.write_text("lab.test\n", encoding="utf-8")
     sha = doctor.scope.load(str(scope)).sha256
-    on = f'[mcp_servers.monomi]\ncommand = "py"\nargs = ["server", "--scope", "{scope}", "--scope-sha256", "{sha}", "--allow-active"]\n'
+    # The scope path goes in a TOML literal string ('...'): on Windows it has
+    # backslashes, which a "..." TOML string would read as escape codes
+    on = f'[mcp_servers.monomi]\ncommand = "py"\nargs = ["server", "--scope", \'{scope}\', "--scope-sha256", "{sha}", "--allow-active"]\n'
     fake_clients(monkeypatch, tmp_path, codex=on)
     r = by_name(doctor.check_clients())["codex"]
     assert r["status"] == WARN and "points at this Monomi, ACTIVE tools ON (scope" in r["detail"]

@@ -858,7 +858,8 @@ def test_hermes_config_follows_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
     assert HERMES.paths() == ([], str(tmp_path / "profile" / "config.yaml"))
     monkeypatch.delenv("HERMES_HOME")
-    assert HERMES.paths()[1] == os.path.join(os.path.expanduser("~/.hermes"), "config.yaml")
+    # Built the same way as the code: "~/.hermes" would give a mixed C:\Users\x/.hermes on Windows
+    assert HERMES.paths()[1] == os.path.join(os.path.expanduser(os.path.join("~", ".hermes")), "config.yaml")
 
 
 def test_hermes_setup_keeps_comments_quotes_and_other_servers(monkeypatch, tmp_path, capsys):
