@@ -75,3 +75,23 @@ def test_no_loose_top_level_modules(entry, tmp_path):
                          cwd=tmp_path, env=env, timeout=60)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "", f"loose top-level modules after importing {entry}: {out.stdout}"
+
+
+def test_python_dash_m_runs_the_cli(tmp_path):
+    # monomi/__main__.py: `python -m monomi example.com` works like monomi.py
+    env = {**os.environ, "PYTHONPATH": REPO}
+    out = subprocess.run([sys.executable, "-m", "monomi", "--help"], capture_output=True, text=True,
+                         cwd=tmp_path, env=env, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert "passive domain recon" in out.stdout
+
+
+def test_pyproject_reads_the_version_and_dependencies_from_their_one_home():
+    # pyproject.toml must not grow its own copy of the version or dependency list
+    import tomllib
+    with open(os.path.join(REPO, "pyproject.toml"), "rb") as f:
+        project = tomllib.load(f)
+    assert "version" not in project["project"] and "dependencies" not in project["project"]
+    assert project["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "monomi.common.VERSION"}
+    assert project["tool"]["setuptools"]["dynamic"]["dependencies"] == {"file": ["requirements.txt"]}
+    assert project["project"]["scripts"] == {"monomi": "monomi.cli:main", "monomi-mcp": "monomi.mcp_server:main"}

@@ -1,0 +1,34 @@
+# How Python installs Monomi as a package (pip install -e . / pip install .).
+# The code is the monomi/ folder; tests/, skills/ and assets/ aren't installed.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monomi"
+description = "0x41 / monomi - passive domain recon with AI synthesis"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "0x41" }]
+# Only the versions Monomi is actually tested on (3.14 in WSL, 3.15 on Windows)
+requires-python = ">=3.14"
+# Both come from the files that already hold them, so there's still one place to change each:
+# the version from VERSION in monomi/common.py, the dependencies from requirements.txt
+dynamic = ["version", "dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/0x41io/monomi"
+
+# Commands pip puts on your PATH: `monomi example.com` and `monomi-mcp`
+[project.scripts]
+monomi = "monomi.cli:main"
+monomi-mcp = "monomi.mcp_server:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "monomi.common.VERSION" }
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["monomi", "monomi.*"]
