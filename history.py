@@ -54,18 +54,32 @@ def build(previous: dict | None, fresh: dict, partial: dict) -> dict[str, dict]:
     partial: source -> hosts, for sources that were cut short: they keep last
              scan's list plus whatever they found (found = really seen now)
     Every other source from the previous scan keeps its old list (carried).
+    A list that isn't known to be complete (partial, or carried from one
+    that was) is marked "incomplete", so the next complete run doesn't call
+    the hosts it fills in new.
     """
     before = source_lists(previous)
+    was_incomplete = incomplete_sources(previous)
     out = {}
     for name in set(before) | set(fresh) | set(partial):
         if name in fresh:
             out[name] = {"subdomains": sorted(set(fresh[name])), "status": FRESH}
         elif name in partial:
             out[name] = {"subdomains": sorted(set(partial[name]) | set(before.get(name, []))),
-                         "status": PARTIAL}
+                         "status": PARTIAL, "incomplete": True}
         else:
             out[name] = {"subdomains": sorted(before[name]), "status": CARRIED}
+            if name in was_incomplete:
+                out[name]["incomplete"] = True
     return dict(sorted(out.items()))
+
+
+def incomplete_sources(scan: dict | None) -> set[str]:
+    """Sources whose list in a saved scan isn't known to be complete."""
+    if not scan or not isinstance(scan.get("sources"), dict):
+        return set()  # before v1.14 only complete scans were saved
+    return {name for name, entry in scan["sources"].items()
+            if entry.get("incomplete") or entry.get("status") == PARTIAL}
 
 
 def union(entries: dict[str, dict]) -> list[str]:
@@ -101,18 +115,26 @@ def compare(previous: dict, entries: dict[str, dict]) -> dict:
 
     Gone: in the last scan, and in no source's list now. A source that didn't
     work carries its old list, so a failure never makes a host look gone.
-    New: not in the last scan, found by a source that was in it too. A source
-    joining history for the first time (OTX on its first run) doesn't make
-    everything it knows look new: its hosts are its starting point.
+    New: not in the last scan, found by a source that was in it too, with a
+    complete list. A source joining history for the first time (OTX on its
+    first run) doesn't make everything it knows look new: its hosts are its
+    starting point ("joined"). A source whose last list was cut short can't
+    either: what it adds now may be old, so those are "filled_in", listed
+    apart from new.
     """
     before = source_lists(previous)
+    unsure = incomplete_sources(previous)
     old = {h for hosts in before.values() for h in hosts}
-    from_known = {h for name, entry in entries.items() if name in before for h in entry["subdomains"]}
+    from_known = {h for name, entry in entries.items()
+                  if name in before and name not in unsure for h in entry["subdomains"]}
     joined = {name: sorted(set(entry["subdomains"]) - old - from_known)
               for name, entry in entries.items() if name not in before}
+    filled = {name: sorted(set(entry["subdomains"]) - old - from_known)
+              for name, entry in entries.items() if name in unsure}
     return {
         "previous_scan": previous["scanned_at"],
         "added": sorted(from_known - old),
         "removed": sorted(old - set(union(entries))),
         "joined": {name: hosts for name, hosts in joined.items() if hosts},
+        "filled_in": {name: hosts for name, hosts in filled.items() if hosts},
     }

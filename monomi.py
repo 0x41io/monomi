@@ -696,10 +696,8 @@ def show_changes(results: dict) -> None:
     if previous is None:
         info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
         if notes:
-            one = len(notes) == 1
-            warn(f"Not complete: {'; '.join(notes.values())}. "
-                 f"{'That source joins' if one else 'Those sources join'} the baseline once "
-                 f"{'it works' if one else 'they work'} fully.")
+            warn(f"Not complete: {'; '.join(notes.values())}. Later scans fill in what "
+                 f"{'it' if len(notes) == 1 else 'they'} missed, listed apart from new hosts.")
         return
 
     changes = history.compare(previous, entries)
@@ -711,6 +709,11 @@ def show_changes(results: dict) -> None:
         print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
     for sub in changes["removed"]:
         print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
+    for name, hosts in changes["filled_in"].items():
+        info(f"{HISTORY_LABELS.get(name, name)} was cut short last scan, so {len(hosts)} hostname"
+             f"{'' if len(hosts) == 1 else 's'} it lists now may not be new:")
+        for sub in hosts:
+            print(f"    {ui.paint('[FILL]', ui.YELLOW)} {sub}")
     for name, hosts in changes["joined"].items():
         info(f"{HISTORY_LABELS.get(name, name)} joins this domain's history: {len(hosts)} hostname"
              f"{'' if len(hosts) == 1 else 's'} only it found {'is' if len(hosts) == 1 else 'are'} "

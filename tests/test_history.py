@@ -55,7 +55,8 @@ def test_build_marks_each_source():
     entries = build(previous, fresh={"crt.sh": ["a.lab.test"]}, partial={"certspotter": ["b.lab.test", "e.lab.test"]})
     assert entries["crt.sh"] == {"subdomains": ["a.lab.test"], "status": FRESH}
     # cut short: last list plus what it found now
-    assert entries["certspotter"] == {"subdomains": ["b.lab.test", "c.lab.test", "e.lab.test"], "status": PARTIAL}
+    assert entries["certspotter"] == {"subdomains": ["b.lab.test", "c.lab.test", "e.lab.test"], "status": PARTIAL,
+                                      "incomplete": True}
     assert entries["otx"] == {"subdomains": ["d.lab.test"], "status": CARRIED}  # failed: kept
 
 
@@ -187,3 +188,49 @@ def test_crtsh_behind_reads_behind(capsys):
     _, out = run(scan(src("certspotter", "a.lab.test"), errors={"crt.sh": behind, "crt.sh database": behind}),
                  capsys)
     assert "crt.sh, crt.sh database are behind on the CT logs" in out
+
+
+# --- a cut-short list followed by a complete one (the 41xlab release-check run) ---
+
+def test_hosts_a_cut_short_source_fills_in_later_are_not_new(capsys):
+    """First scan: Cert Spotter stopped after page 1. Next scan it's complete:
+    what it adds may be old, so it's listed as filled in, not [NEW]."""
+    run(scan(src("certspotter", "a.lab.test", partial="stopped after 1 page (rate limit)")), capsys)
+    assert history.load_last(D)["sources"]["certspotter"]["incomplete"] is True
+    changes, out = run(scan(src("certspotter", "a.lab.test", "b.lab.test")), capsys)
+    assert changes["added"] == [] and changes["filled_in"] == {"certspotter": ["b.lab.test"]}
+    assert "Cert Spotter was cut short last scan, so 1 hostname it lists now may not be new" in out
+    assert "[FILL]" in out and "b.lab.test" in out
+    # Complete now, so from here on its new hosts really are new
+    changes, _ = run(scan(src("certspotter", "a.lab.test", "b.lab.test", "c.lab.test")), capsys)
+    assert changes["added"] == ["c.lab.test"] and changes["filled_in"] == {}
+
+
+def test_incomplete_survives_a_failed_run_in_between(capsys):
+    run(scan(src("certspotter", "a.lab.test", partial="stopped after 1 page (rate limit)")), capsys)
+    run(scan(src("crt.sh database", "a.lab.test"), errors={"Cert Spotter": "rate limited"}), capsys)
+    assert history.load_last(D)["sources"]["certspotter"] == {
+        "subdomains": ["a.lab.test"], "status": CARRIED, "incomplete": True}
+    changes, _ = run(scan(src("crt.sh database", "a.lab.test"), src("certspotter", "a.lab.test", "b.lab.test")),
+                     capsys)
+    assert changes["added"] == [] and changes["filled_in"] == {"certspotter": ["b.lab.test"]}
+
+
+def test_breaking_the_incomplete_rule_brings_fake_new_hosts_back(capsys, monkeypatch):
+    """Break the rule: forget which lists were incomplete, and b shows as [NEW]."""
+    run(scan(src("certspotter", "a.lab.test", partial="stopped after 1 page (rate limit)")), capsys)
+    monkeypatch.setattr(history, "incomplete_sources", lambda scan: set())
+    changes, _ = run(scan(src("certspotter", "a.lab.test", "b.lab.test")), capsys)
+    assert changes["added"] == ["b.lab.test"]
+
+
+def test_first_scan_wording_says_later_scans_fill_in(capsys):
+    _, out = run(scan(src("certspotter", "a.lab.test", partial="stopped after 1 page (rate limit)")), capsys)
+    assert "Later scans fill in what it missed, listed apart from new hosts" in out
+
+
+def test_a_partial_entry_without_the_incomplete_mark_still_counts():
+    """Scans saved by the first v1.14 builds have status "partial" but no
+    "incomplete" key (the 41xlab release-check baseline)."""
+    saved = {"scanned_at": T, "sources": {"certspotter": {"subdomains": ["a.lab.test"], "status": PARTIAL}}}
+    assert history.incomplete_sources(saved) == {"certspotter"}
