@@ -26,13 +26,12 @@ from datetime import datetime
 
 import requests
 
-from monomi import activelog, aws_ranges, dnscheck, internetdb, mcp_setup, scope, threatintel, ui
+from monomi import activelog, aws_ranges, dnscheck, home, internetdb, mcp_setup, scope, threatintel, ui
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, pacing, saved
 from monomi.common import USER_AGENT
 
 OK, WARN, FAIL = "ok", "warn", "fail"
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REQUIREMENTS = os.path.join(HERE, "requirements.txt")
+REQUIREMENTS = os.path.join(home.REPO_DIR, "requirements.txt")  # only in a copy of the repo
 MIN_PYTHON = (3, 10)
 # Built from pieces so chat apps don't turn it into a link when pasting
 CONSOLE = "console.anthropic" + ".com"
@@ -63,6 +62,23 @@ def version_tuple(text):
     return tuple(int(n) for n in nums.group().split("."))
 
 
+def requirement_lines(path=None):
+    """The lines of requirements.txt.
+
+    A plain `pip install` has no requirements.txt, but the installed package
+    carries the same list in its metadata (pyproject.toml reads it from
+    requirements.txt at build time), so that's read instead. Raises OSError
+    if neither is there.
+    """
+    if path is None and not home.running_from_repo():
+        try:
+            return importlib.metadata.requires("monomi") or []
+        except importlib.metadata.PackageNotFoundError:
+            raise FileNotFoundError("monomi isn't installed and there's no requirements.txt")
+    with open(path or REQUIREMENTS, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
 def read_requirements(path=None):
     """[(package, minimum version or None)] from requirements.txt.
 
@@ -71,12 +87,11 @@ def read_requirements(path=None):
     """
     reqs = []
     pattern = r"([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*(?:>=\s*([0-9.]+))?"
-    with open(path or REQUIREMENTS, encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#")[0].strip()
-            m = re.match(pattern, line)
-            if m:
-                reqs.append((m.group(1), m.group(2)))
+    for line in requirement_lines(path):
+        line = line.split("#")[0].strip()
+        m = re.match(pattern, line)
+        if m:
+            reqs.append((m.group(1), m.group(2)))
     return reqs
 
 
@@ -140,7 +155,7 @@ def check_packages():
 def folders():
     """Folders Monomi writes to: {name shown: path}."""
     return {"scans/": saved.SCANS_DIR,
-            "reports/": os.path.join(HERE, "reports"),
+            "reports/": home.data_dir("reports"),
             "cache/": aws_ranges.CACHE_DIR}
 
 
@@ -161,8 +176,9 @@ def check_folders():
         return [result("Setup", "folders", FAIL,
                        f"can't write to {', '.join(bad)}",
                        "check the Monomi folder's permissions")]
+    where, why = home.where_data_lives()
     return [result("Setup", "folders", OK,
-                   f"{', '.join(folders())} writable")]
+                   f"{', '.join(folders())} writable in {where} ({why})")]
 
 
 # ---------- 2. Claude API (for --ai) ----------

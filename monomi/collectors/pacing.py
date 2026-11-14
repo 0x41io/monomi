@@ -14,6 +14,8 @@ import threading
 import time
 from datetime import datetime
 
+from monomi import home
+
 try:
     import fcntl          # Linux and macOS
     msvcrt = None
@@ -22,7 +24,7 @@ except ImportError:       # Windows has no fcntl; it locks files with msvcrt ins
     import msvcrt
 
 # Inside the monomi folder (one level up from collectors/), next to the other scans
-PACING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scans", ".pacing")
+PACING_DIR = home.data_dir("scans", ".pacing")
 
 
 def _lock_file(f) -> None:

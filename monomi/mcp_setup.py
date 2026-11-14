@@ -46,14 +46,13 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 from tomlkit.exceptions import TOMLKitError
 
-from monomi import scope, ui
+from monomi import home, scope, ui
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVER = os.path.join(HERE, "mcp_server.py")
+SERVER = os.path.join(home.REPO_DIR, "mcp_server.py")  # the root wrapper, in a copy of the repo
 NAME = "monomi"            # the server's name in the config
 CONFIG = "claude_desktop_config.json"
 ACTIVE_FLAG = "--allow-active"  # mcp_server.py's flag that allows ACTIVE tools
-ACTIVE_LOG = os.path.join(HERE, "scans", "active.log")  # where mcp_server.py logs them
+ACTIVE_LOG = home.data_dir("scans", "active.log")  # where mcp_server.py logs them
 ACTIVE_WARNING = (
     "ACTIVE tools send requests to the target's own servers (fingerprint_hosts: one\n"
     "homepage request per host; check_exposed_files: a few GETs per host). Any agent\n"
@@ -80,6 +79,18 @@ def in_wsl():
     return "microsoft" in platform.uname().release.lower()
 
 
+def server_args():
+    """What comes after python to start the server.
+
+    From a copy of the repo: the mcp_server.py wrapper's full path, as always,
+    so existing configs keep matching. A plain `pip install` has no wrapper
+    file, so Python is told to run the installed module instead.
+    """
+    if home.running_from_repo():
+        return [SERVER]
+    return ["-m", "monomi.mcp_server"]
+
+
 def server_entry():
     """How the Claude app should start Monomi's MCP server.
 
@@ -88,9 +99,9 @@ def server_entry():
     """
     if in_wsl():
         distro = os.environ.get("WSL_DISTRO_NAME")
-        args = (["-d", distro] if distro else []) + ["-e", sys.executable, SERVER]
+        args = (["-d", distro] if distro else []) + ["-e", sys.executable, *server_args()]
         return {"command": "wsl.exe", "args": args}
-    return {"command": sys.executable, "args": [SERVER]}
+    return {"command": sys.executable, "args": server_args()}
 
 
 def is_active(entry):
@@ -334,7 +345,7 @@ class Claude(Client):
 def direct_entry():
     """How a client that runs where Monomi runs starts the server: this
     Python, no wsl.exe (unlike the Claude app on Windows reaching into WSL)."""
-    return {"command": sys.executable, "args": [SERVER]}
+    return {"command": sys.executable, "args": server_args()}
 
 
 def read_text(path):

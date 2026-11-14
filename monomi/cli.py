@@ -19,11 +19,11 @@ from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, saved
 from monomi.common import is_hostname, now_utc
 from monomi.importers import spiderfoot, subfinder
-from monomi import activelog, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate, history, internetdb, mcp_setup, paths, report, scope, suggest, takeover, threatintel, ui
+from monomi import activelog, doctor, emailauth, home, enrich, evidence, exposed, fingerprint, gate, history, internetdb, mcp_setup, paths, report, scope, suggest, takeover, threatintel, ui
 from monomi.ui import fail, good, info, warn
 
 # Reports always go in the monomi folder, wherever the command is run from
-REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports")
+REPORTS_DIR = home.data_dir("reports")
 
 # --investigate-ip: at most this many IPs per run, to be polite to the free sources
 MAX_INVESTIGATE = 20

@@ -18,10 +18,10 @@ import json
 import os
 import threading
 
+from monomi import home
 from monomi.common import now_utc
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PATH = os.path.join(HERE, "scans", "active.log")
+PATH = home.data_dir("scans", "active.log")
 _lock = threading.Lock()  # requests run in parallel threads
 
 

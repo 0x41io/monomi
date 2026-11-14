@@ -25,7 +25,7 @@ from monomi.emailauth import check_email
 from monomi.takeover import check_hosts
 from monomi.enrich import enrich
 from monomi.evidence import OWNERS
-from monomi import activelog, exposed, fingerprint, gate, internetdb, scope, threatintel
+from monomi import activelog, exposed, fingerprint, gate, home, internetdb, scope, threatintel
 from monomi.importers import subfinder
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -65,7 +65,7 @@ def owners(*keys: str) -> list[str]:
 # By default each tool returns a short summary (counts + the hosts that
 # matter) and saves the full result to a file the agent can point to.
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scans", "mcp")
+RESULTS_DIR = home.data_dir("scans", "mcp")
 SCANS_DIR = os.path.dirname(RESULTS_DIR)  # the only folder hosts_file may read from
 LIST_CAP = 20  # max names in any summary list; the full list is in the file
 RISKY_CATEGORIES = ("non-production", "legacy", "access", "internal-tools",

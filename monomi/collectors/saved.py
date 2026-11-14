@@ -16,8 +16,10 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
+from monomi import home
+
 # Inside the monomi folder (one level up from collectors/), next to the scan history
-SCANS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scans")
+SCANS_DIR = home.data_dir("scans")
 
 MAX_AGE_DAYS = 30
 

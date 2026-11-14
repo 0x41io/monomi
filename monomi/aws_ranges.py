@@ -17,10 +17,11 @@ import time
 
 import requests
 
+from monomi import home
 from monomi.common import USER_AGENT
 
 URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+CACHE_DIR = home.data_dir("cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "aws-ip-ranges.json")
 MAX_AGE = 24 * 60 * 60  # seconds: refresh the cached list once a day
 

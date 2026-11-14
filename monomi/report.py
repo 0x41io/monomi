@@ -19,7 +19,7 @@ import os
 import re
 from datetime import datetime
 
-from monomi import evidence, gate, paths, ui
+from monomi import evidence, gate, home, paths, ui
 
 SEVERITIES = ("High", "Medium", "Low")
 # Cells starting with these can run as formulas in Excel / Sheets
@@ -357,7 +357,7 @@ def to_html(results: dict, generated) -> str:
 # ---------- Saving (--export and the report command) ----------
 
 # Reports go in the monomi folder, wherever the command is run from
-REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports")
+REPORTS_DIR = home.data_dir("reports")
 # format name: (builder, file ending, encoding). utf-8-sig puts a BOM at the
 # start of the CSV, so Excel reads characters like ø correctly
 FORMATS = {

@@ -10,9 +10,11 @@ import json
 import os
 from datetime import datetime
 
+from monomi import home
+
 # Always inside the monomi folder, no matter where the command is run from;
 # otherwise each working folder would get its own separate history.
-SCANS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scans")
+SCANS_DIR = home.data_dir("scans")
 
 # Scans saved before v1.14 have one combined list, which came from the
 # certificate logs (crt.sh and Cert Spotter). OTX wasn't a source yet.
