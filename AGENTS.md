@@ -43,6 +43,12 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
   Code files (`requirements.txt`, the wrapper the MCP config starts) come from
   `home.REPO_DIR` and only exist when running from a copy of the repo.
 - Install for development with `pip install -e .` (editable).
+- Every path rule in `paths.py` passes `rule=` (a name from `paths.RULES`) and
+  `targets=_targets(hosts, ips, ...)` to `_path()`, built from the scan's own
+  data, never from text. A new rule needs a new name in `RULES`, its keys in
+  `RULE_KEYS` in `tests/test_contract.py`, and a scan there that produces it
+  (`test_every_rule_is_covered` fails until it has one). Released rule names
+  and targets keys never change.
 - `tests/test_contract.py` locks what Akashi reads: the shape of paths,
   leads, gate blocks and evidence, the takeover / around-the-CDN / email
   fields, status words, and the signatures of the functions Akashi imports.

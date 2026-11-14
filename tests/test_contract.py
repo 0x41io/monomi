@@ -218,7 +218,7 @@ def test_saved_scan_has_a_version_akashi_can_compare(tmp_path, capsys):
     cli.save_json({"target": "lab"}, str(path))
     saved = json.loads(path.read_text())
     assert list(saved)[0] == "monomi_version"
-    assert common.scan_version(saved) == common.parse_version(common.VERSION) is not None
+    assert common.scan_version(saved) == common.parse_version(common.VERSION) >= (1, 15, 0)
     assert common.scan_version({"target": "lab"}) is None  # a scan saved before v1.15.0
 
 

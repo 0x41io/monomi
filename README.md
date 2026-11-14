@@ -119,7 +119,24 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.14.1"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.15.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+
+**Reading a saved scan (`--json`, since v1.15.0).** The file starts with `"monomi_version"`. Compare it as numbers with `monomi.common.scan_version(results)` (as text, `"1.15.0"` sorts before `"1.9.0"`); it's `None` for scans saved before v1.15.0, which don't have the fields below. In `"paths"`, every item in `paths`, `leads` and `set_aside` has:
+
+- `"rule"`: which rule built it, one of `takeover`, `takeover_unknown`, `email_spoofing`, `exposed_service`, `known_cves`, `version_check`, `side_door`, `around_cdn`. Names never change once released.
+- `"targets"`: what it's about. Always `"hosts"` and `"ips"` (lists, maybe empty), so any item can be checked against a scope file the same way, plus keys for its rule:
+
+| `rule` | extra `targets` keys |
+|---|---|
+| `takeover`, `takeover_unknown` | `cname`, `service` (null if unknown), `claimable`, `nxdomain_confirmed_by` (DoH servers that agreed; `[]` = system DNS only, null = not recorded) |
+| `email_spoofing` | `verdict` |
+| `exposed_service` | `services` (e.g. `5432/PostgreSQL`) |
+| `known_cves` | `cves`, `versions` |
+| `version_check` | `versions` (each `host`, `tech`, `version`) |
+| `side_door` | `shared_with` (the production hosts on the same server) |
+| `around_cdn` | `fronted` (every host behind the CDN; try a few, not all), `cdn` (null when hosts sit behind more than one); one lead per origin server, its IP in `ips` |
+
+Rely only on the keys listed for that rule. Build requests from `targets`, never from the `title` or step text, which can change between releases.
 
 ### API key (only for `--ai`)
 
@@ -565,9 +582,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.13.1: gate fixes from the first bug bounty field run: out-of-scope hosts never feed a path rule (anything about them alone is set aside, and outputs say how many were left out), check 2 knows third-party hosting and AWS Global Accelerator (not just CDNs), and dangling CNAMEs to AWS API Gateway names are stale, not leads
 - [x] v1.14: finds more: AlienVault OTX passive DNS as a fourth source (optional free key, `doctor` check), subfinder import (`--subfinder`, MCP `subfinder_file`), history kept per source (a failed, cut-short or new source can't make hosts look new or gone), cut-short sources marked **partial** (fixes fake [GONE] hosts after Cert Spotter was rate-limited mid-way), and honest cooldown wording when a source is skipped
 - [x] v1.14.1: installable package: the code moves into `monomi/`, `pip install -e .` installs it (plus `monomi` and `monomi-mcp` commands, `python -m monomi`), so other tools like Akashi can `from monomi import ...`. Data stays where it was when running from the repo, `MONOMI_HOME` can move it, and a plain install uses `~/.monomi`. `python monomi.py` and existing MCP configs keep working unchanged. Requires Python 3.14+
+- [x] v1.15.0: Akashi-ready leads: every path, lead and set-aside item in a saved scan has a `rule` and structured `targets` (see [Reading a saved scan](#using-monomi-from-other-tools)), "go around the CDN" gives one lead per origin server instead of one lead for the whole scan, and saved scans start with `monomi_version`
 
 **Next**
-- [ ] "Go around the CDN" leads per server, so a big organization doesn't get one lead covering a hundred hosts; fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
+- [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
 - [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
