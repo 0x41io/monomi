@@ -23,6 +23,26 @@ def is_hostname(name: str) -> bool:
     return len(name) <= 253 and bool(_HOSTNAME_RE.match(name))
 
 
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def parse_version(text) -> tuple[int, int, int] | None:
+    """'1.15.0' -> (1, 15, 0), or None unless it's exactly X.Y.Z.
+
+    Versions are compared as numbers, never as text: as text, "1.15.0" sorts
+    before "1.9.0", which would make a new scan look older than an old one.
+    """
+    m = _VERSION_RE.fullmatch(text) if isinstance(text, str) else None
+    return tuple(int(n) for n in m.groups()) if m else None
+
+
+def scan_version(results: dict) -> tuple[int, int, int] | None:
+    """Which Monomi saved this scan, from its "monomi_version" (saved since
+    v1.15.0). None for older scans, or if the value isn't X.Y.Z: tools that
+    need the v1.15 fields (Akashi) refuse those scans instead of guessing."""
+    return parse_version(results.get("monomi_version"))
+
+
 def now_utc() -> str:
     """Current time in UTC as a short ISO string, e.g. 2026-10-21T00:05:00+00:00."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

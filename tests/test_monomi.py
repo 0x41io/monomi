@@ -328,3 +328,15 @@ def test_show_investigation_prints_every_label(capsys):
     out = capsys.readouterr().out
     assert "TOR_EXIT" in out and "on the Tor exit list" in out and "[Tor Project]" in out
     assert "HOSTING" in out and "[Team Cymru]" in out
+
+
+def test_saved_scan_starts_with_the_monomi_version(tmp_path, capsys):
+    import json
+    from monomi.common import VERSION
+    results = {"target": "lab", "subdomains": ["lab"], "monomi_version": "0.0.1"}
+    path = tmp_path / "scan.json"
+    cli.save_json(results, str(path))
+    saved = json.loads(path.read_text())
+    assert list(saved)[0] == "monomi_version" and saved["monomi_version"] == VERSION
+    assert saved["target"] == "lab" and saved["subdomains"] == ["lab"]
+    assert results["monomi_version"] == "0.0.1"  # the results in memory aren't changed

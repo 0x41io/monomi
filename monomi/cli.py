@@ -17,7 +17,7 @@ from datetime import datetime
 
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, saved
-from monomi.common import is_hostname, now_utc
+from monomi.common import VERSION, is_hostname, now_utc
 from monomi.importers import spiderfoot, subfinder
 from monomi import (activelog, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate,
                     history, home, internetdb, mcp_setup, paths, report, scope, suggest,
@@ -852,9 +852,11 @@ def export_reports(results: dict, formats: list[str]) -> None:
 
 
 def save_json(results: dict, path: str) -> None:
-    """--json: save every result to a file."""
+    """--json: save every result to a file, starting with which Monomi made it
+    ("monomi_version"), so other tools can tell what fields to expect."""
+    saved = {"monomi_version": VERSION, **{k: v for k, v in results.items() if k != "monomi_version"}}
     with open(path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(saved, f, indent=2)
     print()
     good(f"Saved results to {path}")
 
