@@ -1,0 +1,299 @@
+"""
+Evidence list: numbered, plain facts pulled from the recon data.
+
+The AI report must cite these IDs (E1, E2...) for every claim, so each
+finding can be traced back to where and when the data came from.
+Built by code, not by the AI, so the evidence itself can't be made up.
+"""
+import re
+
+from monomi.categorize import categorize
+from monomi.common import now_utc
+from monomi.takeover import match_provider
+
+# What we can honestly say about a host with no IPv4 address, per its DNS
+# status from dnscheck.host_status()
+DNS_FACTS = {
+    "no_such_host": "does not exist in DNS when checked (NXDOMAIN, double-checked over "
+                    "DNS-over-HTTPS when reachable)",
+    "dangling_cname": "exists in DNS, but its CNAME points to a name that does not exist "
+                      "(NXDOMAIN), so it has no IP address",
+    "no_address": "had no IP address in DNS when checked (no A or AAAA record); DNS didn't "
+                  "say the name is gone, but some DNS providers (e.g. Cloudflare) answer this "
+                  "way for names that don't exist, so it may be retired",
+    "ipv6_only": "had an IPv6 address but no IPv4 address when checked (not looked up further)",
+    "conflicting": "got conflicting DNS answers when checked (system DNS said it doesn't exist, "
+                   "DNS-over-HTTPS said it does), so whether it exists is unknown",
+    "servfail": "could not be looked up (DNS servers answered SERVFAIL, even after a retry: "
+                "a broken zone or a provider under load), so whether it resolves is unknown",
+    "lookup_failed": "could not be looked up (no DNS server answered), so whether it resolves is unknown",
+    # Scans saved before v1.8 used "gone" for no_such_host
+    "gone": "had no DNS record when checked (NXDOMAIN: the name doesn't exist)",
+}
+
+# Who would fix a finding: roles, never people. A fact can have more than
+# one owner (a DMARC record is published by the DNS admin, but only the
+# email admin knows which services send mail). Facts nobody needs to act
+# on, like which source found a hostname, get no owner.
+OWNERS = {
+    "dns": "DNS admin",
+    "server": "server / infrastructure admin",
+    "web": "web app team",
+    "cdn": "CDN / proxy admin",
+    "email": "email admin",
+    "cloud": "cloud / service account owner",
+}
+
+# Hostname categories (from categorize.py) that make a live host worth a
+# fact of its own: attack paths treat these as softer ways in
+RISKY_CATEGORIES = ("non-production", "legacy", "access", "internal-tools", "iot-ot")
+
+
+def build_evidence(results: dict) -> list[dict]:
+    """Turn raw recon results into a numbered list of evidence items."""
+    evidence = []
+
+    def add(fact, sources, owners=(), kind=None, host=None):
+        evidence.append({
+            "id": f"E{len(evidence) + 1}",
+            "fact": fact,
+            "sources": sources,
+            "owners": [OWNERS[o] for o in owners],
+            "kind": kind,
+            "host": host,
+        })
+
+    # 1. Which sources found each hostname
+    seen_by = {}
+    for r in results["sources"].values():
+        for host in r["subdomains"]:
+            source = {"name": r["source"] + (" (saved copy)" if r.get("from_saved") else ""),
+                      "collected_at": r.get("collected_at")}
+            if r.get("from_saved"):
+                source["from_saved"] = True  # not this scan's data (validation gate check 3)
+            if r.get("imported_at"):
+                source["imported_at"] = r["imported_at"]  # another tool's list (subfinder)
+            seen_by.setdefault(host, []).append(source)
+    for host in results["subdomains"]:
+        names = ", ".join(s["name"] for s in seen_by[host])
+        add(f"{host} was found by {names}", seen_by[host])
+
+    # 2. DNS and hosting (from --enrich)
+    enr = results.get("enrichment")
+    if enr:
+        dns_source = [{"name": "DNS + ASN lookup", "collected_at": enr.get("collected_at")}]
+        for host in results["subdomains"]:
+            h = enr["hosts"].get(host)
+            if not h:
+                continue
+            if h["ips"]:
+                where = h["provider"] or "unknown provider"
+                if h.get("country"):
+                    where += f", {h['country']}"
+                add(f"{host} resolves to {', '.join(h['ips'])} ({where})", dns_source, kind="resolves", host=host)
+            else:
+                fact = DNS_FACTS.get(h.get("dns"), "had no IPv4 address when checked")
+                add(f"{host} {fact}", dns_source, ("dns",) if h.get("dns") == "dangling_cname" else ())
+        for host in enr["private_ip_hosts"]:
+            private = ", ".join(enr["hosts"][host].get("private_ips", []))
+            add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source, ("dns",))
+        rules_source = [{"name": "hostname rules", "collected_at": now_utc()}]
+        for host in results["subdomains"]:
+            h = enr["hosts"].get(host)
+            if not h or not h["ips"]:
+                continue
+            cat = categorize(host, results.get("target", ""))
+            if cat["category"] in RISKY_CATEGORIES:
+                add(f"{host} is live and its name puts it in the '{cat['category']}' category ({cat['reason']})",
+                    rules_source, ("server",), kind="risky_name", host=host)
+
+    # 3. Open ports, risky services and CVEs (from --ports)
+    exp = results.get("exposure")
+    if exp:
+        shodan_source = [{"name": "Shodan InternetDB", "collected_at": exp.get("collected_at")}]
+        for ip, d in exp["ips"].items():
+            if d["shared_edge"]:
+                continue  # CDN edge server: these ports belong to the CDN, not the target
+            hosts = ", ".join(d["hosts"][:3])
+            if len(d["hosts"]) > 3:
+                hosts += f" +{len(d['hosts']) - 3} more"
+            ports = ", ".join(str(p) for p in d["ports"])
+            fact = f"{ip} ({hosts}) has open ports: {ports}"
+            if d["tags"]:
+                fact += f"; Shodan tags: {', '.join(d['tags'])}"
+            add(fact, shodan_source, ("server",), kind="open_ports", host=ip)
+            if d["risky"]:
+                add(f"{ip} ({hosts}) runs services that usually shouldn't face the internet: "
+                    f"{', '.join(d['risky'])}", shodan_source, ("server",), kind="risky_service", host=ip)
+            if d["vulns"]:
+                cves = ", ".join(d["vulns"][:15])
+                more = f" (+{len(d['vulns']) - 15} more)" if len(d["vulns"]) > 15 else ""
+                add(f"Shodan InternetDB lists {len(d['vulns'])} CVE(s) for {ip} ({hosts}), "
+                    f"matched from software version banners: {cves}{more}", shodan_source, ("server",), kind="cves", host=ip)
+
+    # 4. SpiderFoot findings (from --import)
+    sf = results.get("spiderfoot")
+    if sf:
+        sf_source = [{
+            "name": f"SpiderFoot export ({results['sources']['spiderfoot']['file']})",
+            "collected_at": None,  # SpiderFoot collected it at its own scan time, which we don't know
+            "imported_at": now_utc(),
+        }]
+        for fnd in sf["findings"]:
+            first_line = (fnd["data"].splitlines() or ["(no data)"])[0][:200]
+            add(f"SpiderFoot module {fnd['module']} reported {fnd['type']}: {first_line}", sf_source)
+    # 5. Web technology seen in HTTP headers (from --fingerprint, ACTIVE)
+    fp = results.get("fingerprint")
+    if fp:
+        for host, r in fp["hosts"].items():
+            fp_source = [{"name": "HTTP fingerprint (active, 1 request)", "collected_at": r["collected_at"]}]
+            for t in r["techs"]:
+                fact = f"{host} (HTTP {r['status']}) shows {t['tech']} in its response ({t['evidence']})"
+                if t["version"]:
+                    fact += f"; exact version {t['version']} is exposed"
+                add(fact, fp_source, ("server",) if t["version"] else (), kind="version_leak" if t["version"] else "web_tech", host=host)
+
+    # 6. Security headers missing or weak (from the same --fingerprint request)
+    if fp:
+        for host, r in fp["hosts"].items():
+            if not r.get("header_issues"):
+                continue
+            hdr_source = [{"name": "HTTP security headers (same fingerprint request)", "collected_at": r["collected_at"]}]
+            problems = "; ".join(f"{i['header']} {i['problem']} ({i['detail']})" for i in r["header_issues"])
+            add(f"{host} (HTTP {r['status']}) security headers: {problems}", hdr_source, ("web", "cdn"))
+
+    # 6b. Exposed developer files: API specs and source maps (from --exposed-files, ACTIVE)
+    ex = results.get("exposed_files")
+    if ex:
+        for host, f in ex["hosts"].items():
+            src = [{"name": "exposed files (active GET)", "collected_at": f.get("collected_at")}]
+            spec = f["spec"]
+            if spec:
+                fact = (f"{host} serves a public {spec['type']} spec at {spec['url']} "
+                        f"({spec['endpoint_count']} endpoints, {spec['method_count']} methods)")
+                if spec["servers"]:
+                    fact += f"; names server(s) {', '.join(spec['servers'][:3])}"
+                if spec["declares_auth"]:
+                    fact += "; declares an auth scheme"
+                add(fact, src, ("web", "cdn"), kind="exposed_spec", host=host)
+            for m in f["source_maps"]:
+                fact = (f"{host} serves a JavaScript source map at {m['map_url']} "
+                        f"({m['source_count']} source files)")
+                if m["has_source_content"]:
+                    fact += "; the original source code is embedded"
+                add(fact, src, ("web",), kind="exposed_source_map", host=host)
+
+    # 7. Email spoofing protection (from --email, DNS lookups only)
+    em = results.get("email")
+    if em and "error" not in em:
+        target = results["target"]
+        mail_source = [{"name": "DNS TXT lookups (SPF, DMARC, DKIM)", "collected_at": em["collected_at"]}]
+        spf, dmarc, dkim, v = em["spf"], em["dmarc"], em["dkim"], em["verdict"]
+
+        def with_issues(fact, check):
+            if check["issues"]:
+                fact += "; issues: " + "; ".join(f"{i['problem']} ({i['detail']})" for i in check["issues"])
+            return fact
+
+        if spf["record"]:
+            add(with_issues(f"{target} SPF record: {spf['record']}", spf), mail_source, ("dns", "email"))
+        else:
+            add(f"{target} has no SPF record", mail_source, ("dns", "email"))
+
+        if dmarc["record"]:
+            add(with_issues(f"_dmarc.{target} DMARC record: {dmarc['record']}", dmarc), mail_source, ("dns", "email"))
+        else:
+            add(f"{target} has no DMARC record (nothing at _dmarc.{target})", mail_source, ("dns", "email"))
+
+        if dkim["selectors"]:
+            add(f"{target} has DKIM keys under selector(s): {', '.join(dkim['selectors'])}", mail_source, ("dns", "email"))
+        else:
+            add(f"No DKIM key found for {target} under common selector names; "
+                "a custom selector can't be ruled out", mail_source, ("dns", "email"))
+
+        fact = f"Email spoofing verdict for {target} (worked out by code from the DMARC policy): {v['verdict']}, {v['summary']}"
+        if v["notes"]:
+            fact += "; notes: " + "; ".join(v["notes"])
+        add(fact, mail_source, ("dns", "email"), kind="email_" + v["verdict"], host=target)
+    # 8. Dangling CNAMEs / subdomain takeover (from --takeover, DNS lookups only)
+    tk = results.get("takeover")
+    if tk:
+        for lead in tk["leads"]:
+            lead_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": lead["collected_at"]}]
+            if lead["claimable"]:
+                add(f"{lead['host']} has a CNAME to {lead['cname']} ({lead['service']}), and that target "
+                    "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source, ("dns", "cloud"), kind="takeover_lead", host=lead["host"])
+            elif provider := match_provider(lead["cname"]):
+                add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
+                    f"(NXDOMAIN); it is under {provider}'s own domain, so nobody can buy the domain, "
+                    "but this service isn't on Monomi's list: check whether it lets deleted names be "
+                    "claimed again (can-i-take-over-xyz)", lead_source, ("dns", "cloud"),
+                    kind="dangling_provider", host=lead["host"])
+            else:
+                add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
+                    "(NXDOMAIN); not a known service, so who can claim it is unknown", lead_source, ("dns",), kind="dangling_unknown", host=lead["host"])
+        for record in tk.get("stale", []):
+            stale_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": record["collected_at"]}]
+            # Scans saved before v1.7.1 have no "reason": those were all AWS records
+            reason = record.get("reason", "names on this service include a random ID and can't be claimed again")
+            add(f"{record['host']} has a CNAME to {record['cname']} ({record['service']}), and that target "
+                f"does not exist (NXDOMAIN); {reason}, so this is a stale DNS record, not a takeover risk",
+                stale_source, ("dns",))
+        if not tk["leads"] and not tk.get("stale"):
+            checked = tk["checked"] - len(tk["errors"])
+            check_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": tk["collected_at"]}]
+            add(f"Takeover check: none of {checked} hostnames has a CNAME pointing to a name that doesn't exist",
+                check_source)
+    return evidence
+
+
+def cited_ids(report: str) -> set[str]:
+    """Every evidence ID cited in brackets, e.g. [E1, E2] or a range [E5-E9]."""
+    cited = set()
+    # Any bracket counts, even one mixing in other text like [E26, closes P1]
+    for group in re.findall(r"\[([^\[\]]*)\]", report):
+        for start, end in re.findall(r"\bE(\d+)(?:\s*-\s*E(\d+))?\b", group):
+            first, last = int(start), int(end or start)
+            if 0 <= last - first <= 1000:
+                cited.update(f"E{n}" for n in range(first, last + 1))  # a range: E5-E9
+            else:
+                cited.update({f"E{first}", f"E{last}"})
+    return cited
+
+
+def check_citations(report: str, evidence: list[dict]) -> list[str]:
+    """Return evidence IDs the report cites that don't exist (sorted, no repeats)."""
+    known = {e["id"] for e in evidence}
+    return sorted(cited_ids(report) - known, key=lambda i: int(i[1:]))
+
+
+def describe_source(s: dict) -> str:
+    """One readable line about where and when a fact came from."""
+    if s.get("collected_at"):
+        return f"{s['name']}, collected {s['collected_at']}"
+    if s.get("imported_at"):
+        return f"{s['name']}, imported {s['imported_at']} (original collection time unknown)"
+    return f"{s['name']} (collection time unknown)"
+
+
+def evidence_appendix(report: str, evidence: list[dict]) -> str:
+    """Markdown 'Evidence' section listing only the items the report cites."""
+    cited = cited_ids(report)
+    lines = [
+        "## Evidence",
+        "",
+        "Facts collected by monomi's code, not written by the AI. "
+        "Every citation in the report above points to one of these.",
+        "",
+    ]
+    for e in evidence:
+        if e["id"] not in cited:
+            continue
+        sources = "; ".join(describe_source(s) for s in e["sources"])
+        lines.append(f"- **{e['id']}**: {e['fact']}")
+        lines.append(f"  - Source: {sources}")
+        if e.get("owners"):
+            lines.append(f"  - Owner: {', '.join(e['owners'])}")
+    if len(lines) == 4:
+        lines.append("*The report cites no evidence.*")
+    return "\n".join(lines) + "\n"

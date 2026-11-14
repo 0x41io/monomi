@@ -2,7 +2,7 @@
 
 import pytest
 
-from categorize import categorize, categorize_all
+from monomi.categorize import categorize, categorize_all
 
 DOMAIN = "example.com"
 

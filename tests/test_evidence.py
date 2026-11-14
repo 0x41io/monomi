@@ -1,5 +1,5 @@
-from evidence import build_evidence, check_citations, cited_ids
-from history import build, compare
+from monomi.evidence import build_evidence, check_citations, cited_ids
+from monomi.history import build, compare
 
 
 def test_cited_ids_reads_singles_lists_and_ranges():
@@ -44,8 +44,8 @@ def test_evidence_says_why_a_host_has_no_ip():
 def test_every_dns_status_has_wording():
     # A host_status() word without wording would fall back to a vague
     # "had no IPv4 address" in the report, or show blank in the summary
-    import enrich
-    import evidence
+    from monomi import enrich
+    from monomi import evidence
     for word in ["no_such_host", "dangling_cname", "no_address",
                  "ipv6_only", "conflicting", "lookup_failed"]:
         assert word in evidence.DNS_FACTS, word
@@ -115,7 +115,7 @@ def test_owners_follow_the_rules():
 
 
 def test_every_fact_has_a_list_of_known_owners():
-    import evidence
+    from monomi import evidence
     for e in build_evidence(owner_results()):
         assert isinstance(e["owners"], list), e["id"]
         for owner in e["owners"]:
@@ -123,7 +123,7 @@ def test_every_fact_has_a_list_of_known_owners():
 
 
 def test_appendix_shows_owners():
-    from evidence import evidence_appendix
+    from monomi.evidence import evidence_appendix
     ev = build_evidence(owner_results())
     lead = next(e for e in ev if "shop has a CNAME" in e["fact"])
     text = evidence_appendix(f"See [{lead['id']}]", ev)

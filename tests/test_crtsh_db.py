@@ -1,7 +1,7 @@
 import psycopg
 import pytest
 import socket
-from collectors import crtsh_db
+from monomi.collectors import crtsh_db
 
 ROWS = [
     (1, "api.example.com"),

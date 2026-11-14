@@ -1,7 +1,7 @@
 import pytest
 
-from collectors import crtsh, pacing
-from collectors.pacing import Paced
+from monomi.collectors import crtsh, pacing
+from monomi.collectors.pacing import Paced
 
 
 class Resp:
@@ -47,7 +47,7 @@ def test_each_try_takes_a_slot(monkeypatch, pacing_dir):
 
 
 def test_crtsh_database_row_cap_is_partial(monkeypatch):
-    from collectors import crtsh_db
+    from monomi.collectors import crtsh_db
     rows = [(i, f"h{i}.example.com") for i in range(3)]
     monkeypatch.setattr(crtsh_db, "fetch_raw", lambda domain, budget=0: rows)
     assert "partial" not in crtsh_db.collect("example.com")

@@ -1,7 +1,7 @@
 # Hostnames without dots on purpose: the chat app turns dotted names into
 # Markdown links when code is copied. The path rules don't care.
-from evidence import build_evidence
-from paths import build_paths
+from monomi.evidence import build_evidence
+from monomi.paths import build_paths
 
 
 def lab_results():
@@ -162,7 +162,7 @@ def test_paths_are_capped():
 
 
 def test_check_paths_finds_left_out_and_made_up_paths():
-    from paths import check_paths
+    from monomi.paths import check_paths
     out, _ = run(lab_results())  # P1 and leads L1, L2
     assert check_paths("### P1: email\n### L1: side door\n### L2: CDN", out) == ([], [])
     assert check_paths("### P1: email only", out) == (["L1", "L2"], [])
@@ -172,7 +172,7 @@ def test_check_paths_finds_left_out_and_made_up_paths():
 
 
 def test_appendix_lists_paths_and_fix_first():
-    from paths import paths_appendix
+    from monomi.paths import paths_appendix
     out, _ = run(lab_results())
     text = paths_appendix(out)
     assert "**P1: Send email as lab** (High, weakest step: Inference, gate 6/6)" in text
@@ -181,14 +181,14 @@ def test_appendix_lists_paths_and_fix_first():
 
 
 def test_appendix_says_when_no_path_was_found():
-    from paths import paths_appendix
+    from monomi.paths import paths_appendix
     text = paths_appendix({"paths": [], "fix_first": None, "more": 0})
     assert "No attack path found" in text
     assert "Fix this first" not in text
 
 
 def test_terminal_shows_paths_without_ai(capsys):
-    from monomi import show_paths
+    from monomi.cli import show_paths
     results = lab_results()
     out, ev = run(results)
     results["paths"] = out
@@ -200,7 +200,7 @@ def test_terminal_shows_paths_without_ai(capsys):
 
 
 def test_terminal_says_no_path_only_when_a_check_ran(capsys):
-    from monomi import show_paths
+    from monomi.cli import show_paths
     empty = {"paths": [], "fix_first": None, "more": 0}
     show_paths({"paths": empty})  # discovery only: nothing to chain, say nothing
     assert capsys.readouterr().out == ""
@@ -209,7 +209,7 @@ def test_terminal_says_no_path_only_when_a_check_ran(capsys):
 
 
 def test_names_reads_like_a_sentence():
-    from paths import _names
+    from monomi.paths import _names
     assert _names(["a"]) == "a"
     assert _names(["a", "b"]) == "a and b"
     assert _names(["a", "b", "c"]) == "a, b and c"
@@ -354,7 +354,7 @@ def test_a_version_with_no_matched_cve_is_a_lead():
 
 
 def test_partial_is_recorded_when_an_action_is_in_two_paths():
-    from paths import _fix_first
+    from monomi.paths import _fix_first
     a = {"what": "fix a", "evidence": ["E1"], "owners": ["DNS admin"]}
     b = {"what": "fix b", "evidence": ["E2"], "owners": ["app owner"]}
     built = [{"id": "P1", "actions": [a, b]}, {"id": "P2", "actions": [a]}]
@@ -365,7 +365,7 @@ def test_partial_is_recorded_when_an_action_is_in_two_paths():
 
 
 def test_fix_first_wording_never_says_one_of_several_closes():
-    from paths import fix_first_parts, paths_appendix
+    from monomi.paths import fix_first_parts, paths_appendix
     out, ev = run(three_side_doors())
     t = fix_first_parts(out["fix_first"])
     assert t["label"] == "Fix these 4 first"
@@ -377,7 +377,7 @@ def test_fix_first_wording_never_says_one_of_several_closes():
 
 
 def test_terminal_shows_a_group_fix(capsys):
-    from monomi import show_paths
+    from monomi.cli import show_paths
     results = three_side_doors()
     out, ev = run(results)
     results["paths"] = out
@@ -389,7 +389,7 @@ def test_terminal_shows_a_group_fix(capsys):
 
 
 def test_old_saved_paths_get_actions():
-    from paths import upgrade_saved
+    from monomi.paths import upgrade_saved
     out, ev = run(three_side_doors())
     path = out["paths"][0]
     leaks = path["steps"][-1]["evidence"]
@@ -449,8 +449,8 @@ def test_web_ports_or_a_version_alone_never_promote():
 
 
 def test_only_leads_means_no_attack_path(capsys):
-    from monomi import show_paths
-    from paths import paths_appendix
+    from monomi.cli import show_paths
+    from monomi.paths import paths_appendix
     results = lab_results()
     results["email"]["verdict"]["verdict"] = "protected"
     out, ev = run(results)
@@ -482,7 +482,7 @@ def test_leads_are_capped():
 
 
 def test_old_saved_side_door_without_a_cve_drops_the_version_facts():
-    from paths import upgrade_saved
+    from monomi.paths import upgrade_saved
     out, ev = run(lab_results())
     lead = out["leads"][0]  # v1.9 saved this as a path, with the leaks in "fix"
     names, leaks = lead["steps"][0]["evidence"], lead["steps"][-1]["evidence"]

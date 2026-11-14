@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pytest
 
-import gate
-import paths
-from evidence import build_evidence
+from monomi import gate, paths
+from monomi.evidence import build_evidence
 from test_paths import lab_results, run, with_cves
 
 FIXTURES = sorted((Path(__file__).parent / "golden" / "fixtures").glob("*.json"))
@@ -168,7 +167,7 @@ def test_every_path_and_lead_carries_its_gate():
 
 
 def test_check_1_sets_aside_a_host_the_scope_file_excludes(monkeypatch):
-    import scope
+    from monomi import scope
     s = scope.from_bytes(b"lab.test\n*.lab.test\n!oldapp.lab.test\n")
     built = build(dotted_results(), s)
     assert "Take over oldapp.lab.test" not in [p["title"] for p in built["paths"] + built["leads"]]
@@ -279,8 +278,8 @@ def test_describe_reads_the_same_everywhere():
 def test_every_output_shows_the_gate_and_the_set_aside_list(capsys):
     from datetime import datetime
 
-    import report
-    from monomi import show_paths
+    from monomi import report
+    from monomi.cli import show_paths
     results = edge_version_results()
     results["evidence"] = build_evidence(results)
     results["paths"] = paths.build_paths(results, results["evidence"])
@@ -334,8 +333,8 @@ def test_a_version_without_a_cve_gets_the_version_note():
 def test_every_output_shows_the_program_note(capsys):
     from datetime import datetime
 
-    import report
-    from monomi import show_paths
+    from monomi import report
+    from monomi.cli import show_paths
     results = lab_results()
     results["evidence"] = build_evidence(results)
     results["paths"] = paths.build_paths(results, results["evidence"])
@@ -397,7 +396,7 @@ def scoped_lab(scope_text):
     """A dotted lab like 41xlab: apex, dev and staging on one server, www behind
     Cloudflare, a forum pointing straight at its own server, web ports on both
     servers. Returns (results, scope)."""
-    import scope as scope_mod
+    from monomi import scope as scope_mod
     T = "2026-11-13T12:00:00+00:00"
     hosts = {
         "lab.test": ["192.0.2.10"], "dev.lab.test": ["192.0.2.10"],
@@ -465,8 +464,8 @@ def test_breaking_the_input_filter_brings_the_excluded_host_back(monkeypatch):
 def test_every_output_names_the_hosts_left_out(capsys):
     from datetime import datetime
 
-    import report
-    from monomi import show_paths
+    from monomi import report
+    from monomi.cli import show_paths
     results, s = scoped_lab("lab.test\n*.lab.test\n!dev.lab.test\n")
     results["evidence"] = build_evidence(results)
     results["paths"] = paths.build_paths(results, results["evidence"], s)

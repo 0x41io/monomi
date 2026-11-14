@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-import monomi
-from monomi import baseline_gaps, clean_domain, collect_ct, flag_silent_crtsh_failure, gap_reason
+from monomi import cli
+from monomi.cli import baseline_gaps, clean_domain, collect_ct, flag_silent_crtsh_failure, gap_reason
 
 
 def test_clean_domain_strips_url_parts():
@@ -74,12 +74,12 @@ def _source(source, certs):
 
 def test_collect_ct_runs_silent_check_when_every_source_succeeds(monkeypatch):
     # The bug fixed in v1.7: the check used to run only when some source errored
-    import monomi
-    monkeypatch.setattr(monomi.crtsh, "collect", lambda domain, budget, light: _source("crt.sh", 0))
-    monkeypatch.setattr(monomi.crtsh_db, "collect", lambda domain, budget: _source("crt.sh database", 5))
-    monkeypatch.setattr(monomi.certspotter, "collect", lambda domain: _source("certspotter", 2))
+    from monomi import cli
+    monkeypatch.setattr(cli.crtsh, "collect", lambda domain, budget, light: _source("crt.sh", 0))
+    monkeypatch.setattr(cli.crtsh_db, "collect", lambda domain, budget: _source("crt.sh database", 5))
+    monkeypatch.setattr(cli.certspotter, "collect", lambda domain: _source("certspotter", 2))
     results = {"sources": {}, "errors": {}}
-    monomi.collect_ct(results, "example.com")
+    cli.collect_ct(results, "example.com")
     assert "crt.sh" in results["errors"]
     assert set(results["sources"]) == {"crt.sh database", "certspotter"}
 
@@ -103,7 +103,7 @@ def test_cert_spotter_failing_is_still_a_gap():
 
 
 def test_hosts_file_keeps_only_the_targets_hostnames(tmp_path):
-    from monomi import read_hosts_file
+    from monomi.cli import read_hosts_file
     f = tmp_path / "hosts.txt"
     # "lab" stands in for the domain: dotless, so the chat app doesn't link it
     f.write_text("# known hosts\nOLDAPP.lab\n\nlab\nvpn.lab.   # trailing dot is fine\n"
@@ -115,7 +115,7 @@ def test_hosts_file_keeps_only_the_targets_hostnames(tmp_path):
 
 
 def test_hosts_file_is_capped(tmp_path):
-    from monomi import MAX_HOSTS_FILE, read_hosts_file
+    from monomi.cli import MAX_HOSTS_FILE, read_hosts_file
     f = tmp_path / "hosts.txt"
     f.write_text("\n".join(f"h{i}.lab" for i in range(MAX_HOSTS_FILE + 5)))
     hosts, skipped = read_hosts_file(str(f), "lab")
@@ -170,13 +170,13 @@ def test_gap_reason_failed_and_behind():
 # ---------- --exposed-files (ACTIVE) ----------
 
 def test_exposed_files_flag_parses():
-    args = monomi.build_parser().parse_args(["example.com", "--exposed-files"])
+    args = cli.build_parser().parse_args(["example.com", "--exposed-files"])
     assert args.exposed_files is True
 
 
 def test_exposed_files_turns_on_enrich():
     # mirror main()'s dependency: --exposed-files needs resolved hosts
-    args = monomi.build_parser().parse_args(["example.com", "--exposed-files"])
+    args = cli.build_parser().parse_args(["example.com", "--exposed-files"])
     assert args.enrich is False
     if args.exposed_files and not args.enrich:
         args.enrich = True
@@ -195,9 +195,9 @@ def test_run_exposed_stores_results_and_summarizes(monkeypatch, capsys):
     }
     finding = {"hosts": hosts, "requested": ["staging", "app"],
                "checked": 2, "requests": 10, "skipped": 0}
-    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment, **kwargs: finding)
+    monkeypatch.setattr(cli.exposed, "check_all", lambda enrichment, **kwargs: finding)
     results = {}
-    monomi.run_exposed(results, {"hosts": {}}, monomi.scope.UNSCOPED_CLI)
+    cli.run_exposed(results, {"hosts": {}}, cli.scope.UNSCOPED_CLI)
     assert results["exposed_files"] is finding
     out = capsys.readouterr().out
     assert "OpenAPI spec" in out and "source map" in out
@@ -207,9 +207,9 @@ def test_run_exposed_stores_results_and_summarizes(monkeypatch, capsys):
 
 def test_run_exposed_clean_says_nothing_found(monkeypatch, capsys):
     empty = {"hosts": {}, "requested": ["a"], "checked": 1, "requests": 7, "skipped": 0}
-    monkeypatch.setattr(monomi.exposed, "check_all", lambda enrichment, **kwargs: empty)
+    monkeypatch.setattr(cli.exposed, "check_all", lambda enrichment, **kwargs: empty)
     results = {}
-    monomi.run_exposed(results, {"hosts": {}}, monomi.scope.UNSCOPED_CLI)
+    cli.run_exposed(results, {"hosts": {}}, cli.scope.UNSCOPED_CLI)
     assert "No exposed API specs or source maps" in capsys.readouterr().out
 
 
@@ -237,7 +237,7 @@ def fake_fingerprint_web(monkeypatch):
     def get(url, **kwargs):
         sent.append(url)
         return R()
-    monkeypatch.setattr(monomi.fingerprint.requests, "get", get)
+    monkeypatch.setattr(cli.fingerprint.requests, "get", get)
     return sent
 
 
@@ -246,10 +246,10 @@ ENRICHED = {"hosts": {h: {"ips": ["8.8.8.8"]} for h in
 
 
 def test_cli_scope_only_lets_in_scope_hosts_through(monkeypatch, tmp_path, capsys, active_log):
-    s = monomi.load_cli_scope(lab_file(tmp_path))
+    s = cli.load_cli_scope(lab_file(tmp_path))
     sent = fake_fingerprint_web(monkeypatch)
     results = {}
-    monomi.run_fingerprint(results, ENRICHED, s)
+    cli.run_fingerprint(results, ENRICHED, s)
     assert sorted(sent) == ["https://example.test/", "https://www.example.test/"]
     assert [o["host"] for o in results["fingerprint"]["out_of_scope"]] == ["dev.example.test", "evil.test"]
     out = capsys.readouterr().out
@@ -262,22 +262,22 @@ def test_cli_scope_only_lets_in_scope_hosts_through(monkeypatch, tmp_path, capsy
 
 def test_cli_without_scope_still_logs_every_request(monkeypatch, capsys, active_log):
     sent = fake_fingerprint_web(monkeypatch)
-    monomi.run_fingerprint({}, ENRICHED, monomi.scope.UNSCOPED_CLI)
+    cli.run_fingerprint({}, ENRICHED, cli.scope.UNSCOPED_CLI)
     assert len(sent) == 4
     log = [json.loads(x) for x in active_log.read_text().splitlines()]
     assert len(log) == 4 and all(x["event"] == "request" and x["scope_rule"] is None for x in log)
 
 
 def test_cli_exposed_files_uses_the_scope_too(monkeypatch, tmp_path, capsys, active_log):
-    s = monomi.load_cli_scope(lab_file(tmp_path))
+    s = cli.load_cli_scope(lab_file(tmp_path))
     seen = {}
 
     def check_all(enrichment, **kwargs):
         seen["hosts"], seen["scope"] = sorted(enrichment["hosts"]), kwargs["scope"]
         return {"hosts": {}, "requested": [], "checked": 0, "requests": 0, "skipped": 0}
-    monkeypatch.setattr(monomi.exposed, "check_all", check_all)
+    monkeypatch.setattr(cli.exposed, "check_all", check_all)
     results = {}
-    monomi.run_exposed(results, ENRICHED, s)
+    cli.run_exposed(results, ENRICHED, s)
     assert seen == {"hosts": ["example.test", "www.example.test"], "scope": s}
     assert len(results["exposed_files"]["out_of_scope"]) == 2
 
@@ -286,34 +286,34 @@ def test_cli_exposed_files_uses_the_scope_too(monkeypatch, tmp_path, capsys, act
 def test_unusable_cli_scope_stops_before_scanning(monkeypatch, tmp_path, capsys, text):
     def boom(*a, **k):
         raise AssertionError("scanning started with an unusable --scope")
-    monkeypatch.setattr(monomi, "collect_ct", boom)
-    monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
-                                             "--scope", lab_file(tmp_path, text)])
-    assert monomi.main() == 1
+    monkeypatch.setattr(cli, "collect_ct", boom)
+    monkeypatch.setattr(cli.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
+                                          "--scope", lab_file(tmp_path, text)])
+    assert cli.main() == 1
     assert "Nothing was scanned" in capsys.readouterr().out
 
 
 def test_missing_cli_scope_stops_before_scanning(monkeypatch, tmp_path, capsys):
     def boom(*a, **k):
         raise AssertionError("scanning started with a missing --scope file")
-    monkeypatch.setattr(monomi, "collect_ct", boom)
-    monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
-                                             "--scope", str(tmp_path / "nope.txt")])
-    assert monomi.main() == 1
+    monkeypatch.setattr(cli, "collect_ct", boom)
+    monkeypatch.setattr(cli.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
+                                          "--scope", str(tmp_path / "nope.txt")])
+    assert cli.main() == 1
     assert "missing" in capsys.readouterr().out
 
 
 def test_cli_scope_shows_rejected_lines_and_summary(tmp_path, capsys):
-    s = monomi.load_cli_scope(lab_file(tmp_path, LAB_SCOPE + "*\n"))
+    s = cli.load_cli_scope(lab_file(tmp_path, LAB_SCOPE + "*\n"))
     out = capsys.readouterr().out
     assert s.problem() is None
     assert "--scope line 4 ignored" in out and "2 in, 1 excluded" in out
 
 
 def test_scope_without_active_checks_warns(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(monomi, "collect_ct", lambda results, domain: None)  # no hosts: stops early
-    monkeypatch.setattr(monomi.sys, "argv", ["monomi.py", "example.test", "--scope", lab_file(tmp_path)])
-    monomi.main()
+    monkeypatch.setattr(cli, "collect_ct", lambda results, domain: None)  # no hosts: stops early
+    monkeypatch.setattr(cli.sys, "argv", ["monomi.py", "example.test", "--scope", lab_file(tmp_path)])
+    cli.main()
     assert "only sets aside attack paths" in capsys.readouterr().out
 
 
@@ -324,7 +324,7 @@ def test_show_investigation_prints_every_label(capsys):
          "rdns": None, "shodan": None, "errors": {},
          "labels": [{"label": "tor_exit", "reason": "on the Tor exit list", "source": "Tor Project"},
                     {"label": "hosting", "reason": "a hosting network", "source": "Team Cymru"}]}
-    monomi.show_investigation(r)
+    cli.show_investigation(r)
     out = capsys.readouterr().out
     assert "TOR_EXIT" in out and "on the Tor exit list" in out and "[Tor Project]" in out
     assert "HOSTING" in out and "[Team Cymru]" in out

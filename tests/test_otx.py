@@ -2,12 +2,10 @@
 
 import pytest
 
-import doctor
-import mcp_server
-import monomi
-from collectors import otx, saved
-from doctor import OK, WARN
-from monomi import collect_ct, flag_silent_crtsh_failure
+from monomi import cli, doctor, mcp_server
+from monomi.collectors import otx, saved
+from monomi.doctor import OK, WARN
+from monomi.cli import collect_ct, flag_silent_crtsh_failure
 
 REAL_FETCH = otx.fetch_raw  # conftest turns OTX off for every test; these tests use the real one
 D = "lab.test"
@@ -141,10 +139,10 @@ def _sources(monkeypatch, cs=None, otx_record=None):
                 raise RuntimeError(error)
             return record
         return run
-    monkeypatch.setattr(monomi.crtsh, "collect", job(None, "HTTP 502"))
-    monkeypatch.setattr(monomi.crtsh_db, "collect", job(None, "connection timeout"))
-    monkeypatch.setattr(monomi.certspotter, "collect", job(cs, "rate limited"))
-    monkeypatch.setattr(monomi.otx, "collect", job(otx_record, "rate limit hit"))
+    monkeypatch.setattr(cli.crtsh, "collect", job(None, "HTTP 502"))
+    monkeypatch.setattr(cli.crtsh_db, "collect", job(None, "connection timeout"))
+    monkeypatch.setattr(cli.certspotter, "collect", job(cs, "rate limited"))
+    monkeypatch.setattr(cli.otx, "collect", job(otx_record, "rate limit hit"))
 
 
 def test_scan_adds_otx_hosts_and_says_records(monkeypatch, capsys):

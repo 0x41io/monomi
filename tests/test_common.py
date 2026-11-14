@@ -1,4 +1,4 @@
-from common import is_hostname, subdomains_in
+from monomi.common import is_hostname, subdomains_in
 
 
 def test_is_hostname_accepts_normal_names():

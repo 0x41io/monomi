@@ -1,9 +1,7 @@
 import requests
 
-import enrich
-import internetdb
-import threatintel
-from threatintel import add_vulns_note, build_evidence, clean_ip, label, reject_reason
+from monomi import enrich, internetdb, threatintel
+from monomi.threatintel import add_vulns_note, build_evidence, clean_ip, label, reject_reason
 
 def facts(**changes):
     """A clean, boring IP's facts. Pass keyword args to change any part."""
@@ -159,7 +157,7 @@ def test_failed_source_becomes_unknown_not_missing():
 
 
 def test_evidence_works_with_citation_checker():
-    from evidence import check_citations
+    from monomi.evidence import check_citations
     ev = threatintel.build_evidence({"ips": {"203.0.113.7": investigated(tor_exit=True)}})
     assert check_citations("Tor exit [E1].", ev) == []
     assert check_citations("Made up [E99].", ev) == ["E99"]
@@ -168,7 +166,7 @@ def test_evidence_works_with_citation_checker():
 # --- what the AI verdict sees ---
 
 def test_ip_payload_calls_country_registered_location():
-    from analysis import ip_payload
+    from monomi.analysis import ip_payload
     r = investigated(network={"asn": "AS198093", "as_name": "DFRI-AS",
                               "raw_as_name": "DFRI-AS - Foreningen, SE", "country": "SE"},
                      errors={"shodan": "timed out"})

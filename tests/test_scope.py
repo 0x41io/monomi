@@ -2,8 +2,8 @@ import hashlib
 
 import pytest
 
-import scope
-from scope import UNSCOPED_CLI
+from monomi import scope
+from monomi.scope import UNSCOPED_CLI
 
 # Test names use the reserved .test suffix, and shared suffixes are built
 # from pieces, so no real domain appears (the chat app turns those into links).

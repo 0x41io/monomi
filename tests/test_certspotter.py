@@ -1,6 +1,6 @@
 import pytest
 
-from collectors import certspotter
+from monomi.collectors import certspotter
 
 
 class Resp:
@@ -72,7 +72,7 @@ def test_cooldown_uses_retry_after_when_it_is_a_number():
 
 
 def test_out_of_quota_mid_way_keeps_pages_already_fetched(monkeypatch):
-    from collectors import pacing
+    from monomi.collectors import pacing
     calls = []
     page = [{"id": "1", "dns_names": ["a.example.com"]}]
     monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, page)], calls))
@@ -102,7 +102,7 @@ def test_429_after_the_first_page_is_partial(monkeypatch):
 
 
 def test_out_of_quota_mid_way_is_partial(monkeypatch):
-    from collectors import pacing
+    from monomi.collectors import pacing
     monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, _page(1))], []))
     monkeypatch.setattr(certspotter.PACER, "limit", 1)
     monkeypatch.setattr(pacing.time, "sleep", lambda s: pytest.fail("should not wait an hour"))
@@ -134,16 +134,16 @@ def test_collect_marks_the_record_partial(monkeypatch):
 
 
 def test_scan_warns_and_keeps_the_complete_saved_copy(monkeypatch, capsys):
-    import monomi
-    from collectors import saved
+    from monomi import cli
+    from monomi.collectors import saved
     full = {"source": "certspotter", "collected_at": "2026-11-12T12:00:00+00:00", "domain": "lab.test",
             "certificates_seen": 3, "subdomain_count": 3, "subdomains": ["a.lab.test", "b.lab.test", "c.lab.test"]}
     saved.save("lab.test", full)
     cut = {**full, "collected_at": "2026-11-13T12:00:00+00:00", "certificates_seen": 1, "subdomain_count": 1,
            "subdomains": ["a.lab.test"], "partial": "stopped after 1 page (rate limit)"}
-    for mod in (monomi.crtsh, monomi.crtsh_db):
+    for mod in (cli.crtsh, cli.crtsh_db):
         monkeypatch.setattr(mod, "collect", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(monomi.certspotter, "collect", lambda domain: cut)
-    monomi.collect_ct({"sources": {}, "errors": {}}, "lab.test")
+    monkeypatch.setattr(cli.certspotter, "collect", lambda domain: cut)
+    cli.collect_ct({"sources": {}, "errors": {}}, "lab.test")
     assert "Cert Spotter stopped after 1 page (rate limit), so its list may be incomplete" in capsys.readouterr().out
     assert saved.load("lab.test", "certspotter")["subdomain_count"] == 3  # not replaced by part of the list

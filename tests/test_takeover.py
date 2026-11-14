@@ -1,9 +1,8 @@
 import pytest
 
-import dnscheck
-import takeover
-from evidence import build_evidence
-from takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_provider, match_service
+from monomi import dnscheck, takeover
+from monomi.evidence import build_evidence
+from monomi.takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_provider, match_service
 
 # Both DNS-over-HTTPS providers confirmed the NXDOMAIN (see dnscheck.check_exists)
 DOH_BOTH = ["Cloudflare", "Google"]

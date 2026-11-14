@@ -1,4 +1,4 @@
-import enrich
+from monomi import enrich
 
 
 def fake_resolve(hosts):

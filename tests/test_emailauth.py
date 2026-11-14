@@ -2,9 +2,8 @@ import dns.exception
 import dns.resolver
 import pytest
 
-import dnscheck
-import emailauth
-from emailauth import check_dkim, check_dmarc, check_spf, email_verdict
+from monomi import dnscheck, emailauth
+from monomi.emailauth import check_dkim, check_dmarc, check_spf, email_verdict
 
 
 def spf_problems(records):

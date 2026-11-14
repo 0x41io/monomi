@@ -1,4 +1,4 @@
-from headers import check_headers, hsts_max_age
+from monomi.headers import check_headers, hsts_max_age
 
 
 def problems(status, headers):

@@ -1,10 +1,9 @@
 import pytest
 import requests
 
-import fingerprint
-import scope
-from scope import UNSCOPED_CLI
-from fingerprint import detect
+from monomi import fingerprint, scope
+from monomi.scope import UNSCOPED_CLI
+from monomi.fingerprint import detect
 
 
 def techs(headers):

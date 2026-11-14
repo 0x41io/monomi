@@ -5,11 +5,8 @@ import os
 
 import pytest
 
-import evidence
-import history
-import mcp_server
-import monomi
-from importers import subfinder
+from monomi import cli, evidence, history, mcp_server
+from monomi.importers import subfinder
 
 D = "lab.test"
 
@@ -76,14 +73,14 @@ def test_source_record_is_dated_when_subfinder_ran(tmp_path):
 
 def test_flag_adds_the_hosts_as_their_own_source(tmp_path, capsys):
     results = {"sources": {}, "errors": {}}
-    assert monomi.add_subfinder(results, write(tmp_path, "a.lab.test\nother.test\n"), D)
+    assert cli.add_subfinder(results, write(tmp_path, "a.lab.test\nother.test\n"), D)
     assert results["sources"]["subfinder"]["subdomains"] == ["a.lab.test"]
     out = capsys.readouterr().out
     assert "subfinder: 1 hostnames from" in out and "Skipped 1 hostname not part of lab.test" in out
 
 
 def test_unreadable_file_stops_the_scan(tmp_path, capsys):
-    assert not monomi.add_subfinder({"sources": {}, "errors": {}}, str(tmp_path / "missing.txt"), D)
+    assert not cli.add_subfinder({"sources": {}, "errors": {}}, str(tmp_path / "missing.txt"), D)
     assert "Can't read the subfinder file" in capsys.readouterr().out
 
 
@@ -92,14 +89,14 @@ def test_subfinder_hosts_never_reach_history(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(history, "SCANS_DIR", str(tmp_path / "history"))
     results = {"target": D, "errors": {}, "sources": {
         "certspotter": {"source": "certspotter", "subdomains": ["a.lab.test"], "certificates_seen": 1}}}
-    monomi.add_subfinder(results, write(tmp_path, "extra.lab.test\n"), D)
-    monomi.show_changes(results)
+    cli.add_subfinder(results, write(tmp_path, "extra.lab.test\n"), D)
+    cli.show_changes(results)
     assert history.load_last(D)["subdomains"] == ["a.lab.test"]
 
 
 def test_evidence_marks_subfinder_hosts_as_imported(tmp_path):
     results = {"target": D, "subdomains": ["a.lab.test"], "sources": {}}
-    monomi.add_subfinder(results, write(tmp_path, "a.lab.test\n"), D)
+    cli.add_subfinder(results, write(tmp_path, "a.lab.test\n"), D)
     fact = evidence.build_evidence(results)[0]
     assert fact["fact"] == "a.lab.test was found by subfinder"
     assert fact["sources"][0]["imported_at"]
@@ -108,11 +105,11 @@ def test_evidence_marks_subfinder_hosts_as_imported(tmp_path):
 def test_main_with_the_flag(tmp_path, monkeypatch, capsys):
     """The whole CLI run: the flag's hosts are in the scan's list."""
     monkeypatch.setattr(history, "SCANS_DIR", str(tmp_path / "history"))
-    for mod in (monomi.crtsh, monomi.crtsh_db, monomi.certspotter):
+    for mod in (cli.crtsh, cli.crtsh_db, cli.certspotter):
         monkeypatch.setattr(mod, "collect", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     path = write(tmp_path, "only-subfinder.lab.test\n")
     monkeypatch.setattr("sys.argv", ["monomi.py", D, "--subfinder", path, "--no-color"])
-    monomi.main()
+    cli.main()
     assert "only-subfinder.lab.test" in capsys.readouterr().out
 
 
@@ -121,7 +118,7 @@ def test_main_with_the_flag(tmp_path, monkeypatch, capsys):
 @pytest.fixture
 def scans(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "SCANS_DIR", str(tmp_path))
-    for mod in (monomi.crtsh, monomi.crtsh_db, monomi.certspotter):
+    for mod in (cli.crtsh, cli.crtsh_db, cli.certspotter):
         monkeypatch.setattr(mod, "collect", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     return tmp_path
 

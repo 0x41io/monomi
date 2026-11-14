@@ -6,8 +6,7 @@ import os
 
 import pytest
 
-import mcp_server
-import scope
+from monomi import mcp_server, scope
 
 
 class AllowAll(scope.Scope):
@@ -145,7 +144,7 @@ def test_investigate_ip_caps_and_counts_skipped(monkeypatch):
 
 
 def test_clean_hosts_rejects_junk_with_reasons():
-    import mcp_server
+    from monomi import mcp_server
     link = "[dev.lab.test](https:" + "//dev.lab.test)"
     url = "https:" + "//app.lab.test/login"
     hosts, skipped, rejected = mcp_server.clean_hosts(
@@ -164,7 +163,7 @@ def test_clean_hosts_rejects_junk_with_reasons():
 
 
 def test_clean_hosts_caps_rejected_list():
-    import mcp_server
+    from monomi import mcp_server
     _, _, rejected = mcp_server.clean_hosts([f"bad{i}..test" for i in range(50)])
     assert len(rejected) == 20
 
@@ -879,7 +878,7 @@ def test_server_starts_fail_closed():
     # The module's own defaults, before main() runs, checked in a fresh Python
     import subprocess
     import sys
-    code = "import mcp_server, scope; print(mcp_server.SCOPE is None, mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE)"
+    code = "from monomi import mcp_server, scope; print(mcp_server.SCOPE is None, mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     assert out.stdout.split() == ["True", "True"], out.stderr

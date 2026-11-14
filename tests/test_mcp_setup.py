@@ -7,9 +7,8 @@ import sys
 
 import pytest
 
-import mcp_setup
-import monomi
-from mcp_setup import NAME, SERVER, SetupError
+from monomi import cli, mcp_setup
+from monomi.mcp_setup import NAME, SERVER, SetupError
 
 ROI = {"command": "wsl.exe",  # the hand-made entry that worked before setup existed
        "args": ["-e", "/venv/bin/python", "/monomi/mcp_server.py"]}
@@ -237,7 +236,7 @@ def test_setup_error_is_shown_not_crashed(monkeypatch, capsys):
 def test_monomi_mcp_setup_runs_it(monkeypatch, capsys):
     monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
     monkeypatch.setattr(sys, "argv", ["monomi.py", "mcp", "setup", "--print"])
-    assert monomi.main() == 0
+    assert cli.main() == 0
     assert json.loads(capsys.readouterr().out)["mcpServers"][NAME] == ENTRY
 
 
@@ -265,7 +264,7 @@ def test_with_active_adds_and_removes_the_flag_once():
 
 
 def test_log_path_matches_the_server():
-    import mcp_server
+    from monomi import mcp_server
     assert mcp_setup.ACTIVE_LOG == os.path.join(mcp_server.SCANS_DIR, "active.log")
     with pytest.raises(mcp_server.ToolError, match=mcp_setup.ACTIVE_FLAG):
         mcp_server.require_active("fingerprint_hosts")  # its refusal names the same flag
@@ -538,7 +537,7 @@ def test_print_with_scope(monkeypatch, tmp_path, capsys):
 def test_scope_flags_match_the_server(tmp_path):
     import inspect
 
-    import mcp_server
+    from monomi import mcp_server
     s = scope_file(tmp_path)
     args = mcp_setup.with_scope({"args": []}, str(s), digest(s))["args"]
     assert args[0] == mcp_setup.SCOPE_FLAG and args[2] == mcp_setup.SCOPE_HASH_FLAG
@@ -549,7 +548,7 @@ def test_scope_flags_match_the_server(tmp_path):
 
 
 def test_server_accepts_the_entry_setup_writes(monkeypatch, tmp_path):
-    import mcp_server
+    from monomi import mcp_server
     monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
     s = scope_file(tmp_path)
     entry = mcp_setup.build_entry(True, str(s), digest(s))

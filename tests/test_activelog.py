@@ -1,7 +1,6 @@
 import json
 
-import activelog
-import scope
+from monomi import activelog, scope
 
 
 def lines(path):

@@ -5,10 +5,9 @@ import json
 
 import pytest
 
-import history
-import monomi
-from history import CARRIED, FRESH, PARTIAL, build, source_lists
-from monomi import history_input, show_changes
+from monomi import cli, history
+from monomi.history import CARRIED, FRESH, PARTIAL, build, source_lists
+from monomi.cli import history_input, show_changes
 
 D = "lab.test"
 T = "2026-11-13T12:00:00+00:00"
@@ -93,7 +92,7 @@ def test_breaking_the_partial_rule_brings_the_fake_gone_hosts_back(capsys, monke
     def partial_counts_as_fresh(results):
         fresh, partial, notes = real(results)
         return {**fresh, **partial}, {}, {}
-    monkeypatch.setattr(monomi, "history_input", partial_counts_as_fresh)
+    monkeypatch.setattr(cli, "history_input", partial_counts_as_fresh)
     run(scan(src("certspotter", "a.lab.test", "b.lab.test")), capsys)
     changes, _ = run(scan(src("certspotter", "a.lab.test", partial="stopped after 1 page (rate limit)")), capsys)
     assert changes["removed"] == ["b.lab.test"]
@@ -163,7 +162,7 @@ def test_old_history_file_then_otx(capsys, history_dir):
 
 def test_imports_never_reach_history(capsys):
     results = scan(src("certspotter", "a.lab.test"))
-    results["sources"][monomi.HOSTS_FILE] = {"source": monomi.HOSTS_FILE, "subdomains": ["extra.lab.test"]}
+    results["sources"][cli.HOSTS_FILE] = {"source": cli.HOSTS_FILE, "subdomains": ["extra.lab.test"]}
     results["sources"]["spiderfoot"] = {"source": "spiderfoot", "subdomains": ["sf.lab.test"]}
     run(results, capsys)
     assert history.load_last(D)["subdomains"] == ["a.lab.test"]
@@ -184,7 +183,7 @@ def test_nothing_worked_saves_nothing(capsys):
 
 def test_crtsh_behind_reads_behind(capsys):
     run(scan(src("certspotter", "a.lab.test")), capsys)
-    behind = monomi.CRTSH_BEHIND + ": the crt.sh database answered with 0"
+    behind = cli.CRTSH_BEHIND + ": the crt.sh database answered with 0"
     _, out = run(scan(src("certspotter", "a.lab.test"), errors={"crt.sh": behind, "crt.sh database": behind}),
                  capsys)
     assert "crt.sh, crt.sh database are behind on the CT logs" in out

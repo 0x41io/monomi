@@ -9,9 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import evidence
-import paths
-import report
+from monomi import evidence, paths, report
 
 FIXTURE = Path(__file__).parent / "golden" / "fixtures" / "41xlab.json"
 WHEN = datetime(2026, 11, 8, 11, 20)

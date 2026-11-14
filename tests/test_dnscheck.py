@@ -5,8 +5,7 @@ import dns.resolver
 import pytest
 import requests
 
-import dnscheck
-import takeover
+from monomi import dnscheck, takeover
 
 
 class FakeResponse:

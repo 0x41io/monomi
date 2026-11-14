@@ -1,6 +1,6 @@
 """Tests for ui.py: what the terminal says about Shodan results."""
 
-from ui import exposure_table
+from monomi.ui import exposure_table
 
 
 def edge_ip():

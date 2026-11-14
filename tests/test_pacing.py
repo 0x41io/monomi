@@ -5,8 +5,8 @@ import types
 
 import pytest
 
-from collectors import pacing
-from collectors.pacing import Pacer, Paced
+from monomi.collectors import pacing
+from monomi.collectors.pacing import Pacer, Paced
 
 
 class Clock:

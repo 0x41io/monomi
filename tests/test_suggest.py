@@ -3,7 +3,7 @@
 Hostnames without dots on purpose (the chat app turns dotted names into links).
 """
 
-import suggest
+from monomi import suggest
 
 
 def scan(**extra):
@@ -86,7 +86,7 @@ def test_cves_found_suggests_saving_them_once():
 
 
 def test_terminal_lists_suggestions_and_saves_them(capsys):
-    from monomi import show_next_checks
+    from monomi.cli import show_next_checks
     results = enriched()
     show_next_checks(results)
     text = capsys.readouterr().out
@@ -97,7 +97,7 @@ def test_terminal_lists_suggestions_and_saves_them(capsys):
 
 
 def test_terminal_says_nothing_when_there_is_nothing_to_add(capsys):
-    from monomi import show_next_checks
+    from monomi.cli import show_next_checks
     results = enriched(exposure={"ips": {}}, takeover={}, fingerprint={"hosts": {}}, email={})
     show_next_checks(results)
     assert capsys.readouterr().out == ""

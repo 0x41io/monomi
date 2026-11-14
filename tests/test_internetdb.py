@@ -1,7 +1,7 @@
 """Tests for internetdb.py: shared edge detection."""
 
-import internetdb
-from internetdb import edge_from_cname, edge_from_cpes, edge_from_ip, edge_reason
+from monomi import internetdb
+from monomi.internetdb import edge_from_cname, edge_from_cpes, edge_from_ip, edge_reason
 
 def test_cdn_network_owner_is_edge():
     assert edge_reason("Cloudflare", []) == "network owner is Cloudflare"

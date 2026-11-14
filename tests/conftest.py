@@ -1,8 +1,7 @@
 import pytest
 
-import activelog
-import dnscheck
-from collectors import otx, pacing, saved
+from monomi import activelog, dnscheck
+from monomi.collectors import otx, pacing, saved
 
 
 @pytest.fixture(autouse=True)

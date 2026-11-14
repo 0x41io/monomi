@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-import evidence
-from paths import build_paths
+from monomi import evidence
+from monomi.paths import build_paths
 
 GOLDEN = Path(__file__).parent / "golden"
 FIXTURES = sorted((GOLDEN / "fixtures").glob("*.json"))

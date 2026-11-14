@@ -7,9 +7,8 @@ import sys
 import anthropic
 import pytest
 
-import doctor
-import monomi
-from doctor import FAIL, OK, WARN
+from monomi import cli, doctor
+from monomi.doctor import FAIL, OK, WARN
 
 KEY = "sk-ant-api03-" + "x" * 90  # a made-up key, never a real one
 
@@ -228,7 +227,7 @@ def test_exit_code_is_1_when_anything_fails(monkeypatch, capsys):
 def test_monomi_doctor_runs_the_doctor(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["monomi.py", "doctor", "--no-color"])
     monkeypatch.setattr(doctor, "run_all", lambda: [])
-    assert monomi.main() == 0
+    assert cli.main() == 0
     assert "monomi doctor" in capsys.readouterr().out
 
 

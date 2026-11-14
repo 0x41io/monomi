@@ -7,9 +7,8 @@ from urllib.parse import urlparse
 import pytest
 import requests
 
-import exposed
-import scope
-from scope import UNSCOPED_CLI
+from monomi import exposed, scope
+from monomi.scope import UNSCOPED_CLI
 
 
 # ---------- read_openapi: only a real spec counts ----------

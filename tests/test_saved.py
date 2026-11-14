@@ -3,10 +3,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-import evidence
-import monomi
-from collectors import saved
-from monomi import baseline_gaps, collect_ct, history_input
+from monomi import cli, evidence
+from monomi.collectors import saved
+from monomi.cli import baseline_gaps, collect_ct, history_input
 
 NOW = datetime(2026, 11, 7, 18, 0, tzinfo=timezone.utc)
 
@@ -74,9 +73,9 @@ def _fake_sources(monkeypatch, crtsh=None, db=None, cs=None):
                 raise RuntimeError(error)
             return record
         return run
-    monkeypatch.setattr(monomi.crtsh, "collect", job(crtsh, "HTTP 502"))
-    monkeypatch.setattr(monomi.crtsh_db, "collect", job(db, "connection timeout"))
-    monkeypatch.setattr(monomi.certspotter, "collect", job(cs, "rate limited"))
+    monkeypatch.setattr(cli.crtsh, "collect", job(crtsh, "HTTP 502"))
+    monkeypatch.setattr(cli.crtsh_db, "collect", job(db, "connection timeout"))
+    monkeypatch.setattr(cli.certspotter, "collect", job(cs, "rate limited"))
 
 
 def test_good_results_are_saved_empty_ones_are_not(monkeypatch):
