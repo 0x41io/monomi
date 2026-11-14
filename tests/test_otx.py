@@ -7,7 +7,7 @@ import mcp_server
 import monomi
 from collectors import otx, saved
 from doctor import OK, WARN
-from monomi import baseline_gaps, collect_ct, flag_silent_crtsh_failure
+from monomi import collect_ct, flag_silent_crtsh_failure
 
 REAL_FETCH = otx.fetch_raw  # conftest turns OTX off for every test; these tests use the real one
 D = "lab.test"
@@ -180,30 +180,6 @@ def test_otx_finds_never_make_crtsh_look_broken():
     assert "crt.sh" in results["sources"] and results["errors"] == {}
 
 
-def test_otx_is_not_in_history_yet(monkeypatch, tmp_path):
-    """Until history is kept per source, OTX hosts and OTX failures stay out of it."""
-    results = {"target": D, "sources": {"certspotter": _ct_record("certspotter", "www.lab.test"),
-                                        "otx": _otx_record("mail.lab.test")},
-               "errors": {"AlienVault OTX": "rate limit hit; using the saved copy from 2026-11-10"}}
-    assert baseline_gaps(results) == []
-    saved_lists = []
-    monkeypatch.setattr(monomi.history, "load_last", lambda domain: None)
-    monkeypatch.setattr(monomi.history, "save", lambda domain, subs: saved_lists.append(subs) or str(tmp_path / "x"))
-    monomi.show_changes(results)
-    assert saved_lists == [["www.lab.test"]]
-
-
-def test_breaking_the_history_rule_lets_otx_hosts_in(monkeypatch, tmp_path):
-    """Break the rule: with OTX treated like a CT log, its hosts reach history."""
-    monkeypatch.setattr(monomi, "NOT_IN_HISTORY", {})
-    results = {"target": D, "sources": {"otx": _otx_record("mail.lab.test")}, "errors": {}}
-    saved_lists = []
-    monkeypatch.setattr(monomi.history, "load_last", lambda domain: None)
-    monkeypatch.setattr(monomi.history, "save", lambda domain, subs: saved_lists.append(subs) or str(tmp_path / "x"))
-    monomi.show_changes(results)
-    assert saved_lists == [["mail.lab.test"]]
-
-
 # --- doctor ---
 
 def doctor_answer(monkeypatch, resp, calls=None):
@@ -262,3 +238,11 @@ def test_find_subdomains_reports_otx_records(monkeypatch):
     assert full["sources"]["otx"]["records_seen"] == 1
     assert full["sources"]["otx"]["certificates_seen"] is None
     assert full["sources"]["certspotter"]["certificates_seen"] == 1
+    assert full["sources"]["certspotter"]["partial"] is None
+
+
+def test_find_subdomains_says_when_a_list_was_cut_short(monkeypatch):
+    cut = {**_ct_record("certspotter", "www.lab.test"), "partial": "stopped after 1 page (rate limit)"}
+    _sources(monkeypatch, cs=cut, otx_record=None)
+    full = mcp_server.find_subdomains(D, detail="full")
+    assert full["sources"]["certspotter"]["partial"] == "stopped after 1 page (rate limit)"

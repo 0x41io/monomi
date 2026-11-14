@@ -44,3 +44,12 @@ def test_each_try_takes_a_slot(monkeypatch, pacing_dir):
     fill_crtsh_slots(4)  # 1 + 4 = the full 5
     with pytest.raises(Paced):
         pacing.CRTSH.acquire(max_wait=0)
+
+
+def test_crtsh_database_row_cap_is_partial(monkeypatch):
+    from collectors import crtsh_db
+    rows = [(i, f"h{i}.example.com") for i in range(3)]
+    monkeypatch.setattr(crtsh_db, "fetch_raw", lambda domain, budget=0: rows)
+    assert "partial" not in crtsh_db.collect("example.com")
+    monkeypatch.setattr(crtsh_db, "MAX_ROWS", 3)
+    assert crtsh_db.collect("example.com")["partial"] == "stopped at the 3-row cap"

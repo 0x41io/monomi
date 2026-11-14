@@ -347,6 +347,7 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
                 "records_seen": r.get("records_seen"),            # OTX passive DNS
                 "collected_at": r["collected_at"],
                 "from_saved": r.get("from_saved", False),
+                "partial": r.get("partial"),  # why the list was cut short, or None
             }
             for name, r in results["sources"].items()
         },

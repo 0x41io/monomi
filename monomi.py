@@ -195,8 +195,13 @@ CRTSH_BEHIND = "no certificates for this domain yet"
 SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert Spotter": "certspotter",
                 "AlienVault OTX": "otx"}
 DISPLAY_NAMES = {key: name for name, key in SOURCE_NAMES.items()}  # "certspotter" -> "Cert Spotter"
-# Sources history doesn't track yet (per-source history comes next), by job name and source key
-NOT_IN_HISTORY = {"AlienVault OTX": "otx"}
+# What history tracks, one list each: crt.sh's website and database hold the
+# same data, so they're one entry. Imports (hosts file, SpiderFoot, subfinder)
+# aren't here: they're only there on runs that pass the file, so they'd make
+# hosts look new or gone.
+HISTORY_SOURCES = {"crt.sh": ("crt.sh", "crt.sh database"), "certspotter": ("certspotter",),
+                   "otx": ("otx",)}
+HISTORY_LABELS = {"crt.sh": "crt.sh", "certspotter": "Cert Spotter", "otx": "AlienVault OTX"}
 
 
 def seen(r: dict) -> int:
@@ -239,6 +244,8 @@ def collect_ct(results: dict, domain: str, crtsh_budget: float = crtsh.DEFAULT_B
             r = future.result()
             results["sources"][r["source"]] = r
             good(seen_line(name, r))
+            if r.get("partial"):
+                warn(f"{name} {r['partial']}, so its list may be incomplete")
         except RuntimeError as e:
             results["errors"][name] = str(e)
             warn(f"{name} unavailable: {e}")
@@ -256,7 +263,9 @@ def use_saved_copies(results: dict, domain: str) -> None:
     """
     for name, source in SOURCE_NAMES.items():
         r = results["sources"].get(source)
-        if r and seen(r) > 0:  # an empty result is no use as a fallback
+        # An empty result is no use as a fallback, and a cut-short one would
+        # replace a complete saved copy with part of a list
+        if r and seen(r) > 0 and not r.get("partial"):
             try:
                 saved.save(domain, r)
             except (OSError, ValueError) as e:
@@ -604,7 +613,7 @@ def baseline_gaps(results: dict) -> list[str]:
     crtsh_ok = any(name in results["sources"] and not results["sources"][name].get("from_saved")
                    for name in FULL_HISTORY_SOURCES)
     return [name for name in results["errors"]
-            if not (name in FULL_HISTORY_SOURCES and crtsh_ok) and name not in NOT_IN_HISTORY]
+            if not (name in FULL_HISTORY_SOURCES and crtsh_ok)]
 
 
 def gap_reason(results: dict, gaps: list[str]) -> str:
@@ -620,41 +629,60 @@ def gap_reason(results: dict, gaps: list[str]) -> str:
     return " and ".join(parts)
 
 
-def show_changes(results: dict) -> None:
-    """Compare with the last scan of this domain, then save this one as the new baseline.
+def history_input(results: dict) -> tuple[dict, dict, dict]:
+    """Sort this scan's sources for history.
 
-    Only saves when every source worked: a partial list would make the next
-    full scan report lots of fake [NEW] hosts.
+    Returns (fresh, partial, notes):
+      fresh:   history source -> hosts, when it worked fully
+      partial: history source -> hosts, when it was cut short
+      notes:   history source -> why it isn't fresh, in words
+    A saved copy (from_saved) never counts as working: it's old data
+    standing in for a failure.
+    """
+    fresh, partial, notes = {}, {}, {}
+    for name, keys in HISTORY_SOURCES.items():
+        worked = [results["sources"][k] for k in keys
+                  if k in results["sources"] and not results["sources"][k].get("from_saved")
+                  and DISPLAY_NAMES.get(k, k) not in results.get("errors", {})]
+        hosts = sorted({h for r in worked for h in r["subdomains"]})
+        if any(not r.get("partial") for r in worked):
+            fresh[name] = hosts
+        elif worked:
+            partial[name] = hosts
+            notes[name] = f"{HISTORY_LABELS[name]} {worked[0]['partial']}"
+        else:
+            jobs = [DISPLAY_NAMES.get(k, k) for k in keys if DISPLAY_NAMES.get(k, k) in results.get("errors", {})]
+            if jobs:  # (a source that never ran, as in tests, has nothing to say)
+                notes[name] = gap_reason(results, jobs)
+    return fresh, partial, notes
+
+
+def show_changes(results: dict) -> None:
+    """Compare with the last scan of this domain, then save this one.
+
+    History keeps a list per source. A source that failed or was cut short
+    keeps (part of) its last list, so it can't make hosts look gone, and a
+    source that's new to this domain starts from what it finds, so it can't
+    make hosts look new. So every scan is saved, even an incomplete one.
     """
     domain = results["target"]
-    # History tracks what certificate logs show; a hosts file would add fake [NEW] hosts
-    all_subs = sorted({s for name, r in results["sources"].items()
-                       if name != HOSTS_FILE and name not in NOT_IN_HISTORY.values()
-                       for s in r["subdomains"]})
+    fresh, partial, notes = history_input(results)
     previous = history.load_last(domain)
-
-    gaps = baseline_gaps(results)
-    if gaps:
-        print()
-        warn(f"{gap_reason(results, gaps)}, so this scan wasn't saved to history (it would be an incomplete baseline).")
-        if previous is not None:
-            changes = history.compare(previous, all_subs)
-            results["changes"] = changes
-            for sub in changes["added"]:
-                print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
-            if changes["removed"]:
-                info(f"{len(changes['removed'])} host(s) from the last scan are missing, probably due to the missing source.")
-        return
-
-    saved_path = history.save(domain, all_subs)
-    if previous is None:
-        print()
-        info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
-        return
-
-    changes = history.compare(previous, all_subs)
-    results["changes"] = changes
+    entries = history.build(previous, fresh, partial)
     print()
+    if not entries:
+        warn(f"{'; '.join(notes.values())}: no source worked, so there's nothing to save to history.")
+        return
+    saved_path = history.save(domain, entries)
+    if previous is None:
+        info(f"First scan of {domain} - saved as baseline ({short_path(saved_path)})")
+        if notes:
+            warn(f"Not complete: {'; '.join(notes.values())}. "
+                 "Those sources join the baseline once they work fully.")
+        return
+
+    changes = history.compare(previous, entries)
+    results["changes"] = changes
     info(f"Changes since last scan ({changes['previous_scan']}):")
     if not changes["added"] and not changes["removed"]:
         print("    No changes.")
@@ -662,6 +690,13 @@ def show_changes(results: dict) -> None:
         print(f"    {ui.paint('[NEW] ', ui.GREEN)} {sub}")
     for sub in changes["removed"]:
         print(f"    {ui.paint('[GONE]', ui.RED)} {sub}")
+    for name, hosts in changes["joined"].items():
+        info(f"{HISTORY_LABELS.get(name, name)} joins this domain's history: {len(hosts)} hostname"
+             f"{'' if len(hosts) == 1 else 's'} only it found {'is' if len(hosts) == 1 else 'are'} "
+             "its starting point, not marked new.")
+    if notes:
+        warn(f"Not complete: {'; '.join(notes.values())}. Hosts those sources saw last time "
+             "are kept, so none is marked gone because of it.")
 
 
 def show_paths(results: dict) -> None:
@@ -981,7 +1016,7 @@ def main() -> int:
         if sf:
             fail(f"No hostnames for {domain} found in the SpiderFoot export.")
         elif results["errors"]:
-            fail("All certificate sources failed. They're free services - try again in a few minutes.")
+            fail("All subdomain sources failed. They're free services - try again in a few minutes.")
         else:
             fail(f"No certificates found for {domain}. Check the spelling, or the domain may not use TLS.")
         return 1

@@ -78,10 +78,26 @@ def test_count_is_shared_between_pacers_with_the_same_name(clock):
 def test_cool_down_blocks_until_it_ends(clock):
     p = Pacer("t", "Test", limit=100, window=3600)
     p.cool_down(900)
-    with pytest.raises(Paced, match="next slot in 900s"):
+    with pytest.raises(Paced, match="cooling down after it rate-limited an earlier request; next try in 900s"):
         p.acquire(max_wait=10)
     clock.now += 900
     p.acquire(max_wait=0)
+
+
+def test_skip_message_names_the_real_reason(clock):
+    """The bug from the first OTX run: one request, a 429, then "60 requests per
+    60 min" as the reason. A cooldown says cooldown; a full window says the limit."""
+    p = Pacer("t", "Test", limit=60, window=3600)
+    p.acquire(max_wait=0)
+    p.cool_down(600)
+    with pytest.raises(Paced) as e:
+        p.acquire(max_wait=0)
+    assert "cooling down" in str(e.value) and "60 requests" not in str(e.value)
+
+    full = Pacer("f", "Test", limit=1, window=60)
+    full.acquire(max_wait=0)
+    with pytest.raises(Paced, match="to stay under its rate limit \\(1 requests per 1 min\\)"):
+        full.acquire(max_wait=0)
 
 
 def test_broken_state_file_counts_as_empty(clock, pacing_dir):

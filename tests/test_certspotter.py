@@ -80,3 +80,70 @@ def test_out_of_quota_mid_way_keeps_pages_already_fetched(monkeypatch):
     monkeypatch.setattr(pacing.time, "sleep", lambda s: pytest.fail("should not wait an hour"))
     assert certspotter.fetch_raw("example.com") == page
     assert len(calls) == 1
+
+
+# --- a cut-short list says so (v1.14: fake [GONE] hosts on the Deriv run) ---
+
+def _page(n):
+    return [{"id": str(n), "dns_names": [f"h{n}.example.com"]}]
+
+
+def test_complete_list_is_not_partial(monkeypatch):
+    monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, _page(1)), Resp(200, [])], []))
+    records, partial = certspotter.fetch("example.com")
+    assert len(records) == 1 and partial is None
+
+
+def test_429_after_the_first_page_is_partial(monkeypatch):
+    monkeypatch.setattr(certspotter.time, "sleep", lambda s: None)
+    monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, _page(1))] + [Resp(429)] * 3, []))
+    records, partial = certspotter.fetch("example.com")
+    assert len(records) == 1 and partial == "stopped after 1 page (rate limit)"
+
+
+def test_out_of_quota_mid_way_is_partial(monkeypatch):
+    from collectors import pacing
+    monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, _page(1))], []))
+    monkeypatch.setattr(certspotter.PACER, "limit", 1)
+    monkeypatch.setattr(pacing.time, "sleep", lambda s: pytest.fail("should not wait an hour"))
+    assert certspotter.fetch("example.com")[1] == "stopped after 1 page (rate limit)"
+
+
+class NotJSON(Resp):
+    def json(self):
+        raise ValueError("an HTML error page")
+
+
+def test_bad_reply_mid_way_is_partial(monkeypatch):
+    monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, _page(1)), NotJSON(200)], []))
+    assert certspotter.fetch("example.com")[1] == "stopped after 1 page (bad reply)"
+
+
+def test_page_cap_is_partial(monkeypatch):
+    pages = [Resp(200, _page(n)) for n in range(certspotter.MAX_PAGES)]
+    monkeypatch.setattr(certspotter.requests, "get", fake_get(pages, []))
+    records, partial = certspotter.fetch("example.com")
+    assert len(records) == certspotter.MAX_PAGES and partial == f"stopped at the {certspotter.MAX_PAGES}-page cap"
+
+
+def test_collect_marks_the_record_partial(monkeypatch):
+    monkeypatch.setattr(certspotter, "fetch", lambda domain: (_page(1), "stopped after 1 page (rate limit)"))
+    assert certspotter.collect("example.com")["partial"] == "stopped after 1 page (rate limit)"
+    monkeypatch.setattr(certspotter, "fetch", lambda domain: (_page(1), None))
+    assert "partial" not in certspotter.collect("example.com")
+
+
+def test_scan_warns_and_keeps_the_complete_saved_copy(monkeypatch, capsys):
+    import monomi
+    from collectors import saved
+    full = {"source": "certspotter", "collected_at": "2026-11-12T12:00:00+00:00", "domain": "lab.test",
+            "certificates_seen": 3, "subdomain_count": 3, "subdomains": ["a.lab.test", "b.lab.test", "c.lab.test"]}
+    saved.save("lab.test", full)
+    cut = {**full, "collected_at": "2026-11-13T12:00:00+00:00", "certificates_seen": 1, "subdomain_count": 1,
+           "subdomains": ["a.lab.test"], "partial": "stopped after 1 page (rate limit)"}
+    for mod in (monomi.crtsh, monomi.crtsh_db):
+        monkeypatch.setattr(mod, "collect", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(monomi.certspotter, "collect", lambda domain: cut)
+    monomi.collect_ct({"sources": {}, "errors": {}}, "lab.test")
+    assert "Cert Spotter stopped after 1 page (rate limit), so its list may be incomplete" in capsys.readouterr().out
+    assert saved.load("lab.test", "certspotter")["subdomain_count"] == 3  # not replaced by part of the list

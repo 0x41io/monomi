@@ -1,4 +1,10 @@
-"""Scan history: save each scan's hostnames and compare against the previous one."""
+"""Scan history: save each scan's hostnames and compare against the previous one.
+
+Since v1.14 every source's list is kept separately, so one source failing,
+being cut short, or joining for the first time can't make hosts look new or
+gone. A source that didn't work fully keeps its list from the last scan
+("carried"), so its hosts are never reported gone because of it.
+"""
 
 import json
 import os
@@ -7,6 +13,12 @@ from datetime import datetime
 # Always inside the monomi folder, no matter where the command is run from;
 # otherwise each working folder would get its own separate history.
 SCANS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scans")
+
+# Scans saved before v1.14 have one combined list, which came from the
+# certificate logs (crt.sh and Cert Spotter). OTX wasn't a source yet.
+LEGACY_SOURCES = ("crt.sh", "certspotter")
+
+FRESH, PARTIAL, CARRIED = "fresh", "partial", "carried"
 
 
 def _domain_dir(domain: str) -> str:
@@ -25,8 +37,47 @@ def load_last(domain: str):
         return json.load(f)
 
 
-def save(domain: str, subdomains: list) -> str:
-    """Save this scan as scans/<domain>/<timestamp>.json and return the path."""
+def source_lists(scan: dict | None) -> dict[str, list]:
+    """Each source's hostnames in a saved scan. An old combined list counts
+    as every certificate source's list."""
+    if not scan:
+        return {}
+    if isinstance(scan.get("sources"), dict):
+        return {name: list(entry.get("subdomains", [])) for name, entry in scan["sources"].items()}
+    return {name: list(scan.get("subdomains", [])) for name in LEGACY_SOURCES}
+
+
+def build(previous: dict | None, fresh: dict, partial: dict) -> dict[str, dict]:
+    """This scan's list for every source, ready to save and compare.
+
+    fresh:   source -> hosts, for sources that worked fully this time
+    partial: source -> hosts, for sources that were cut short: they keep last
+             scan's list plus whatever they found (found = really seen now)
+    Every other source from the previous scan keeps its old list (carried).
+    """
+    before = source_lists(previous)
+    out = {}
+    for name in set(before) | set(fresh) | set(partial):
+        if name in fresh:
+            out[name] = {"subdomains": sorted(set(fresh[name])), "status": FRESH}
+        elif name in partial:
+            out[name] = {"subdomains": sorted(set(partial[name]) | set(before.get(name, []))),
+                         "status": PARTIAL}
+        else:
+            out[name] = {"subdomains": sorted(before[name]), "status": CARRIED}
+    return dict(sorted(out.items()))
+
+
+def union(entries: dict[str, dict]) -> list[str]:
+    return sorted({h for entry in entries.values() for h in entry["subdomains"]})
+
+
+def save(domain: str, entries: dict[str, dict]) -> str:
+    """Save this scan as scans/<domain>/<timestamp>.json and return the path.
+
+    "subdomains" (every source together) stays for anything that reads the
+    old format; "sources" holds each source's own list and status.
+    """
     d = _domain_dir(domain)
     os.makedirs(d, exist_ok=True)
     now = datetime.now()
@@ -36,7 +87,8 @@ def save(domain: str, subdomains: list) -> str:
             {
                 "target": domain,
                 "scanned_at": now.isoformat(timespec="seconds"),
-                "subdomains": sorted(subdomains),
+                "subdomains": union(entries),
+                "sources": entries,
             },
             f,
             indent=2,
@@ -44,11 +96,23 @@ def save(domain: str, subdomains: list) -> str:
     return path
 
 
-def compare(previous: dict, current: list) -> dict:
-    """Work out which hostnames are new and which disappeared since the previous scan."""
-    old, new = set(previous["subdomains"]), set(current)
+def compare(previous: dict, entries: dict[str, dict]) -> dict:
+    """Which hostnames are new and which disappeared since the previous scan.
+
+    Gone: in the last scan, and in no source's list now. A source that didn't
+    work carries its old list, so a failure never makes a host look gone.
+    New: not in the last scan, found by a source that was in it too. A source
+    joining history for the first time (OTX on its first run) doesn't make
+    everything it knows look new: its hosts are its starting point.
+    """
+    before = source_lists(previous)
+    old = {h for hosts in before.values() for h in hosts}
+    from_known = {h for name, entry in entries.items() if name in before for h in entry["subdomains"]}
+    joined = {name: sorted(set(entry["subdomains"]) - old - from_known)
+              for name, entry in entries.items() if name not in before}
     return {
         "previous_scan": previous["scanned_at"],
-        "added": sorted(new - old),
-        "removed": sorted(old - new),
+        "added": sorted(from_known - old),
+        "removed": sorted(old - set(union(entries))),
+        "joined": {name: hosts for name, hosts in joined.items() if hosts},
     }

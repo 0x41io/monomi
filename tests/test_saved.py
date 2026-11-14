@@ -6,7 +6,7 @@ import pytest
 import evidence
 import monomi
 from collectors import saved
-from monomi import baseline_gaps, collect_ct
+from monomi import baseline_gaps, collect_ct, history_input
 
 NOW = datetime(2026, 11, 7, 18, 0, tzinfo=timezone.utc)
 
@@ -129,7 +129,9 @@ def test_saved_copy_still_counts_as_a_gap(monkeypatch):
     results = {"sources": {}, "errors": {}}
     collect_ct(results, "lab")
     assert results["sources"]["crt.sh database"]["from_saved"] is True
-    assert baseline_gaps(results) == ["crt.sh", "crt.sh database"]
+    assert {"crt.sh", "crt.sh database"} <= set(baseline_gaps(results))
+    fresh, partial, notes = history_input(results)
+    assert "crt.sh" not in fresh and "crt.sh" not in partial and "crt.sh" in notes
 
 
 def test_evidence_says_saved_copy():

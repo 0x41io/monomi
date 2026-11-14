@@ -51,6 +51,16 @@ def cooldown_seconds(resp) -> float:
 
 def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
     """Fetch issuances for domain + subdomains, following pagination."""
+    return fetch(domain, timeout)[0]
+
+
+def fetch(domain: str, timeout: int = 30) -> tuple[list[dict], str | None]:
+    """Like fetch_raw, plus why the list is cut short (None if it's complete).
+
+    Stopping early keeps the pages we already have, which is better than
+    nothing, but they're only part of the list: history must not treat the
+    missing hosts as gone (the v1.14 Deriv run: 1 page of 3, 6 fake [GONE]).
+    """
     params = {"domain": domain, "include_subdomains": "true", "expand": "dns_names"}
     headers = {"User-Agent": USER_AGENT}
     records = []
@@ -63,7 +73,8 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
             PACER.acquire(max_wait=MAX_RATE_WAIT)
         except Paced:
             if records:
-                break  # out of quota mid-way: keep what we already have
+                # out of quota mid-way: keep what we already have
+                return records, f"stopped after {pages} page{'s' if pages != 1 else ''} (rate limit)"
             raise
         try:
             resp = requests.get(API_URL, params=params, headers=headers, timeout=timeout)
@@ -80,21 +91,24 @@ def fetch_raw(domain: str, timeout: int = 30) -> list[dict]:
             # Giving up: tell later scans to skip Cert Spotter instead of hitting the limit again
             PACER.cool_down(cooldown_seconds(resp))
             if records:
-                break  # rate limited mid-way: keep what we already have
+                # rate limited mid-way: keep what we already have
+                return records, f"stopped after {pages} page{'s' if pages != 1 else ''} (rate limit)"
             raise RuntimeError("Cert Spotter rate limit hit (free tier). Try again later.")
         try:
             page = resp.json()
         except ValueError:  # HTML error page or cut-off body instead of JSON
             if records:
-                break  # keep the pages we already got
+                # keep the pages we already got
+                return records, f"stopped after {pages} page{'s' if pages != 1 else ''} (bad reply)"
             raise RuntimeError("Cert Spotter returned invalid JSON")
         if not page:
-            break
+            return records, None  # an empty page: that was everything
         records.extend(page)
         pages += 1
         params["after"] = page[-1]["id"]  # next page starts after the last id
 
-    return records
+    # Stopped at the page cap without seeing the end: there may be more
+    return records, f"stopped at the {MAX_PAGES}-page cap"
 
 
 def parse_subdomains(records: list[dict], domain: str) -> list[str]:
@@ -102,17 +116,19 @@ def parse_subdomains(records: list[dict], domain: str) -> list[str]:
     names = [name for rec in records for name in rec.get("dns_names", [])]
     return subdomains_in(names, domain)
 
+
 def parse_wildcards(records: list[dict], domain: str) -> list[str]:
     """Pull the wildcard cert names (*.domain) out of raw Cert Spotter records."""
     names = [name for rec in records for name in rec.get("dns_names", [])]
     return wildcards_in(names, domain)
 
+
 def collect(domain: str) -> dict:
-    records = fetch_raw(domain)
+    records, partial = fetch(domain)
     collected_at = now_utc()
     subdomains = parse_subdomains(records, domain)
     wildcards = parse_wildcards(records, domain)
-    return {
+    result = {
         "source": "certspotter",
         "collected_at": collected_at,
         "domain": domain,
@@ -121,3 +137,6 @@ def collect(domain: str) -> dict:
         "subdomains": subdomains,
         "wildcards": wildcards,
     }
+    if partial:
+        result["partial"] = partial  # only part of the list: see fetch()
+    return result

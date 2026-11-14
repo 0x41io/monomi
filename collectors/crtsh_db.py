@@ -80,7 +80,7 @@ def collect(domain: str, budget: float = DEFAULT_BUDGET) -> dict:
     collected_at = now_utc()
     subdomains = parse_subdomains(rows, domain)
     wildcards = parse_wildcards(rows, domain)
-    return {
+    result = {
         "source": "crt.sh database",
         "collected_at": collected_at,
         "domain": domain,
@@ -89,3 +89,6 @@ def collect(domain: str, budget: float = DEFAULT_BUDGET) -> dict:
         "subdomains": subdomains,
         "wildcards": wildcards,
     }
+    if len(rows) >= MAX_ROWS:
+        result["partial"] = f"stopped at the {MAX_ROWS}-row cap"  # there may be more
+    return result

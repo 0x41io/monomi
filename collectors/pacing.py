@@ -109,7 +109,7 @@ class Pacer:
         def take(state, now):
             wait = self._wait(state, now)
             if wait > max_wait:
-                raise Paced(self._skip_message(wait, now))
+                raise Paced(self._skip_message(wait, now, cooling=state["cooldown_until"] - now >= wait))
             # Book the slot at the time we'll actually send, so other runs count it now
             state["sent"].append(now + wait)
             return wait
@@ -135,8 +135,14 @@ class Pacer:
             state["cooldown_until"] = max(state["cooldown_until"], now + seconds)
         self._change(mark)
 
-    def _skip_message(self, wait: float, now: float) -> str:
+    def _skip_message(self, wait: float, now: float, cooling: bool = False) -> str:
+        """Why a request was skipped: a cooldown the source asked for (it
+        rate-limited us), or Monomi's own limit. They need different words:
+        "60 requests per 60 min" is wrong when only one was sent."""
         at = datetime.fromtimestamp(now + wait).strftime("%H:%M")
+        if cooling:
+            return (f"{self.label} skipped: cooling down after it rate-limited an earlier "
+                    f"request; next try in {wait:.0f}s (about {at})")
         return (f"{self.label} skipped to stay under its rate limit "
                 f"({self.limit} requests per {self.window / 60:.0f} min); next slot in "
                 f"{wait:.0f}s (about {at})")
