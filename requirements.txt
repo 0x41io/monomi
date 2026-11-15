@@ -4,5 +4,5 @@ rich>=15.0.0
 dnspython>=2.9.1
 mcp>=2.3.0
 psycopg[binary]>=3.2
-tomlkit>=0.13
+tomlkit>=0.15.2
 ruamel.yaml>=0.18
