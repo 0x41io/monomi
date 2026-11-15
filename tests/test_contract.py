@@ -34,7 +34,7 @@ import pytest
 
 import test_gate
 import test_paths
-from monomi import activelog, cli, common, dnscheck, evidence, fingerprint, scope, takeover
+from monomi import activelog, cli, common, dnscheck, emailauth, evidence, fingerprint, scope, takeover
 from monomi.paths import RULES, build_paths
 
 FIXTURES = Path(__file__).parent / "golden" / "fixtures"
@@ -290,6 +290,24 @@ def test_email_contract():
     assert email["spf"]["record"] is None and email["dmarc"]["policy"] is None
     cited = {e for step in path["steps"] for e in step["evidence"]}
     assert any(facts[e]["kind"] == "email_spoofable" and facts[e]["host"] == "41xlab.com" for e in cited)
+
+    # Akashi v0.1.3 builds its email fix from these fields of check_email()
+    # (the same shape a scan saves): the SPF and DMARC record text, DMARC's p=,
+    # and the list of DKIM selectors found
+    assert set(email["spf"]) >= {"record", "issues"}
+    assert set(email["dmarc"]) >= {"record", "policy", "issues"}
+    assert set(email["dkim"]) >= {"record", "selectors", "issues"}
+    assert isinstance(email["dkim"]["selectors"], list)
+
+
+def test_email_parsers_akashi_uses():
+    # Akashi reads p= and rua= with parse_tags(), and the SPF all-rule from the record text
+    tags = emailauth.parse_tags("v=DMARC1;p=none;rua=mailto:d@example.test")
+    assert tags["p"] == "none" and tags["rua"] == "mailto:d@example.test"
+    spf = emailauth.check_spf(["v=spf1 include:_spf.example.test ~all"])
+    assert spf["record"] == "v=spf1 include:_spf.example.test ~all"
+    dmarc = emailauth.check_dmarc(["v=DMARC1;p=none"])
+    assert dmarc["record"] == "v=DMARC1;p=none" and dmarc["policy"] == "none"
 
 
 # ---------- 5. Status words Akashi branches on ----------
