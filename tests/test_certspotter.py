@@ -147,3 +147,29 @@ def test_scan_warns_and_keeps_the_complete_saved_copy(monkeypatch, capsys):
     cli.collect_ct({"sources": {}, "errors": {}}, "lab.test")
     assert "Cert Spotter stopped after 1 page (rate limit), so its list may be incomplete" in capsys.readouterr().out
     assert saved.load("lab.test", "certspotter")["subdomain_count"] == 3  # not replaced by part of the list
+
+
+D = "example" + ".com"  # built from pieces so the chat app doesn't link it
+
+
+def test_error_status_with_json_body_fails_cleanly(monkeypatch):
+    # The 2026-11-15 lab run: an error reply whose body is a JSON object
+    # crashed the scan with KeyError instead of reporting Cert Spotter down
+    body = {"code": "internal_error", "message": "something broke"}
+    monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(500, body)], []))
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        certspotter.fetch(D)
+
+
+def test_error_status_mid_way_is_partial(monkeypatch):
+    replies = [Resp(200, _page(1)), Resp(503, {"code": "x"})]
+    monkeypatch.setattr(certspotter.requests, "get", fake_get(replies, []))
+    records, partial = certspotter.fetch(D)
+    assert len(records) == 1
+    assert partial == "stopped after 1 page (HTTP 503)"
+
+
+def test_ok_status_but_not_a_list_fails_cleanly(monkeypatch):
+    monkeypatch.setattr(certspotter.requests, "get", fake_get([Resp(200, {"code": "x"})], []))
+    with pytest.raises(RuntimeError, match="isn't a list"):
+        certspotter.fetch(D)

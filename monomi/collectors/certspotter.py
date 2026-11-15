@@ -94,13 +94,22 @@ def fetch(domain: str, timeout: int = 30) -> tuple[list[dict], str | None]:
                 # rate limited mid-way: keep what we already have
                 return records, f"stopped after {pages} page{'s' if pages != 1 else ''} (rate limit)"
             raise RuntimeError("Cert Spotter rate limit hit (free tier). Try again later.")
+        if resp.status_code != 200:
+            # Any other error (e.g. a 5xx): the body is an error message, not
+            # a page of certificates (the 2026-11-15 lab run crashed on one)
+            if records:
+                return records, f"stopped after {pages} page{'s' if pages != 1 else ''} (HTTP {resp.status_code})"
+            raise RuntimeError(f"Cert Spotter answered HTTP {resp.status_code}")
         try:
             page = resp.json()
         except ValueError:  # HTML error page or cut-off body instead of JSON
+            page = None
+        if page is None or not isinstance(page, list):
+            # Not JSON, or JSON that isn't a list of certificates
             if records:
                 # keep the pages we already got
                 return records, f"stopped after {pages} page{'s' if pages != 1 else ''} (bad reply)"
-            raise RuntimeError("Cert Spotter returned invalid JSON")
+            raise RuntimeError("Cert Spotter returned a reply that isn't a list of certificates")
         if not page:
             return records, None  # an empty page: that was everything
         records.extend(page)
