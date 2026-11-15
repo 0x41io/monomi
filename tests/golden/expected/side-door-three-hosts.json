@@ -309,7 +309,9 @@
           "passed": 6,
           "of": 6,
           "failed": [],
-          "notes": []
+          "notes": [
+            "non-production hosts (dev, staging, test...) are often out of scope for bug bounty programs: check the program's rules (ct-uat.sidedoor.test, ct-uat2.sidedoor.test, ct-uat3.sidedoor.test)"
+          ]
         },
         "id": "P1"
       }

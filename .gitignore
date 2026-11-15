@@ -28,3 +28,6 @@ cache/
 .pytest_cache/
 lab-hosts.txt
 lab-scope.txt
+# Bug bounty scope files (which programs you hunt stays private)
+*-scope.txt
+scope.txt

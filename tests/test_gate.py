@@ -321,7 +321,8 @@ def test_a_program_note_never_changes_the_result():
 def test_a_version_without_a_cve_gets_the_version_note():
     built, _ = run(lab_results())
     side = next(p for p in built["leads"] if "side door" in p["title"])
-    assert side["gate"]["notes"] == []  # only the kinds programs often exclude get a note
+    # no program note for a side door; only the scope caution for its staging host (v1.16)
+    assert side["gate"]["notes"] == gate.scope_notes(["staging"])
     results = lab_results()
     results["fingerprint"]["hosts"]["lab"]["techs"][0]["version"] = "1.18.0"
     results["subdomains"].remove("staging")  # no side door, so rule D builds the version lead
@@ -480,3 +481,106 @@ def test_the_left_out_line_reads_right_for_one_and_many():
     assert paths.out_of_scope_line(["a.test"]).startswith("1 out-of-scope host was left out")
     many = paths.out_of_scope_line([f"h{i}.test" for i in range(7)])
     assert many.startswith("7 out-of-scope hosts were left out") and many.endswith("and 2 more")
+
+
+# --- scope caution (v1.16): never a check, warns about hosts programs often exclude ---
+
+D = "example" + ".test"   # built from pieces so the chat app doesn't link it
+
+
+def test_pre_release_hosts_get_the_pre_release_note():
+    for host in ("beta", "beta2", "api-beta", "preview", "canary-eu", "nightly", "alpha",
+                 "experimental"):
+        assert gate.scope_notes([host]) == [f"{gate.SCOPE_CAUTION[0][2]} ({host})"], host
+
+
+def test_non_production_hosts_get_the_non_production_note():
+    for host in ("dev", "dev2", "api-dev", "staging", "stg", "uat", "qa", "sandbox", "preprod"):
+        assert gate.scope_notes([host]) == [f"{gate.SCOPE_CAUTION[1][2]} ({host})"], host
+
+
+def test_words_inside_other_words_do_not_count():
+    # same rule as categorize: "dev" isn't "devices", "test" isn't "latest"
+    assert gate.scope_notes(["devices", "latest", "betamax", "stages", "www", "api"]) == []
+    # demo / poc names are often production ("prod-...-demo"), so no note
+    assert gate.scope_notes(["demo", "prod-shop-demo", "poc"]) == []
+
+
+def test_only_labels_in_front_of_the_target_count():
+    target = "beta" + ".test"
+    assert gate.scope_notes(["www." + target, target], target) == []
+    assert gate.scope_notes(["dev." + target], target) == [
+        f"{gate.SCOPE_CAUTION[1][2]} (dev.{target})"]
+
+
+def test_without_a_domain_the_registrable_name_is_left_out():
+    assert gate.scope_notes(["www.beta" + ".test"]) == []
+    assert gate.scope_notes(["staging." + D]) == [f"{gate.SCOPE_CAUTION[1][2]} (staging.{D})"]
+
+
+def test_one_note_per_kind_pre_release_first_naming_each_host():
+    notes = gate.scope_notes(["staging", "beta", "dev", "beta-dev", "www"])
+    assert notes == [f"{gate.SCOPE_CAUTION[0][2]} (beta, beta-dev)",
+                     f"{gate.SCOPE_CAUTION[1][2]} (dev, staging)"]
+
+
+def test_many_hosts_are_shortened_in_the_note():
+    notes = gate.scope_notes(["dev1", "dev2", "dev3", "dev4", "dev5"])
+    assert notes[0].endswith("(dev1, dev2, dev3 and 2 more)")
+
+
+def test_a_scope_note_never_changes_the_result():
+    results = {"target": D, "subdomains": ["staging." + D, "www." + D]}
+    for host in ("staging." + D, "www." + D):
+        c = candidate("A", door=[{"id": "E1"}])
+        c["gate_input"]["hosts"] = [host]
+        found, leads, aside = gate.review([c], results)
+        assert [p["title"] for p in found] == ["A"] and leads == [] and aside == []
+        assert found[0]["gate"]["passed"] == 6
+    assert found[0]["gate"]["notes"] == []                     # www: no note
+    c = candidate("A", door=[{"id": "E1"}])
+    c["gate_input"]["hosts"] = ["staging." + D]
+    found, _, _ = gate.review([c], results)
+    assert found[0]["gate"]["notes"] == [f"{gate.SCOPE_CAUTION[1][2]} (staging.{D})"]
+
+
+def test_scope_note_comes_after_the_program_note():
+    c = candidate("A", no_door="no door")
+    c["gate_input"].update(program_note="email", hosts=["beta"])
+    _, leads, _ = gate.review([c], {})
+    assert leads[0]["gate"]["notes"] == [gate.PROGRAM_NOTES["email"],
+                                         f"{gate.SCOPE_CAUTION[0][2]} (beta)"]
+
+
+def test_set_aside_items_keep_their_scope_note():
+    # out of scope (not under the target), still warned about in its gate block
+    c = candidate("A", door=[{"id": "E1"}])
+    c.update(rule="takeover", targets={}, severity="High")   # set-aside items keep these
+    c["gate_input"]["hosts"] = ["beta.other" + ".test"]
+    _, _, aside = gate.review([c], {"target": D, "subdomains": []})
+    assert aside and aside[0]["gate"]["notes"] == [
+        f"{gate.SCOPE_CAUTION[0][2]} (beta.other.test)"]
+
+
+def test_mcp_takeover_records_get_the_scope_note():
+    record = {"host": "preview." + D, "cname": "gone-zz9.azurewebsites" + ".net",
+              "claimable": True, "nxdomain_confirmed": True}
+    g = gate.takeover_gate(record, D)
+    assert g["notes"] == [f"{gate.SCOPE_CAUTION[0][2]} (preview.{D})"]
+    plain = dict(record, host="www." + D)
+    assert gate.takeover_gate(plain, D)["notes"] == []
+    assert gate.takeover_gate(plain, D)["result"] == gate.takeover_gate(record, D)["result"]
+
+
+def test_every_output_shows_the_scope_note(capsys):
+    from datetime import datetime
+
+    from monomi import report
+    from monomi.cli import show_paths
+    results = lab_results()   # its side door runs through the staging host
+    results["evidence"] = build_evidence(results)
+    results["paths"] = paths.build_paths(results, results["evidence"])
+    show_paths(results)
+    for text in (capsys.readouterr().out, report.to_markdown(results, datetime(2026, 11, 13)),
+                 report.to_html(results, datetime(2026, 11, 13))):
+        assert "non-production hosts (dev, staging, test...) are often out of scope" in text

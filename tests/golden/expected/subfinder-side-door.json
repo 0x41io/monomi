@@ -312,7 +312,9 @@
           "passed": 6,
           "of": 6,
           "failed": [],
-          "notes": []
+          "notes": [
+            "non-production hosts (dev, staging, test...) are often out of scope for bug bounty programs: check the program's rules (ct-uat.subfind.test, ct-uat2.subfind.test, ct-uat3.subfind.test)"
+          ]
         },
         "id": "P1"
       }

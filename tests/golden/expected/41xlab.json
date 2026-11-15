@@ -542,7 +542,9 @@
               "why": "nothing shows a way into these hosts yet (no risky open service or known CVE on 64.227.89.72)"
             }
           ],
-          "notes": []
+          "notes": [
+            "non-production hosts (dev, staging, test...) are often out of scope for bug bounty programs: check the program's rules (dev.41xlab.com, staging.41xlab.com)"
+          ]
         },
         "missing": "nothing shows a way into these hosts yet (no risky open service or known CVE on 64.227.89.72)",
         "id": "L1"
@@ -621,7 +623,9 @@
               "why": "nothing shows that 64.227.89.72 is the server behind www.41xlab.com (a CDN hides its origin from outside)"
             }
           ],
-          "notes": []
+          "notes": [
+            "non-production hosts (dev, staging, test...) are often out of scope for bug bounty programs: check the program's rules (dev.41xlab.com, staging.41xlab.com)"
+          ]
         },
         "missing": "nothing shows that 64.227.89.72 is the server behind www.41xlab.com (a CDN hides its origin from outside)",
         "id": "L2"

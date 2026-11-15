@@ -30,6 +30,7 @@ aside. Whether something is eligible depends on the program's own rules,
 which Monomi can't know, so the note only says to check them.
 """
 
+from monomi.categorize import _find_match
 from monomi.internetdb import SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_ip
 
 # Kinds of path bug bounty programs often list as out of scope (gate "notes")
@@ -39,6 +40,23 @@ PROGRAM_NOTES = {
     "version": ("a software version shown without a matched CVE is often out of scope for bug "
                 "bounty programs: check the program's rules"),
 }
+
+# Scope caution (v1.16): host-name words that mark hosts programs often close
+# as Not Applicable or list as out of scope. Like program notes, never a check:
+# the note only says to check the program's rules. Matched with the same rule
+# as categorize.py ("dev" matches dev, dev2, api-dev, but not devices).
+# Pre-release is checked first, so "beta-dev" gets the pre-release note.
+SCOPE_CAUTION = [
+    ("pre-release", ["alpha", "beta", "preview", "experimental", "canary", "nightly"],
+     "pre-release hosts (beta, preview...) are often closed as Not Applicable by bug "
+     "bounty programs: check the program's rules"),
+    # "demo" and "poc" are left out: names like prod-...-demo are often real
+    # production, the same false positive the roadmap lists for categorize.py
+    ("non-production", ["dev", "staging", "stage", "stg", "test", "testing", "uat", "qa",
+                        "sandbox", "nonprod", "preprod"],
+     "non-production hosts (dev, staging, test...) are often out of scope for bug bounty "
+     "programs: check the program's rules"),
+]
 
 # Failing one of these sets a candidate aside instead of making it a lead:
 # a lead says "investigate this", and nobody should investigate hosts that
@@ -104,6 +122,34 @@ def _names(items, most=3):
 
 def _under(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
+
+
+def _caution_kind(host: str, domain: str) -> int | None:
+    """Index into SCOPE_CAUTION for this host, or None. Only the labels in
+    front of the target domain count, so a target named "beta.test" doesn't
+    put a note on every host. Without a domain, the last two labels are
+    left out (the registrable name, roughly)."""
+    host = host.lower().rstrip(".")
+    domain = (domain or "").lower().rstrip(".")
+    if domain and _under(host, domain):
+        labels = host[: -len(domain)].rstrip(".").split(".") if host != domain else []
+    else:
+        labels = host.split(".")[:-2] if "." in host else [host]
+    for i, (_, words, _) in enumerate(SCOPE_CAUTION):
+        if any(_find_match(label, w) for label in labels if label for w in words):
+            return i
+    return None
+
+
+def scope_notes(hosts, domain: str = "") -> list[str]:
+    """One note per kind of scope caution the hosts hit, naming the hosts.
+    Never a check: it never changes finding, lead or set aside."""
+    hit = {}
+    for h in hosts:
+        kind = _caution_kind(h, domain)
+        if kind is not None:
+            hit.setdefault(kind, []).append(h)
+    return [f"{SCOPE_CAUTION[k][2]} ({_names(sorted(set(hs)))})" for k, hs in sorted(hit.items())]
 
 
 def out_of_scope_hosts(results: dict, scope=None) -> set[str]:
@@ -261,9 +307,10 @@ def review(candidates: list[dict], results: dict, evidence=(), scope=None
         aside = [f for f in failed if f["check"] in SET_ASIDE_CHECKS]
         result = "set_aside" if aside else "lead" if failed else "finding"
         note = candidate["gate_input"].get("program_note")
+        notes = [PROGRAM_NOTES[note]] if note else []
+        notes += scope_notes(candidate["gate_input"].get("hosts", []), ctx.target)
         out["gate"] = {"result": result, "passed": len(CHECKS) - len(failed),
-                       "of": len(CHECKS), "failed": failed,
-                       "notes": [PROGRAM_NOTES[note]] if note else []}
+                       "of": len(CHECKS), "failed": failed, "notes": notes}
         if aside:
             set_aside.append({"rule": out["rule"], "targets": out["targets"],
                               "title": out["title"], "severity": out["severity"],
@@ -299,7 +346,8 @@ def takeover_gate(record: dict, domain: str | None = None) -> dict:
             if why is not None:
                 failed.append({"check": number, "name": name, "why": why})
     return {"result": "lead" if failed else "finding", "passed": len(TAKEOVER_CHECKS) - len(failed),
-            "of": len(TAKEOVER_CHECKS), "failed": failed, "notes": []}
+            "of": len(TAKEOVER_CHECKS), "failed": failed,
+            "notes": scope_notes([record["host"]] if record.get("host") else [], domain or "")}
 
 
 def describe(gate: dict | None) -> str:
