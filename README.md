@@ -17,7 +17,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **Subdomain discovery** from four sources, asked in parallel:
   - [crt.sh](https://crt.sh) website (broadest coverage, includes expired certificates)
   - crt.sh's public certificate database (same data as the website, queried directly over PostgreSQL; often answers when the website is slow or down)
-  - [Cert Spotter](https://sslmate.com/certspotter/) (currently valid certificates, more reliable; waits and retries when rate-limited)
+  - [Cert Spotter](https://sslmate.com/certspotter/) (currently valid certificates, more reliable; waits and retries when rate-limited, and an outage only fails this source, never the scan)
   - [AlienVault OTX](https://otx.alienvault.com) passive DNS (hostnames DNS sensors have seen answer, including ones that never had a certificate). Works without a key, but keyless requests get rate-limited almost at once, so set a free key in `OTX_API_KEY` (see [OTX key](#otx-key-recommended))
 - **subfinder import (`--subfinder FILE`):** add the hostnames from a [subfinder](https://github.com/projectdiscovery/subfinder) output file (plain, `-oJ` or `-oI`). Monomi never runs subfinder itself: run it, then pass the file. Only the target and its subdomains are kept, hosts get the same checks and validation gate as any other, facts say they were imported, and they stay out of scan history (they're only there on runs that pass the file). Over MCP, `find_subdomains` takes `subfinder_file` (a file inside Monomi's `scans/` folder)
 - **Automatic fallback:** if a source is down, the scan continues with the others
@@ -119,7 +119,7 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.15.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.15.1"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
 
 **Reading a saved scan (`--json`, since v1.15.0).** The file starts with `"monomi_version"`. Compare it as numbers with `monomi.common.scan_version(results)` (as text, `"1.15.0"` sorts before `"1.9.0"`); it's `None` for scans saved before v1.15.0, which don't have the fields below. In `"paths"`, every item in `paths`, `leads` and `set_aside` has:
 
@@ -583,6 +583,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.14: finds more: AlienVault OTX passive DNS as a fourth source (optional free key, `doctor` check), subfinder import (`--subfinder`, MCP `subfinder_file`), history kept per source (a failed, cut-short or new source can't make hosts look new or gone), cut-short sources marked **partial** (fixes fake [GONE] hosts after Cert Spotter was rate-limited mid-way), and honest cooldown wording when a source is skipped
 - [x] v1.14.1: installable package: the code moves into `monomi/`, `pip install -e .` installs it (plus `monomi` and `monomi-mcp` commands, `python -m monomi`), so other tools like Akashi can `from monomi import ...`. Data stays where it was when running from the repo, `MONOMI_HOME` can move it, and a plain install uses `~/.monomi`. `python monomi.py` and existing MCP configs keep working unchanged. Requires Python 3.14+
 - [x] v1.15.0: Akashi-ready leads: every path, lead and set-aside item in a saved scan has a `rule` and structured `targets` (see [Reading a saved scan](#using-monomi-from-other-tools)), "go around the CDN" gives one lead per origin server instead of one lead for the whole scan, and saved scans start with `monomi_version`
+- [x] v1.15.1: a Cert Spotter error reply (e.g. HTTP 503 during an outage) fails just that source and the scan carries on with its saved copy, instead of crashing the whole scan; found on the lab during Akashi's release gate
 
 **Next**
 - [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
