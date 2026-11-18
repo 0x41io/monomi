@@ -332,3 +332,89 @@ def test_takeover_lead_carries_who_confirmed_it(monkeypatch):
     use_doh_servers(monkeypatch, ("nxdomain", []), dnscheck.DNSLookupError("blocked"))
     lead = takeover.inspect_host("app.lab.test")["lead"]
     assert lead["nxdomain_confirmed_by"] == ["Cloudflare"]
+
+
+# --- v1.17: lame-delegation capture and the zone cut (dangling NS) ---
+
+def _servfail_body(comment):
+    return {"Status": 2, "Comment": comment}
+
+
+def test_doh_lookup_tags_google_lame_delegation(monkeypatch):
+    # Google's wording: a string Comment naming the refusing nameservers
+    body = _servfail_body("Name servers refused query (lame delegation?) "
+                          "[205.251.198.35, 205.251.194.214].")
+    monkeypatch.setattr(dnscheck.requests, "get", lambda *a, **k: FakeResponse(body))
+    with pytest.raises(dnscheck.ServerFailure) as e:
+        dnscheck.doh_lookup("local-dev.example.test", "A")
+    assert e.value.lame is True
+    assert "205.251.198.35" in e.value.ns_ips
+
+
+def test_doh_lookup_tags_cloudflare_ede_delegation(monkeypatch):
+    # Cloudflare's wording: a list of EDE lines
+    body = _servfail_body(["EDE(22): No Reachable Authority at delegation local-dev.example.test.",
+                           "EDE(23): Network Error 205.251.192.127:53 returned REFUSED"])
+    monkeypatch.setattr(dnscheck.requests, "get", lambda *a, **k: FakeResponse(body))
+    with pytest.raises(dnscheck.ServerFailure) as e:
+        dnscheck.doh_lookup("local-dev.example.test", "A")
+    assert e.value.lame is True
+    assert 22 in e.value.ede and 23 in e.value.ede
+    assert "205.251.192.127" in e.value.ns_ips
+
+
+def test_doh_lookup_plain_servfail_is_not_lame(monkeypatch):
+    # A bare SERVFAIL under load: no delegation wording, so never lame
+    monkeypatch.setattr(dnscheck.requests, "get", lambda *a, **k: FakeResponse({"Status": 2}))
+    with pytest.raises(dnscheck.ServerFailure) as e:
+        dnscheck.doh_lookup("busy.example.test", "A")
+    assert e.value.lame is False
+    assert e.value.ns_ips == []
+
+
+def test_merge_keeps_lame_detail_when_only_one_server_gives_it(monkeypatch):
+    plain = dnscheck.ServerFailure("cf")           # Cloudflare: bare SERVFAIL
+    lame = dnscheck._servfail("x", _servfail_body(
+        "Name servers refused query (lame delegation?) [203.0.113.9]."))
+    use_doh_servers(monkeypatch, plain, lame, plain)
+    with pytest.raises(dnscheck.ServerFailure) as e:
+        dnscheck.doh_lookup("local-dev.example.test", "A")
+    assert e.value.lame is True
+    assert "203.0.113.9" in e.value.ns_ips
+
+
+def test_lame_delegation_returns_detail(monkeypatch):
+    use_doh(monkeypatch, dnscheck._servfail("x", _servfail_body(
+        "Name servers refused query (lame delegation?) [205.251.192.127].")))
+    info = dnscheck.lame_delegation("local-dev.example.test")
+    assert info and info["ns_ips"] == ["205.251.192.127"]
+
+
+def test_lame_delegation_none_for_plain_servfail(monkeypatch):
+    use_doh(monkeypatch, dnscheck.ServerFailure("busy"))
+    assert dnscheck.lame_delegation("busy.example.test") is None
+
+
+def test_lame_delegation_none_when_name_resolves(monkeypatch):
+    use_doh(monkeypatch, ("ok", ["203.0.113.7"]))
+    assert dnscheck.lame_delegation("example.test") is None
+
+
+def test_find_zone_cut_returns_shallowest_lame_ancestor(monkeypatch):
+    lame = dnscheck._servfail("x", _servfail_body(
+        "Name servers refused query (lame delegation?) [205.251.192.127]."))
+
+    def fake_lame(name):
+        # local-dev.example.test and everything under it are lame; example.test resolves
+        if name.endswith("local-dev.example.test"):
+            return {"detail": lame.detail, "ede": [], "ns_ips": lame.ns_ips}
+        return None
+    monkeypatch.setattr(dnscheck, "lame_delegation", fake_lame)
+    cut, info = dnscheck.find_zone_cut("alice.local-dev.example.test")
+    assert cut == "local-dev.example.test"
+    assert info["ns_ips"] == ["205.251.192.127"]
+
+
+def test_find_zone_cut_none_when_no_ancestor_is_lame(monkeypatch):
+    monkeypatch.setattr(dnscheck, "lame_delegation", lambda name: None)
+    assert dnscheck.find_zone_cut("busy.example.test") is None

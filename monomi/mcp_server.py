@@ -431,6 +431,12 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
     Pass the scanned domain as "domain" (e.g. "example.com"): a CNAME that
     points back inside it is also "stale", since only its owner can create
     that name.
+    "ns_delegations" (v1.17): subzones delegated to nameservers that refuse
+    them (a lame delegation), one record per zone "cut" with the "hosts"
+    under it and the refusing "ns_ips". "grade" is "theoretical" when those
+    nameservers are on a pooled DNS service ("provider", e.g. AWS Route 53),
+    where getting the same set assigned again is impractical, else
+    "investigate". Those hosts still show "servfail" in "results".
     Each lead and stale record has "owners": the roles that would fix it, never people.
     Each lead also has a "gate" (Monomi's validation gate, checks 4 and 6):
     result "finding" only when DNS-over-HTTPS confirmed the target doesn't
@@ -462,6 +468,8 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
         lead["gate"] = gate.takeover_gate(lead, domain)  # checks 4 and 6 (v1.13)
     for record in result.get("stale", []):
         record["owners"] = owners("dns")
+    for record in result.get("ns_delegations", []):
+        record["owners"] = owners("dns")
     result.pop("checked", None)  # same number as hosts_checked; check_hosts() keeps it for the CLI
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "batch": batch, **result}
@@ -486,6 +494,7 @@ def takeover_summary(full: dict) -> dict:
         "leads_passing_gate": sum(1 for lead in full["leads"] if lead.get("gate", {}).get("result") == "finding"),
         "leads": full["leads"],
         "stale": full.get("stale", []),
+        "ns_delegations": full.get("ns_delegations", []),
         "unknown_count": len(unknown),
         "unknown_hosts": first(unknown),
     }

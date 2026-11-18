@@ -209,3 +209,83 @@ def test_dangling_api_gateway_cname_is_stale_not_a_lead(monkeypatch):
     result = inspect_host("api.example.com")
     assert result["status"] == "stale" and result["lead"] is None
     assert result["stale"]["service"] == "AWS API Gateway"
+
+
+# --- v1.17: lame NS delegations grouped by zone cut (dangling_ns candidate) ---
+
+def _lame(ns_ips, detail="Name servers refused query (lame delegation?)"):
+    e = takeover.ServerFailure("SERVFAIL")
+    e.detail = detail
+    e.ns_ips = ns_ips
+    e.lame = True
+    return e
+
+
+def test_lame_delegation_grouped_under_its_zone_cut(monkeypatch):
+    def cname(name):
+        raise _lame(["205.251.192.127"])
+    monkeypatch.setattr(takeover, "get_cname", cname)
+    monkeypatch.setattr(takeover, "find_zone_cut",
+                        lambda h: ("local-dev.example.com", {"detail": "d", "ns_ips": ["205.251.192.127"]}))
+    report = check_hosts(["alice.local-dev.example.com", "bob.local-dev.example.com"])
+    assert len(report["ns_delegations"]) == 1
+    d = report["ns_delegations"][0]
+    assert d["cut"] == "local-dev.example.com"
+    assert d["hosts"] == ["alice.local-dev.example.com", "bob.local-dev.example.com"]
+    assert d["ns_ips"] == ["205.251.192.127"]
+    # the hosts still show as servfail errors, as before
+    assert report["results"]["alice.local-dev.example.com"]["status"] == "servfail"
+
+
+def test_zone_cut_found_once_for_many_hosts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(takeover, "get_cname", lambda name: (_ for _ in ()).throw(_lame(["203.0.113.9"])))
+
+    def counting_cut(h):
+        calls.append(h)
+        return ("dev.example.com", {"detail": "d", "ns_ips": ["203.0.113.9"]})
+    monkeypatch.setattr(takeover, "find_zone_cut", counting_cut)
+    check_hosts(["a.dev.example.com", "b.dev.example.com", "c.dev.example.com"])
+    assert len(calls) == 1          # walked the delegation once, not once per host
+
+
+def test_plain_servfail_is_not_a_delegation(monkeypatch):
+    plain = takeover.ServerFailure("SERVFAIL")   # lame defaults to False
+    monkeypatch.setattr(takeover, "get_cname", lambda name: (_ for _ in ()).throw(plain))
+    report = check_hosts(["busy.example.com"])
+    assert report["ns_delegations"] == []
+    assert report["results"]["busy.example.com"]["status"] == "servfail"
+
+
+def test_grade_route53_nameservers_theoretical():
+    assert takeover.grade_delegation(["205.251.192.127", "205.251.198.35"]) == ("theoretical", "AWS Route 53")
+
+
+def test_grade_unrecognized_nameserver_investigate():
+    assert takeover.grade_delegation(["205.251.192.127", "198.51.100.9"]) == ("investigate", None)
+    assert takeover.grade_delegation(["198.51.100.9"]) == ("investigate", None)
+
+
+def test_grade_no_ips_investigate():
+    assert takeover.grade_delegation([]) == ("investigate", None)
+    assert takeover.grade_delegation(["not-an-ip"]) == ("investigate", None)
+
+
+def test_delegation_record_carries_its_grade(monkeypatch):
+    monkeypatch.setattr(takeover, "get_cname", lambda name: (_ for _ in ()).throw(_lame(["205.251.196.249"])))
+    monkeypatch.setattr(takeover, "find_zone_cut",
+                        lambda h: ("local-dev.example.com", {"detail": "d", "ns_ips": ["205.251.196.249"]}))
+    d = check_hosts(["a.local-dev.example.com"])["ns_delegations"][0]
+    assert (d["grade"], d["provider"]) == ("theoretical", "AWS Route 53")
+
+
+def test_delegation_becomes_one_evidence_fact():
+    report = {"leads": [], "stale": [], "checked": 2, "errors": {}, "collected_at": None,
+              "ns_delegations": [{"cut": "local-dev.example.com", "hosts": ["a.local-dev.example.com"],
+                                  "ns_ips": ["205.251.192.127"], "detail": "d", "collected_at": None,
+                                  "grade": "theoretical", "provider": "AWS Route 53"}]}
+    facts = [e for e in build_evidence(base_results(report)) if e["kind"] == "dangling_ns"]
+    assert len(facts) == 1
+    assert facts[0]["host"] == "local-dev.example.com"
+    assert "lame delegation" in facts[0]["fact"] and "AWS Route 53" in facts[0]["fact"]
+    assert facts[0]["owners"] == ["DNS admin"]

@@ -73,7 +73,7 @@ SIDE_DOOR_WORDS = {
 # their proof by this name, so a name never changes once released
 # (tests/test_contract.py locks this set).
 RULES = ("takeover", "takeover_unknown", "email_spoofing", "exposed_service",
-         "known_cves", "version_check", "side_door", "around_cdn")
+         "known_cves", "version_check", "side_door", "around_cdn", "dangling_ns")
 
 
 def _versions(results, hosts):
@@ -229,6 +229,37 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                                 targets=_targets([host], cname=records[host]["cname"],
                                                  service=records[host].get("service"), claimable=False,
                                                  nxdomain_confirmed_by=records[host].get("nxdomain_confirmed_by"))))
+
+    # A2. Dangling NS delegation (v1.17): a subzone delegated to nameservers that
+    # refuse it. Always a lead in v1: claiming it means getting those exact
+    # nameservers, which Monomi never tries, and on a pooled service is impractical.
+    delegations = {d["cut"]: d for d in (results.get("takeover") or {}).get("ns_delegations", [])}
+    for fact in kinds.get("dangling_ns", []):
+        d = delegations.get(fact["host"])
+        if not d:
+            continue
+        cut, hosts = d["cut"], inside(d["hosts"])
+        steps = [
+            _step(f"{cut} is delegated to nameservers that refuse to answer for it", [fact], "Observed"),
+            _step(f"If those nameservers can be claimed, an attacker controls DNS for every name "
+                  f"under {cut}", [fact], "Lead"),
+        ]
+        if d["grade"] == "theoretical":
+            no_door = (f"{cut}'s nameservers are on {d['provider']}, which assigns nameservers from a "
+                       "large pool: getting this exact set assigned again is impractical")
+            severity = "Low"
+        else:
+            no_door = (f"whether {cut}'s nameservers can be registered again wasn't checked: find "
+                       "the exact NS names with an authoritative query and check who runs them")
+            severity = "Medium"
+        candidates.append(_path(f"Take over DNS for {cut}", severity, steps,
+                                f"Any page, cookie or email on a real {target} name under {cut}",
+                                [_action([fact], what=f"Remove the NS records delegating {cut}, or "
+                                         "recreate the zone where they point")],
+                                no_door=no_door, hosts=hosts,
+                                rule="dangling_ns",
+                                targets=_targets(hosts, cut=cut, ns_ips=list(d["ns_ips"]),
+                                                 provider=d["provider"], grade=d["grade"])))
 
     # B. Email impersonation
     for v in spoof:

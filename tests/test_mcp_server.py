@@ -229,6 +229,22 @@ def test_takeover_summary_counts_and_keeps_leads(monkeypatch):
         assert len(json.load(f)["results"]) == 5
 
 
+def test_takeover_summary_keeps_lame_delegations(monkeypatch):
+    # v1.17: a lame NS delegation reaches Claude in the default summary
+    monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
+        "leads": [], "stale": [],
+        "results": {"a.dev.x": {"status": "servfail"}, "b.dev.x": {"status": "servfail"}},
+        "checked": 2, "errors": {"a.dev.x": "SERVFAIL", "b.dev.x": "SERVFAIL"},
+        "ns_delegations": [{"cut": "dev.x", "hosts": ["a.dev.x", "b.dev.x"],
+                            "ns_ips": ["205.251.192.127"], "detail": "lame", "collected_at": None,
+                            "grade": "theoretical", "provider": "AWS Route 53"}]})
+    result = mcp_server.check_takeover(["a.dev.x", "b.dev.x"])
+    assert result["detail"] == "summary"
+    d = result["ns_delegations"][0]
+    assert (d["cut"], d["grade"], d["provider"]) == ("dev.x", "theoretical", "AWS Route 53")
+    assert d["owners"] == ["DNS admin"]
+
+
 def test_full_detail_still_returns_everything(monkeypatch):
     monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
         "leads": [], "stale": [], "results": {"a": {"status": "no_cname"}},

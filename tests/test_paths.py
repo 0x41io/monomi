@@ -613,3 +613,49 @@ def test_many_origin_servers_use_the_usual_lead_cap():
     assert len(out["leads"]) == MAX_PATHS
     # the 13 CDN leads plus the side door lead: everything past the cap is counted, not lost
     assert out["more_leads"] == MAX_PATHS + 3 + 1 - MAX_PATHS
+
+
+# --- v1.17: dangling NS delegation (rule "dangling_ns") ---
+
+def lame_delegation(grade="theoretical", provider="AWS Route 53"):
+    """One ns_delegations record, as takeover.check_hosts() returns it."""
+    return {"cut": "local-dev.lab", "hosts": ["alice.local-dev.lab", "bob.local-dev.lab"],
+            "ns_ips": ["205.251.192.127", "205.251.194.214"], "detail": "lame delegation",
+            "collected_at": None, "grade": grade, "provider": provider}
+
+
+def lame_results(**kw):
+    results = lab_results()
+    results["takeover"]["ns_delegations"] = [lame_delegation(**kw)]
+    return results
+
+
+def dangling_items(out):
+    return [i for i in out["paths"] + out["leads"] + out["set_aside"] if i["rule"] == "dangling_ns"]
+
+
+def test_theoretical_delegation_is_a_low_lead_never_a_path():
+    results = lame_results()
+    out = build_paths(results, build_evidence(results))
+    items = dangling_items(out)
+    assert len(items) == 1 and items[0] in out["leads"]
+    lead = items[0]
+    assert lead["severity"] == "Low"
+    assert "AWS Route 53" in lead["missing"] and "impractical" in lead["missing"]
+    assert lead["targets"]["cut"] == "local-dev.lab"
+    assert lead["targets"]["grade"] == "theoretical"
+    assert lead["targets"]["hosts"] == ["alice.local-dev.lab", "bob.local-dev.lab"]
+
+
+def test_unrecognized_delegation_is_a_medium_lead_to_investigate():
+    results = lame_results(grade="investigate", provider=None)
+    out = build_paths(results, build_evidence(results))
+    lead = dangling_items(out)[0]
+    assert lead in out["leads"] and lead["severity"] == "Medium"
+    assert "authoritative query" in lead["missing"]
+
+
+def test_no_delegations_no_dangling_lead():
+    results = lab_results()
+    out = build_paths(results, build_evidence(results))
+    assert dangling_items(out) == []

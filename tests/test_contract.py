@@ -69,6 +69,7 @@ RULE_KEYS = {
     "version_check": {"versions"},
     "side_door": {"shared_with"},
     "around_cdn": {"fronted", "cdn"},
+    "dangling_ns": {"cut", "ns_ips", "provider", "grade"},
 }
 
 
@@ -123,8 +124,10 @@ def built_scans():
                                                      "tags": [], "risky": ["5432/PostgreSQL"], "vulns": []}}}
     version = test_paths.lab_results()
     version["enrichment"]["hosts"].pop("staging")  # no side door left, so the version is its own lead
+    lame = test_paths.lab_results()
+    lame["takeover"]["ns_delegations"] = [test_paths.lame_delegation()]
     for name, results in [("exposed-service", exposed), ("version-only", version),
-                          ("edge-version", test_gate.edge_version_results())]:
+                          ("edge-version", test_gate.edge_version_results()), ("dangling-ns", lame)]:
         ev = evidence.build_evidence(results)
         yield name, results, ev, build_paths(results, ev)
 
@@ -136,7 +139,7 @@ def all_items(built):
 def test_rule_names_are_fixed():
     # Akashi picks its proof by these names: renaming one breaks it
     assert RULES == ("takeover", "takeover_unknown", "email_spoofing", "exposed_service",
-                     "known_cves", "version_check", "side_door", "around_cdn")
+                     "known_cves", "version_check", "side_door", "around_cdn", "dangling_ns")
     assert set(RULE_KEYS) == set(RULES)
 
 

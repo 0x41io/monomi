@@ -239,6 +239,17 @@ def build_evidence(results: dict) -> list[dict]:
             add(f"{record['host']} has a CNAME to {record['cname']} ({record['service']}), and that target "
                 f"does not exist (NXDOMAIN); {reason}, so this is a stale DNS record, not a takeover risk",
                 stale_source, ("dns",))
+        for d in tk.get("ns_delegations", []):
+            ns_source = [{"name": "DNS-over-HTTPS lookups (takeover check)", "collected_at": d["collected_at"]}]
+            on = f" ({', '.join(d['ns_ips'])})" if d["ns_ips"] else ""
+            if d["grade"] == "theoretical":
+                why = (f"they're on {d['provider']}, which assigns nameservers from a large pool, so "
+                       "getting this exact set assigned again is impractical")
+            else:
+                why = "who runs them wasn't recognized, so whether they can be registered again is unknown"
+            add(f"{d['cut']} is delegated to nameservers{on} that refuse to answer for it (a lame "
+                f"delegation; {len(d['hosts'])} host(s) under it don't resolve); {why}",
+                ns_source, ("dns",), kind="dangling_ns", host=d["cut"])
         if not tk["leads"] and not tk.get("stale"):
             checked = tk["checked"] - len(tk["errors"])
             check_source = [{"name": "DNS CNAME lookups (takeover check)", "collected_at": tk["collected_at"]}]

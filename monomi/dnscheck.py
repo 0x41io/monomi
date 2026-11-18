@@ -45,7 +45,21 @@ class ConflictingAnswers(DNSLookupError):
 
 class ServerFailure(DNSLookupError):
     """A DNS server answered SERVFAIL: it tried, but couldn't get an answer
-    (a broken zone, or a provider refusing under load). Still unknown."""
+    (a broken zone, or a provider refusing under load). Still unknown.
+
+    Carries what the DoH reply said about why, so a caller can tell a lame
+    delegation (a dangling NS delegation, a real takeover class) from a
+    transient SERVFAIL under load:
+      detail  the extended-error text the resolver gave (may be empty)
+      ede     EDE codes seen in it (e.g. 22, 23), as a list
+      ns_ips  any nameserver IPs named in it (the refusing servers)
+      lame    True only when the text says the zone's own nameservers
+              refuse / aren't reachable (a delegation failure), never for a
+              bare SERVFAIL with no such wording."""
+    detail = ""
+    ede = ()
+    ns_ips = ()
+    lame = False
 
 
 def _resolvers():
@@ -54,6 +68,63 @@ def _resolvers():
     public = dns.resolver.Resolver(configure=False)
     public.nameservers = FALLBACK_NAMESERVERS
     return (system, public)
+
+
+# A SERVFAIL means "couldn't answer". It's a lame (dangling) delegation only
+# when the resolver says the zone's own nameservers refuse or can't be reached;
+# a plain SERVFAIL under load has none of this wording and stays "unknown".
+_DELEGATION_PHRASES = re.compile(
+    r"lame delegation"
+    r"|no reachable authority at delegation"
+    r"|name servers? refused"
+    r"|returned refused"
+    r"|refused for",
+    re.IGNORECASE,
+)
+_EDE_RE = re.compile(r"EDE\((\d+)\)")        # Cloudflare labels extended errors "EDE(22): ..."
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+# EDE 22 = "No Reachable Authority", 23 = "Network Error" (REFUSED at delegation)
+_DELEGATION_EDE = {22, 23}
+
+
+def _doh_extended(data: dict) -> tuple[str, list[int], list[str]]:
+    """The extended-error text, EDE codes and nameserver IPs in a SERVFAIL reply.
+
+    "Comment" is a string on Google ("Name servers refused query (lame
+    delegation?) [205.251.198.35, ...]") and a list of EDE lines on Cloudflare
+    (["EDE(22): No Reachable Authority at delegation ...", ...]); both are
+    handled. The IPs are the nameservers that refused, for grading later.
+    """
+    comment = data.get("Comment", "")
+    text = " ".join(str(c) for c in comment) if isinstance(comment, list) else str(comment)
+    edes = [int(m) for m in _EDE_RE.findall(text)]
+    ips = _IPV4_RE.findall(text)
+    return text, edes, ips
+
+
+def _servfail(name: str, data: dict) -> "ServerFailure":
+    """Build a ServerFailure for a SERVFAIL reply, tagged lame if it's a
+    delegation failure (by the wording or a delegation EDE code)."""
+    text, edes, ips = _doh_extended(data)
+    err = ServerFailure(f"DNS-over-HTTPS returned SERVFAIL for {name}")
+    err.detail = text
+    err.ede = edes
+    err.ns_ips = ips
+    err.lame = bool(_DELEGATION_PHRASES.search(text)) or any(e in _DELEGATION_EDE for e in edes)
+    return err
+
+
+def _merge_servfails(name: str, failures: list["ServerFailure"]) -> "ServerFailure":
+    """One ServerFailure for the whole lookup, keeping the richest detail any
+    server gave: lame if any server called it lame, with its text and NS IPs."""
+    err = ServerFailure(f"DNS-over-HTTPS servers returned SERVFAIL for {name}")
+    lame = next((f for f in failures if f.lame), None)
+    src = lame or next((f for f in failures if f.detail), None)
+    err.detail = src.detail if src is not None else ""
+    err.ede = sorted({c for f in failures for c in f.ede})
+    err.ns_ips = list(src.ns_ips) if src is not None else []
+    err.lame = lame is not None
+    return err
 
 
 def _ask_doh(url: str, name: str, rtype: str) -> tuple[str, list[str]]:
@@ -79,7 +150,7 @@ def _ask_doh(url: str, name: str, rtype: str) -> tuple[str, list[str]]:
     if status == 3:                      # 3 = NXDOMAIN, "no such name"
         return "nxdomain", []
     if status == 2:                      # 2 = SERVFAIL, the server couldn't get an answer
-        raise ServerFailure(f"DNS-over-HTTPS returned SERVFAIL for {name}")
+        raise _servfail(name, data)
     if status != 0:                      # 0 = NOERROR; anything else is a failure
         raise DNSLookupError(f"DNS-over-HTTPS returned status {status} for {name}")
     wanted = DOH_TYPE_CODES[rtype]
@@ -132,8 +203,9 @@ def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
             return _ask_doh(url, name, rtype)
         except DNSLookupError as e:
             failures.append(e)
-    if any(isinstance(e, ServerFailure) for e in failures):
-        raise ServerFailure(f"DNS-over-HTTPS servers returned SERVFAIL for {name}")
+    servfails = [e for e in failures if isinstance(e, ServerFailure)]
+    if servfails:
+        raise _merge_servfails(name, servfails)
     raise failures[-1]
 
 
@@ -290,3 +362,47 @@ def host_status(host: str) -> tuple[str, list[str]]:
         return "servfail", []
     except DNSLookupError:
         return "lookup_failed", []
+
+
+def lame_delegation(name: str) -> dict | None:
+    """If this name's SERVFAIL is a lame (dangling) delegation, describe it; else None.
+
+    Returns {"detail", "ede", "ns_ips"} when the DoH servers SERVFAIL *and*
+    say the zone's own nameservers refuse / aren't reachable. Returns None for
+    a name that resolves, doesn't exist, SERVFAILs only transiently (under
+    load, no delegation wording), or can't be looked up at all. Passive: only
+    asks DNS-over-HTTPS, never the target.
+    """
+    try:
+        doh_lookup(name, "A")
+    except ServerFailure as e:
+        if e.lame:
+            return {"detail": e.detail, "ede": list(e.ede), "ns_ips": list(e.ns_ips)}
+        return None
+    except DNSLookupError:
+        return None
+    return None   # resolved or NXDOMAIN: not a broken delegation
+
+
+def find_zone_cut(host: str) -> tuple[str, dict] | None:
+    """The delegation point above a host whose lookup is a lame delegation.
+
+    Walks up the labels from the host: every ancestor that is itself a lame
+    delegation is remembered, and the walk stops at the first ancestor that
+    isn't (the live parent zone). Returns (cut, info) for the shallowest lame
+    ancestor -- the zone apex that is actually delegated away, e.g.
+    "local-dev.example.com" for "alice.local-dev.example.com" -- or None if no
+    ancestor is a lame delegation. Stops before a bare registrable-looking
+    name (keeps at least two labels), and never queries a TLD.
+    """
+    labels = host.split(".")
+    cut = None
+    # host, then parent, grandparent, ...; keep the last two labels as a floor
+    for i in range(len(labels) - 1):
+        name = ".".join(labels[i:])
+        info = lame_delegation(name)
+        if info:
+            cut = (name, info)      # shallower lame ancestors overwrite deeper ones
+        elif cut:
+            break                   # crossed up into a resolving parent zone
+    return cut

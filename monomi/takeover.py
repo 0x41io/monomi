@@ -12,11 +12,13 @@ means actually claiming the name, which Monomi never does.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import re
 
 
 from monomi.common import now_utc
-from monomi.dnscheck import ConflictingAnswers, DNSLookupError, NoSuchHost, ServerFailure, check_exists, get_cname
+from monomi.dnscheck import (ConflictingAnswers, DNSLookupError, NoSuchHost, ServerFailure,
+                             check_exists, find_zone_cut, get_cname)
 
 # Services where a deleted resource's name goes NXDOMAIN AND can usually
 # be re-claimed by anyone who signs up. Each entry: (CNAME ending, name).
@@ -90,6 +92,40 @@ PROVIDER_DOMAINS = [
     (".akamaiedge.net", "Akamai"),
     (".edgekey.net", "Akamai"),
 ]
+
+
+# Managed DNS services that hand out nameservers from a large pool. A lame
+# delegation to one of them means the zone was deleted there, but getting the
+# exact same nameserver set assigned again is impractical, so it's graded
+# "theoretical". Each entry: (IPv4 network of its nameservers, name).
+# Unrecognized nameservers are graded "investigate": they might be
+# re-registerable, and only a look at the exact NS names can tell.
+POOLED_DNS = [
+    (ipaddress.ip_network("205.251.192.0/21"), "AWS Route 53"),
+]
+
+
+def grade_delegation(ns_ips: list[str]) -> tuple[str, str | None]:
+    """How claimable a lame delegation is, from the nameservers that refused it.
+
+    Returns (grade, provider): ("theoretical", "AWS Route 53") when every
+    refusing nameserver is on a pooled managed DNS service, otherwise
+    ("investigate", None). No IPs at all is "investigate" too: nothing
+    shows they're on a pooled service.
+    """
+    providers = set()
+    for ip in ns_ips:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return "investigate", None
+        name = next((n for net, n in POOLED_DNS if addr in net), None)
+        if name is None:
+            return "investigate", None
+        providers.add(name)
+    if len(providers) == 1:
+        return "theoretical", providers.pop()
+    return "investigate", None
 
 
 def match_provider(target: str) -> str | None:
@@ -180,21 +216,24 @@ def check_host(host: str) -> dict | None:
 
 
 def _safe_check(host: str, domain: str | None = None):
-    """inspect_host() that never crashes: returns (host, info, error, status).
+    """inspect_host() that never crashes: returns (host, info, error, status, lame).
 
     On a DNS problem, info is None, error is the reason, and status says
     which kind: "conflicting" (system DNS and DNS-over-HTTPS disagree),
     "servfail" (DNS servers answered SERVFAIL, even after a retry)
-    or "error" (no DNS server answered).
+    or "error" (no DNS server answered). lame is set only on a SERVFAIL the
+    resolver blamed on a broken delegation: {"detail", "ns_ips"} (a
+    dangling_ns candidate), else None.
     """
     try:
-        return host, inspect_host(host, domain), None, None
+        return host, inspect_host(host, domain), None, None, None
     except ConflictingAnswers as e:
-        return host, None, str(e), "conflicting"
+        return host, None, str(e), "conflicting", None
     except ServerFailure as e:
-        return host, None, str(e), "servfail"
+        lame = {"detail": e.detail, "ns_ips": list(e.ns_ips)} if e.lame else None
+        return host, None, str(e), "servfail", lame
     except DNSLookupError as e:
-        return host, None, str(e), "error"
+        return host, None, str(e), "error", None
 
 
 def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) -> dict:
@@ -203,21 +242,49 @@ def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) 
     domain: the domain being scanned (e.g. 'wolt.com'), if known.
 
     Returns {"leads": [...], "stale": [...], "results": {host: {"status", "cname"}},
-             "checked": count, "errors": {host: reason}}.
+             "checked": count, "errors": {host: reason},
+             "ns_delegations": [...]}. ns_delegations holds one record per
+    broken (lame) delegation found, grouped by the delegated zone cut:
+    {"cut", "hosts", "ns_ips", "detail", "collected_at", "grade", "provider"},
+    a dangling_ns candidate (see grade_delegation for the grade).
     """
     leads, stale, errors, results = [], [], {}, {}
+    cuts = {}   # zone cut -> delegation record (grouping many hosts into one)
+
+    def _record_lame(host, lame):
+        """Attach a lame host to its delegation record, finding the zone cut once."""
+        for cut, rec in cuts.items():
+            if host == cut or host.endswith("." + cut):
+                rec["hosts"].append(host)
+                return
+        found = find_zone_cut(host)             # one network walk per new cut
+        cut = found[0] if found else host
+        at_cut = found[1] if found else lame
+        cuts[cut] = {"cut": cut, "hosts": [host],
+                     "ns_ips": list(at_cut.get("ns_ips") or lame["ns_ips"]),
+                     "detail": at_cut.get("detail") or lame["detail"],
+                     "collected_at": now_utc()}
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, info, err, err_status in pool.map(lambda h: _safe_check(h, domain), hosts):
+        for host, info, err, err_status, lame in pool.map(lambda h: _safe_check(h, domain), hosts):
             if err:
                 errors[host] = err
                 results[host] = {"status": err_status, "cname": None}
+                if lame:
+                    _record_lame(host, lame)
             else:
                 results[host] = {"status": info["status"], "cname": info["cname"]}
                 if info["lead"]:
                     leads.append(info["lead"])
                 if info["stale"]:
                     stale.append(info["stale"])
-    return {"leads": leads, "stale": stale, "results": results, "checked": len(hosts), "errors": errors}
+
+    for rec in cuts.values():
+        rec["hosts"] = sorted(set(rec["hosts"]))
+        rec["grade"], rec["provider"] = grade_delegation(rec["ns_ips"])
+    ns_delegations = sorted(cuts.values(), key=lambda r: r["cut"])
+    return {"leads": leads, "stale": stale, "results": results, "checked": len(hosts),
+            "errors": errors, "ns_delegations": ns_delegations}
 
 
 if __name__ == "__main__":

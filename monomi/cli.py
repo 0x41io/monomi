@@ -590,8 +590,20 @@ def run_takeover(results: dict) -> None:
         cname = ui.safe(record["cname"])
         info(f"{ui.paint('STALE', ui.BOLD, ui.GREY)}  {host} -> {cname}  "
              f"({record['service']}: target deleted, {record['reason']})")
+    for d in report.get("ns_delegations", []):
+        cut = ui.safe(d["cut"])
+        n = len(d["hosts"])
+        if d["grade"] == "theoretical":
+            info(f"{ui.paint('LAME DELEGATION', ui.BOLD, ui.GREY)}  {cut}  ({n} host(s); nameservers "
+                 f"on {d['provider']} refuse it: reclaiming them is impractical)")
+        else:
+            warn(f"{ui.paint('LAME DELEGATION', ui.BOLD, ui.YELLOW)}  {cut}  ({n} host(s); nameservers "
+                 "refuse it and weren't recognized: check whether they can be claimed)")
     if report["errors"]:
-        warn(f"{len(report['errors'])} host(s) couldn't be checked (DNS didn't answer).")
+        lame = sum(len(d["hosts"]) for d in report.get("ns_delegations", []))
+        rest = len(report["errors"]) - lame
+        if rest:
+            warn(f"{rest} host(s) couldn't be checked (DNS didn't answer).")
     if not report["leads"]:
         checked = report["checked"] - len(report["errors"])
         good(f"No takeover leads among {checked} hosts checked.")
