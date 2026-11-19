@@ -358,11 +358,14 @@ def run_enrich(results: dict, ports_on: bool) -> dict:
     print()
     ui.host_table(data["hosts"])
     print()
+    total = len(data["hosts"])   # hosts set aside under a wildcard aren't counted
     good(
-        f"{data['resolved']}/{len(all_subs)} hosts resolve to "
+        f"{data['resolved']}/{total} hosts resolve to "
         f"{data['unique_ips']} unique IPs. Hosting breakdown:\n"
     )
-    ui.provider_bars(data["providers"], len(all_subs))
+    ui.provider_bars(data["providers"], total)
+    mark_certificates(data, results)
+    show_wildcards(data, results["target"])
     if data["private_ip_hosts"]:
         print()
         warn(
@@ -372,6 +375,86 @@ def run_enrich(results: dict, ports_on: bool) -> dict:
         for h in data["private_ip_hosts"]:
             print(f"    {ui.paint(h, ui.YELLOW)}  {', '.join(data['hosts'][h]['private_ips'])}")
     return data
+
+
+# Sources that list names from TLS certificates. A certificate issued for an
+# exact name means someone set that name up on purpose.
+CERT_SOURCES = ("crt.sh", "crt.sh database", "certspotter")
+
+
+def certificate_names(results: dict) -> set[str]:
+    """Every hostname a certificate source found this scan (saved copies included)."""
+    names = set()
+    for r in results.get("sources", {}).values():
+        if r.get("source") in CERT_SOURCES:
+            names.update(r.get("subdomains", []))
+    return names
+
+
+def mark_certificates(data: dict, results: dict) -> None:
+    """Add "with_certificate" to each wildcard: the hosts set aside under it
+    that a certificate names. DNS can't tell them from made-up names, but a
+    certificate for the exact name says someone set them up, so they're named
+    on their own line instead of only in --json."""
+    certs = certificate_names(results)
+    for zone, w in data.get("wildcards", {}).items():
+        w["with_certificate"] = sorted(h for h, z in data.get("wildcard_only", {}).items()
+                                       if z == zone and h in certs)
+
+
+def _zone_label(zone: str, target: str) -> str:
+    """"*.acc-nocdn" for a zone under the target, the full "*.zone" otherwise."""
+    if target and zone.endswith("." + target):
+        return "*." + zone[:-len(target) - 1]
+    return "*." + zone
+
+
+def _list(names: list[str], total: int) -> str:
+    more = total - len(names)
+    return ", ".join(ui.safe(n) for n in names) + (f" and {more} more" if more > 0 else "")
+
+
+def show_wildcards(data: dict, target: str = "") -> None:
+    """Wildcards that hosts were set aside under (v1.18): one block per answer.
+
+    A CDN wildcard shows up in every subzone (each one answers made-up names
+    too), so zones are grouped by what they answer: by provider for a public
+    wildcard (a CDN rotates its IPs), by IP set for a private one."""
+    if data.get("wildcard_error"):
+        print()
+        warn(f"Wildcard check skipped: {data['wildcard_error']}.")
+    groups = {}
+    for zone, w in data.get("wildcards", {}).items():
+        if not w["hosts"]:
+            continue   # every host there has its own record: nothing set aside
+        key = ("private", tuple(w["ips"])) if w["private"] else ("public", w["provider"])
+        groups.setdefault(key, []).append((zone, w))
+    for (kind, _), zones in groups.items():
+        zones.sort(key=lambda zw: (-zw[1]["hosts"], zw[0]))
+        first = zones[0][1]
+        total = sum(w["hosts"] for _, w in zones)
+        if kind == "private":
+            what = f"private IPs ({', '.join(first['ips'])})"
+        elif len(zones) == 1:
+            n = len(first["ips"])
+            what = f"{first['provider'] or 'unknown provider'} ({n} IP{'' if n == 1 else 's'})"
+        else:
+            what = first["provider"] or "unknown provider"
+        print()
+        if len(zones) == 1:
+            warn(f"*.{ui.safe(zones[0][0])} is a wildcard -> {what}: {total} host(s) resolve only through it")
+        else:
+            warn(f"{len(zones)} zones are wildcards -> {what}: {total} host(s) resolve only through them")
+            top = [f"{_zone_label(z, target)} ({w['hosts']})" for z, w in zones[:5]]
+            print(f"    Biggest: {_list(top, len(zones))} zones" if len(zones) > 5
+                  else f"    Zones: {', '.join(top)}")
+        examples = [h for _, w in zones for h in w["examples"]][:5]
+        print(f"    Set aside (DNS can't tell them apart from made-up names, full list in --json): "
+              f"{_list(examples, total)}")
+        certified = sorted(h for _, w in zones for h in w.get("with_certificate", []))
+        if certified:
+            print(f"    {len(certified)} of them have their own certificate, so they're likely real: "
+                  f"{_list(certified[:8], len(certified))}")
 
 
 def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
@@ -760,9 +843,13 @@ def show_paths(results: dict) -> None:
             print()
         info("Leads to investigate (not attack paths: each is missing something that would make it one):")
         print()
-    for i, p in enumerate(leads):
+    for i, group in enumerate(lead_groups(leads)):
         if i:
             print()  # between leads, not after the last one (the caller adds its own gap)
+        if len(group) > 1:
+            show_cdn_group(group)
+            continue
+        p = group[0]
         print(f"    {p['id']}  {ui.paint('LEAD', ui.BOLD, ui.GREY)}  {ui.safe(p['title'])}  "
               f"({gate.describe(p.get('gate'))})")
         for n, s in enumerate(p["steps"], 1):
@@ -774,6 +861,59 @@ def show_paths(results: dict) -> None:
         print()
         info(f"{built['more_leads']} more lead(s) not shown.")
     show_set_aside(built)
+
+
+def lead_groups(leads: list[dict]) -> list[list[dict]]:
+    """Leads in print order, with go-around-the-CDN leads about the same CDN
+    hosts grouped together (v1.18). Each lead keeps its own id and data, so
+    Akashi still proves them one origin server at a time; only the terminal
+    shows them as one block, placed where the first of them would be."""
+    groups, at = [], {}
+    for p in leads:
+        t = p.get("targets") or {}
+        if p.get("rule") == "around_cdn" and t.get("fronted"):
+            key = (tuple(t["fronted"]), t.get("cdn"))
+            if key in at:
+                groups[at[key]].append(p)
+                continue
+            at[key] = len(groups)
+        groups.append([p])
+    return groups
+
+
+def id_span(ids: list[str]) -> str:
+    """"L1-L4" for a run of ids, "L1, L3, L6" otherwise."""
+    nums = [int(i[1:]) for i in ids]
+    if nums == list(range(nums[0], nums[0] + len(nums))):
+        return f"{ids[0]}-{ids[-1]}"
+    return ", ".join(ids)
+
+
+def show_cdn_group(group: list[dict]) -> None:
+    """Several go-around-the-CDN leads about the same CDN hosts, as one block:
+    the CDN hosts once, then one line per origin server with its own lead id."""
+    t = group[0]["targets"]
+    who = paths._names(t["fronted"])
+    n_front = len(t["fronted"])
+    cdn = t.get("cdn") or "the CDN"
+    print(f"    {id_span([p['id'] for p in group])}  {ui.paint('LEADS', ui.BOLD, ui.GREY)}  "
+          f"Check whether {n_front} host{'' if n_front == 1 else 's'} behind {cdn} can be reached "
+          f"around it through one of {len(group)} servers  ({gate.describe(group[0].get('gate'))})")
+    print(f"        {ui.paint('Observed', ui.GREY)}: {ui.safe(who)} "
+          f"{'is' if n_front == 1 else 'are'} behind {cdn}, which filters traffic before it reaches "
+          "the real server")
+    print(f"        {ui.paint('Observed', ui.GREY)}: these servers answer web requests with no CDN in front:")
+    width = max(len(p["id"]) for p in group)
+    for p in group:
+        pt = p["targets"]
+        ip = (pt.get("ips") or ["?"])[0]
+        print(f"          {p['id'].ljust(width)}  {ip:<16} <- {ui.safe(paths._names(pt.get('hosts') or []))}")
+        for note in (p.get("gate") or {}).get("notes", []):
+            print(f"          {' ' * width}  {ui.paint('Note:', ui.GREY)} {ui.safe(note)}")
+    print(f"        {ui.paint('Inference', ui.GREY)}: if one of them is also the server behind these hosts, "
+          f"an attacker can send requests to it directly and skip {cdn}'s protection")
+    print(f"        Missing: nothing shows that any of these servers is the one behind {ui.safe(who)} "
+          "(a CDN hides its origin from outside)")
 
 
 def show_set_aside(built: dict) -> None:

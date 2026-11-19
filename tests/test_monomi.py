@@ -340,3 +340,49 @@ def test_saved_scan_starts_with_the_monomi_version(tmp_path, capsys):
     assert list(saved)[0] == "monomi_version" and saved["monomi_version"] == VERSION
     assert saved["target"] == "lab" and saved["subdomains"] == ["lab"]
     assert results["monomi_version"] == "0.0.1"  # the results in memory aren't changed
+
+
+# --- v1.18: go-around-the-CDN leads grouped when printed ---
+
+def _cdn_lead(lid, ip, direct, fronted=("a.example.test", "b.example.test"), notes=()):
+    return {"id": lid, "rule": "around_cdn", "title": f"Check whether ... through {ip}",
+            "steps": [], "missing": "m",
+            "gate": {"passed": 5, "of": 6, "failed": [{"check": 5, "name": "observed way in"}],
+                     "notes": list(notes)},
+            "targets": {"hosts": list(direct), "ips": [ip], "fronted": list(fronted), "cdn": "AWS CloudFront"}}
+
+
+def test_lead_groups_put_cdn_leads_together_where_the_first_was():
+    side = {"id": "L1", "rule": "side_door", "targets": {"hosts": ["x"], "ips": ["9.9.9.9"]}}
+    l2, l3, l4 = _cdn_lead("L2", "9.9.9.1", ["p1"]), _cdn_lead("L3", "9.9.9.2", ["p2"]), _cdn_lead("L4", "9.9.9.3", ["p3"])
+    other_front = _cdn_lead("L5", "9.9.9.4", ["p4"], fronted=("c.example.test",))
+    groups = cli.lead_groups([side, l2, l3, l4, other_front])
+    assert [[p["id"] for p in g] for g in groups] == [["L1"], ["L2", "L3", "L4"], ["L5"]]
+
+
+def test_id_span():
+    assert cli.id_span(["L2", "L3", "L4"]) == "L2-L4"
+    assert cli.id_span(["L1", "L3"]) == "L1, L3"
+
+
+def test_cdn_group_prints_hosts_once_and_one_line_per_server(capsys):
+    group = [_cdn_lead("L1", "9.9.9.1", ["andre.prd-pub.example.test"]),
+             _cdn_lead("L2", "9.9.9.2", ["forms.example.test"], notes=["non-production note"])]
+    cli.show_cdn_group(group)
+    out = capsys.readouterr().out
+    assert "L1-L2  LEADS  Check whether 2 hosts behind AWS CloudFront can be reached around it through one of 2 servers" in out
+    assert out.count("a.example.test and b.example.test") == 2   # the Observed line and the Missing line
+    assert "L1  9.9.9.1" in out and "<- andre.prd-pub.example.test" in out
+    assert "L2  9.9.9.2" in out and "non-production note" in out
+
+
+def test_show_paths_groups_cdn_leads_and_keeps_others(capsys):
+    side = {"id": "L1", "rule": "side_door", "title": "Side door title", "steps": [],
+            "missing": "m", "gate": {}, "targets": {"hosts": [], "ips": []}}
+    built = {"paths": [], "leads": [side, _cdn_lead("L2", "9.9.9.1", ["p1"]), _cdn_lead("L3", "9.9.9.2", ["p2"])],
+             "fix_first": None, "more": 0, "more_leads": 0, "set_aside": []}
+    cli.show_paths({"enrichment": {}, "paths": built})
+    out = capsys.readouterr().out
+    assert "L1  LEAD  Side door title" in out
+    assert "L2-L3  LEADS" in out
+    assert "through 9.9.9.1" not in out          # the per-server titles are folded into the block

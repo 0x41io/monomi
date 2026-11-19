@@ -12,7 +12,7 @@ os.environ["MONOMI_HOME"] = TEST_HOME
 
 import pytest  # noqa: E402
 
-from monomi import activelog, dnscheck  # noqa: E402
+from monomi import activelog, dnscheck, enrich  # noqa: E402
 from monomi.collectors import otx, pacing, saved  # noqa: E402
 
 
@@ -46,6 +46,14 @@ def active_log(tmp_path, monkeypatch):
 def no_retry_pause(monkeypatch):
     """The DoH retry doesn't wait in tests."""
     monkeypatch.setattr(dnscheck, "RETRY_PAUSE", 0)
+
+
+@pytest.fixture(autouse=True)
+def no_wildcard_probes(monkeypatch):
+    """The wildcard check asks DNS about made-up names: off in every test
+    (no wildcards found) unless a test fakes its own answers.
+    test_enrich.py keeps a reference to the real one for its own tests."""
+    monkeypatch.setattr(enrich, "wildcard_answers", lambda zones: ({}, None))
 
 
 @pytest.fixture(autouse=True)

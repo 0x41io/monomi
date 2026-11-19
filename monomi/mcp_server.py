@@ -518,6 +518,10 @@ def enrich_hosts(hostnames: list[str] | None = None, detail: str = "summary",
     detail="summary" (default): counts (resolved, providers, not resolving by
     DNS status), every dangling-CNAME host, and up to 20 private-IP hosts; the
     full per-host and per-IP data is saved to "full_results_file".
+    "wildcards" (v1.18): zones with a wildcard record, where any made-up name
+    resolves. Hosts whose answer matches it are set aside ("wildcard_only"
+    in the full result, "wildcard_only_count" here) and left out of every
+    count and check, since DNS can't tell them apart from names never set up.
     detail="full": everything in the reply.
     Pass the hosts as "hostnames", or as "hosts_file": a file in Monomi's
     scans folder, like the "full_results_file" from find_subdomains (.json)
@@ -563,6 +567,10 @@ def enrich_summary(full: dict) -> dict:
         "private_ip_owners": owners("dns") if private else [],
         "asn_error": full.get("asn_error"),
         "cdn_error": full.get("cdn_error"),
+        "wildcards": {z: {k: w[k] for k in ("ips", "provider", "private", "hosts", "examples")}
+                      for z, w in full.get("wildcards", {}).items()},
+        "wildcard_only_count": len(full.get("wildcard_only", {})),
+        "wildcard_error": full.get("wildcard_error"),
     }
 
 
@@ -574,6 +582,7 @@ def ports_summary(enrichment: dict, exposure: dict) -> dict:
     not_resolving = enrichment.get("not_resolving", {})
     return {
         "hosts_resolved": enrichment.get("resolved", 0),
+        "hosts_wildcard_only": len(enrichment.get("wildcard_only", {})),
         "hosts_not_resolving": sum(len(hosts) for hosts in not_resolving.values()),
         "edge_ips": edge,
         "origin_ips": len(every) - edge,
@@ -598,7 +607,8 @@ def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
     CVEs and risky ports on origin IPs only, and hostnames that don't
     resolve (listed by DNS status in "not_resolving"). IPs Shodan has
     no data on are listed in "nothing_seen": no data is not proof that
-    nothing is running there.
+    nothing is running there. Hosts that only resolve through a wildcard
+    record are left out (counted in summary.hosts_wildcard_only).
     Origin (non-edge) IPs in "ips" have "owners": the roles that would fix them, never people.
     Checks at most 100 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason.
     detail="summary" (default): the "summary" counts, origin IPs in full (up to

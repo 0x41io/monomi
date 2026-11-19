@@ -110,6 +110,7 @@ def test_check_ports_summary_counts(monkeypatch):
     result = mcp_server.check_ports(["a.example.com"], detail="full")
     assert list(result)[:2] == ["detail", "summary"]  # agents read these first
     assert result["summary"] == {
+        "hosts_wildcard_only": 0,
         "hosts_resolved": 3, "hosts_not_resolving": 3,
         "edge_ips": 1, "origin_ips": 2, "ips_nothing_seen": 1,
         "origin_cves": 1, "origin_ips_with_risky_ports": 1,

@@ -97,6 +97,11 @@ def build_evidence(results: dict) -> list[dict]:
         for host in enr["private_ip_hosts"]:
             private = ", ".join(enr["hosts"][host].get("private_ips", []))
             add(f"{host} points to private/internal IP(s) in public DNS: {private}", dns_source, ("dns",))
+        for zone, w in (enr.get("wildcards") or {}).items():
+            what = "private/internal IP(s)" if w.get("private") else (w.get("provider") or "unknown provider")
+            add(f"*.{zone} is a wildcard: made-up names under it resolve to {', '.join(w['ips'])} ({what}), "
+                f"and {w['hosts']} found hostname(s) resolve only that way",
+                dns_source, ("dns",) if w.get("private") else (), kind="wildcard", host=zone)
         rules_source = [{"name": "hostname rules", "collected_at": now_utc()}]
         for host in results["subdomains"]:
             h = enr["hosts"].get(host)

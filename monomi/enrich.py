@@ -8,17 +8,28 @@ Host enrichment: resolve hostnames to IPs, then look up who hosts each IP.
 - ASN / provider: Team Cymru's free IP-to-ASN whois service (bulk mode,
   no API key). Tells you the network owner (e.g. AMAZON-02, CLOUDFLARENET)
   and country for each IP.
+- Wildcards (v1.18): a zone with a wildcard record (*.example.com) answers
+  for ANY name, so junk names from passive DNS look live. Monomi asks DNS
+  about a few made-up names in each zone; hosts whose answer matches the
+  wildcard's are set aside in "wildcard_only" instead of counted as hosts.
 """
 
 import ipaddress
+import secrets
 import socket
 
 from monomi import aws_ranges
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from monomi.dnscheck import DNSLookupError, NoSuchHost, get_cname, host_status
+from monomi.scope import SHARED_SUFFIXES
 
 CYMRU_HOST = ("whois.cymru.com", 43)
+
+# Made-up names asked per zone. A CDN wildcard hands out a different few
+# IPs each time, so one answer would miss part of its pool.
+WILDCARD_PROBES = 3
+WILDCARD_EXAMPLES = 5   # set-aside hosts named per wildcard (the rest are in --json)
 
 
 def _resolve_one(host: str) -> dict:
@@ -132,6 +143,63 @@ def parse_cymru(text: str) -> dict[str, dict]:
     return out
 
 
+def _random_label() -> str:
+    """A label no real host has, e.g. "monomi-wc-3f9a1c0b7d2e"."""
+    return "monomi-wc-" + secrets.token_hex(6)
+
+
+def _zone_of(host: str) -> str | None:
+    """The zone a host sits in (everything after its first label), or None
+    when that would be a TLD or a shared suffix like co.uk: never probed."""
+    parts = host.rstrip(".").lower().split(".", 1)
+    if len(parts) < 2 or "." not in parts[1] or parts[1] in SHARED_SUFFIXES:
+        return None
+    return parts[1]
+
+
+def wildcard_answers(zones: list[str], workers: int = 32) -> tuple[dict, str | None]:
+    """Find the zones with a wildcard record, by asking DNS about made-up names.
+
+    A made-up name can only resolve through a wildcard, so a zone where any
+    of WILDCARD_PROBES random names answers has one. Returns
+    ({zone: {"ips": [...], "canonicals": [...]}}, None): every IP and CNAME
+    end the made-up names got. Returns ({}, reason) when the check can't be
+    trusted: some resolvers (ISPs, VPNs) answer for names that don't exist,
+    which would make every zone look like a wildcard, so that's tested first
+    with a made-up domain right under the TLD. Same lookups as resolve():
+    DNS only, never the target's servers.
+    """
+    if not zones:
+        return {}, None
+    tld = zones[0].rsplit(".", 1)[-1]
+    if _resolve_one(f"{_random_label()}-{_random_label()}.{tld}")["ips"]:
+        return {}, "your DNS resolver answers for names that don't exist, so wildcards can't be told apart"
+    names = {z: [f"{_random_label()}.{z}" for _ in range(WILDCARD_PROBES)] for z in zones}
+    flat = [n for ns in names.values() for n in ns]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        answers = dict(zip(flat, pool.map(_resolve_one, flat)))
+    found = {}
+    for zone, ns in names.items():
+        got = [answers[n] for n in ns if answers[n]["ips"]]
+        if got:
+            found[zone] = {"ips": sorted({ip for a in got for ip in a["ips"]}),
+                           "canonicals": sorted({a["canonical"] for a in got if a["canonical"]})}
+    return found, None
+
+
+def through_wildcard(entry: dict, wildcard: dict) -> bool:
+    """True when a host's DNS answer is what its zone's wildcard gives any
+    made-up name, so DNS can't tell the host apart from a name that was never
+    set up. A wildcard that's a CNAME is matched by where the chain ends (the
+    exact answer); one that's plain A records by sharing an IP with its pool
+    (a CDN rotates IPs), and only for hosts with no CNAME of their own."""
+    if not entry.get("ips"):
+        return False
+    if wildcard["canonicals"]:
+        return entry.get("canonical") in wildcard["canonicals"]
+    return entry.get("canonical") is None and bool(set(entry["ips"]) & set(wildcard["ips"]))
+
+
 def _cname_target(host: str) -> str | None:
     """Where a dangling host's CNAME points, or None if DNS won't say now."""
     try:
@@ -157,7 +225,12 @@ def enrich(hosts: list[str]) -> dict:
             status[host] = word
             if word == "dangling_cname":
                 resolved[host]["cname"] = _cname_target(host)
-    all_ips = sorted({ip for r in resolved.values() for ip in r["ips"]})
+    # Wildcards: probe every zone a live host sits in. Their IPs join the ASN
+    # lookup below, so a wildcard's provider can be named.
+    zones = sorted({z for h in hosts if resolved[h]["ips"] and (z := _zone_of(h))})
+    wildcards, wildcard_error = wildcard_answers(zones)
+    all_ips = sorted({ip for r in resolved.values() for ip in r["ips"]}
+                     | {ip for w in wildcards.values() for ip in w["ips"]})
     public_ips = [ip for ip in all_ips if ipaddress.ip_address(ip).is_global]
     asn_error = None
     try:
@@ -222,6 +295,27 @@ def enrich(hosts: list[str]) -> dict:
             entry["provider"] = main
         per_host[host] = entry
 
+    # Set aside the hosts that only resolve through their zone's wildcard:
+    # kept in "wildcard_only" (host -> zone), left out of every count below
+    # and of "hosts", which is what every later step reads.
+    wildcard_only = {}
+    for host in hosts:
+        zone = _zone_of(host)
+        if zone in wildcards and through_wildcard(per_host[host], wildcards[zone]):
+            wildcard_only[host] = zone
+    per_host = {h: e for h, e in per_host.items() if h not in wildcard_only}
+    wildcard_info = {}
+    for zone, w in wildcards.items():
+        members = sorted(h for h, z in wildcard_only.items() if z == zone)
+        provs = Counter(ip_info[ip]["provider"] for ip in w["ips"] if ip in ip_info)
+        wildcard_info[zone] = {
+            **w,
+            "provider": provs.most_common(1)[0][0] if provs else None,
+            "private": any(ip_info.get(ip, {}).get("provider") == "PRIVATE IP" for ip in w["ips"]),
+            "hosts": len(members),
+            "examples": members[:WILDCARD_EXAMPLES],
+        }
+
     providers = Counter(e["provider"] or DNS_LABELS.get(e["dns"], "no IPv4 address")
                         for e in per_host.values())
     not_resolving = {}
@@ -239,4 +333,7 @@ def enrich(hosts: list[str]) -> dict:
         "private_ip_hosts": [h for h, e in per_host.items() if e.get("private_ips")],
         "asn_error": asn_error,
         "cdn_error": cdn_error,
+        "wildcards": wildcard_info,           # zone -> its answer, provider, how many hosts set aside
+        "wildcard_only": wildcard_only,       # host -> zone, for hosts set aside
+        "wildcard_error": wildcard_error,     # why the wildcard check was skipped, or None
     }

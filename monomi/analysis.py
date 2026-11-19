@@ -279,6 +279,7 @@ def summarize(results: dict) -> tuple[str, str]:
                 "country": enr["hosts"][h].get("country"),
             }
             for h in hosts[:MAX_HOSTS]
+            if h in enr["hosts"]   # hosts set aside under a wildcard are summed up below
         ]
         payload["enrichment"] = {
             "resolved": enr["resolved"],
@@ -286,6 +287,10 @@ def summarize(results: dict) -> tuple[str, str]:
             "providers": enr["providers"],
             "private_ip_hosts": enr["private_ip_hosts"],
             "not_resolving": enr.get("not_resolving", {}),
+            # zone -> what any made-up name there resolves to, and how many
+            # found hostnames resolve only that way (not counted as hosts)
+            "wildcards": {z: {"ips": w["ips"], "provider": w["provider"], "hosts_set_aside": w["hosts"]}
+                          for z, w in enr.get("wildcards", {}).items()},
         }
     exp = results.get("exposure")
     if exp:
