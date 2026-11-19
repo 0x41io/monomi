@@ -186,17 +186,20 @@ def _unescape(m) -> str:
     return chr(int(code)) if code.isdigit() else code
 
 
-def doh_lookup(name: str, rtype: str) -> tuple[str, list[str]]:
+def doh_lookup(name: str, rtype: str, retry: bool = True) -> tuple[str, list[str]]:
     """Ask DNS-over-HTTPS one question: Cloudflare, then Google, then one retry.
 
     Returns the first clear answer, same shape as _ask_doh(). If every server
     fails, waits RETRY_PAUSE and asks the first one once more (a busy
     server often answers a moment later). Raises ServerFailure if any server
     said SERVFAIL, otherwise DNSLookupError.
+    retry=False skips the pause and the retry: each server is asked once
+    (for the zone-cut walk, where a slow answer costs more than a missed one).
     """
     urls = list(DOH_SERVERS.values())
+    tries = urls + urls[:1] if retry else urls
     failures = []
-    for attempt, url in enumerate(urls + urls[:1]):
+    for attempt, url in enumerate(tries):
         if attempt == len(urls):         # every server failed once: pause, then retry
             time.sleep(RETRY_PAUSE)
         try:
@@ -364,17 +367,18 @@ def host_status(host: str) -> tuple[str, list[str]]:
         return "lookup_failed", []
 
 
-def lame_delegation(name: str) -> dict | None:
+def lame_delegation(name: str, retry: bool = True) -> dict | None:
     """If this name's SERVFAIL is a lame (dangling) delegation, describe it; else None.
 
     Returns {"detail", "ede", "ns_ips"} when the DoH servers SERVFAIL *and*
     say the zone's own nameservers refuse / aren't reachable. Returns None for
     a name that resolves, doesn't exist, SERVFAILs only transiently (under
     load, no delegation wording), or can't be looked up at all. Passive: only
-    asks DNS-over-HTTPS, never the target.
+    asks DNS-over-HTTPS, never the target. retry=False asks each DoH server
+    once, with no pause (see doh_lookup).
     """
     try:
-        doh_lookup(name, "A")
+        doh_lookup(name, "A", retry=retry)
     except ServerFailure as e:
         if e.lame:
             return {"detail": e.detail, "ede": list(e.ede), "ns_ips": list(e.ns_ips)}
@@ -384,7 +388,8 @@ def lame_delegation(name: str) -> dict | None:
     return None   # resolved or NXDOMAIN: not a broken delegation
 
 
-def find_zone_cut(host: str) -> tuple[str, dict] | None:
+def find_zone_cut(host: str, known: dict | None = None,
+                  cache: dict | None = None) -> tuple[str, dict] | None:
     """The delegation point above a host whose lookup is a lame delegation.
 
     Walks up the labels from the host: every ancestor that is itself a lame
@@ -394,13 +399,24 @@ def find_zone_cut(host: str) -> tuple[str, dict] | None:
     "local-dev.example.com" for "alice.local-dev.example.com" -- or None if no
     ancestor is a lame delegation. Stops before a bare registrable-looking
     name (keeps at least two labels), and never queries a TLD.
+
+    Kept fast (v1.17.1), since each lame lookup is a slow SERVFAIL:
+      known  the host's own lame info, when the caller already has it: the
+             host isn't asked again and the walk starts at its parent
+      cache  a dict shared across walks in one run (name -> info or None),
+             so zone cuts with a common parent ask about it once
+    Ancestors are asked once per DoH server with no retry pause: the walk
+    only needs a yes/no, and a missed answer just leaves the cut lower.
     """
     labels = host.split(".")
-    cut = None
+    cut = (host, known) if known else None
+    cache = {} if cache is None else cache
     # host, then parent, grandparent, ...; keep the last two labels as a floor
-    for i in range(len(labels) - 1):
+    for i in range(1 if known else 0, len(labels) - 1):
         name = ".".join(labels[i:])
-        info = lame_delegation(name)
+        if name not in cache:
+            cache[name] = lame_delegation(name, retry=False)
+        info = cache[name]
         if info:
             cut = (name, info)      # shallower lame ancestors overwrite deeper ones
         elif cut:

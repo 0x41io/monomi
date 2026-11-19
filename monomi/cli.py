@@ -599,13 +599,14 @@ def run_takeover(results: dict) -> None:
         else:
             warn(f"{ui.paint('LAME DELEGATION', ui.BOLD, ui.YELLOW)}  {cut}  ({n} host(s); nameservers "
                  "refuse it and weren't recognized: check whether they can be claimed)")
-    if report["errors"]:
-        lame = sum(len(d["hosts"]) for d in report.get("ns_delegations", []))
-        rest = len(report["errors"]) - lame
-        if rest:
-            warn(f"{rest} host(s) couldn't be checked (DNS didn't answer).")
+    # a lame host did get an answer (a broken delegation, listed above), so
+    # only the other errors are hosts that couldn't be checked
+    lame = sum(len(d["hosts"]) for d in report.get("ns_delegations", []))
+    rest = len(report["errors"]) - lame
+    if rest:
+        warn(f"{rest} host(s) couldn't be checked (DNS didn't answer).")
     if not report["leads"]:
-        checked = report["checked"] - len(report["errors"])
+        checked = report["checked"] - rest
         good(f"No takeover leads among {checked} hosts checked.")
 
 

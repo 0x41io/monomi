@@ -250,6 +250,7 @@ def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) 
     """
     leads, stale, errors, results = [], [], {}, {}
     cuts = {}   # zone cut -> delegation record (grouping many hosts into one)
+    walked = {}  # name -> lame info or None, shared by every zone-cut walk this run
 
     def _record_lame(host, lame):
         """Attach a lame host to its delegation record, finding the zone cut once."""
@@ -257,7 +258,8 @@ def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) 
             if host == cut or host.endswith("." + cut):
                 rec["hosts"].append(host)
                 return
-        found = find_zone_cut(host)             # one network walk per new cut
+        # one network walk per new cut; the host itself is already known lame
+        found = find_zone_cut(host, known=lame, cache=walked)
         cut = found[0] if found else host
         at_cut = found[1] if found else lame
         cuts[cut] = {"cut": cut, "hosts": [host],

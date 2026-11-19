@@ -119,7 +119,7 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.17.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.17.1"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
 
 **Reading a saved scan (`--json`, since v1.15.0).** The file starts with `"monomi_version"`. Compare it as numbers with `monomi.common.scan_version(results)` (as text, `"1.15.0"` sorts before `"1.9.0"`); it's `None` for scans saved before v1.15.0, which don't have the fields below. In `"paths"`, every item in `paths`, `leads` and `set_aside` has:
 
@@ -588,6 +588,7 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.15.1: a Cert Spotter error reply (e.g. HTTP 503 during an outage) fails just that source and the scan carries on with its saved copy, instead of crashing the whole scan; found on the lab during Akashi's release gate
 - [x] v1.16.0: scope caution: paths, leads, set-aside items and MCP takeover records that run through pre-release (beta, preview...) or non-production (dev, staging, test...) hosts carry a note naming them, since programs often close those as Not Applicable or out of scope. Warns, never drops: the note never changes the result
 - [x] v1.17.0: lame (dangling NS) delegations: `--takeover` and MCP `check_takeover` report a subzone delegated to nameservers that refuse it, grouped by the delegated zone, graded **theoretical** on AWS Route 53 or **investigate** on nameservers it doesn't recognize, as a new `dangling_ns` lead (rule name for tools like Akashi). Found as a SERVFAIL cluster on a bug bounty run
+- [x] v1.17.1: lame delegations tidy-up: hosts under a lame delegation count as checked (they have an answer) in the CLI's "hosts checked" line and stay out of MCP `unknown_count`/`unknown_hosts` (their `results` status is still `servfail`); the zone-cut walk no longer re-asks the host, asks each ancestor once per DoH server with no retry pause, and shares one cache across the run, so a walk takes seconds instead of ~30s
 
 **Next**
 - [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS

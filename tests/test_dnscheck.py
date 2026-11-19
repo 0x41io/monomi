@@ -404,7 +404,7 @@ def test_find_zone_cut_returns_shallowest_lame_ancestor(monkeypatch):
     lame = dnscheck._servfail("x", _servfail_body(
         "Name servers refused query (lame delegation?) [205.251.192.127]."))
 
-    def fake_lame(name):
+    def fake_lame(name, retry=True):
         # local-dev.example.test and everything under it are lame; example.test resolves
         if name.endswith("local-dev.example.test"):
             return {"detail": lame.detail, "ede": [], "ns_ips": lame.ns_ips}
@@ -416,5 +416,62 @@ def test_find_zone_cut_returns_shallowest_lame_ancestor(monkeypatch):
 
 
 def test_find_zone_cut_none_when_no_ancestor_is_lame(monkeypatch):
-    monkeypatch.setattr(dnscheck, "lame_delegation", lambda name: None)
+    monkeypatch.setattr(dnscheck, "lame_delegation", lambda name, retry=True: None)
     assert dnscheck.find_zone_cut("busy.example.test") is None
+
+
+# --- v1.17.1: a faster zone-cut walk ---
+
+def test_doh_lookup_without_retry_asks_each_server_once(monkeypatch):
+    calls = use_doh_servers(monkeypatch, dnscheck.ServerFailure("cf"), dnscheck.ServerFailure("google"))
+    with pytest.raises(dnscheck.ServerFailure):
+        dnscheck.doh_lookup("local-dev.example.test", "A", retry=False)
+    assert calls == list(dnscheck.DOH_SERVERS.values())     # no third (retry) call
+
+
+def test_doh_lookup_still_retries_by_default(monkeypatch):
+    calls = use_doh_servers(monkeypatch, dnscheck.ServerFailure("cf"),
+                            dnscheck.ServerFailure("google"), ("ok", ["203.0.113.7"]))
+    assert dnscheck.doh_lookup("busy.example.test", "A") == ("ok", ["203.0.113.7"])
+    assert len(calls) == 3
+
+
+def _record_walk(monkeypatch, lame_names):
+    """Fake lame_delegation: names in lame_names are lame. Returns the calls made."""
+    asked = []
+
+    def fake(name, retry=True):
+        asked.append((name, retry))
+        return {"detail": "d", "ede": [], "ns_ips": ["203.0.113.9"]} if name in lame_names else None
+    monkeypatch.setattr(dnscheck, "lame_delegation", fake)
+    return asked
+
+
+def test_walk_asks_ancestors_without_retry(monkeypatch):
+    asked = _record_walk(monkeypatch, {"alice.local-dev.example.test", "local-dev.example.test"})
+    dnscheck.find_zone_cut("alice.local-dev.example.test")
+    assert asked and all(retry is False for _, retry in asked)
+
+
+def test_walk_with_known_info_skips_the_host(monkeypatch):
+    asked = _record_walk(monkeypatch, {"local-dev.example.test"})
+    known = {"detail": "host's own", "ns_ips": ["203.0.113.9"]}
+    cut, info = dnscheck.find_zone_cut("alice.local-dev.example.test", known=known)
+    assert cut == "local-dev.example.test"
+    assert [n for n, _ in asked] == ["local-dev.example.test", "example.test"]   # never the host
+
+
+def test_walk_with_known_info_keeps_the_host_when_parent_resolves(monkeypatch):
+    _record_walk(monkeypatch, set())
+    known = {"detail": "host's own", "ns_ips": ["203.0.113.9"]}
+    assert dnscheck.find_zone_cut("alice.example.test", known=known) == ("alice.example.test", known)
+
+
+def test_walks_sharing_a_cache_ask_a_common_parent_once(monkeypatch):
+    asked = _record_walk(monkeypatch, {"one.dev.example.test", "two.dev.example.test", "dev.example.test"})
+    known = {"detail": "d", "ns_ips": ["203.0.113.9"]}
+    cache = {}
+    dnscheck.find_zone_cut("a.one.dev.example.test", known=known, cache=cache)
+    dnscheck.find_zone_cut("b.two.dev.example.test", known=known, cache=cache)
+    names = [n for n, _ in asked]
+    assert names.count("dev.example.test") == 1 and names.count("example.test") == 1

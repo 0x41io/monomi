@@ -245,6 +245,22 @@ def test_takeover_summary_keeps_lame_delegations(monkeypatch):
     assert d["owners"] == ["DNS admin"]
 
 
+def test_takeover_summary_doesnt_count_lame_hosts_as_unknown(monkeypatch):
+    # v1.17.1: a lame host's servfail is explained by ns_delegations; only
+    # the plain servfail is still unknown
+    monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
+        "leads": [], "stale": [],
+        "results": {"a.dev.x": {"status": "servfail"}, "busy.x": {"status": "servfail"}},
+        "checked": 2, "errors": {"a.dev.x": "SERVFAIL", "busy.x": "SERVFAIL"},
+        "ns_delegations": [{"cut": "dev.x", "hosts": ["a.dev.x"], "ns_ips": ["205.251.192.127"],
+                            "detail": "lame", "collected_at": None,
+                            "grade": "theoretical", "provider": "AWS Route 53"}]})
+    result = mcp_server.check_takeover(["a.dev.x", "busy.x"])
+    assert result["unknown_count"] == 1
+    assert result["unknown_hosts"] == ["busy.x"]
+    assert result["status_counts"] == {"servfail": 2}     # results keep the status word
+
+
 def test_full_detail_still_returns_everything(monkeypatch):
     monkeypatch.setattr(mcp_server, "check_hosts", lambda hosts, domain=None: {
         "leads": [], "stale": [], "results": {"a": {"status": "no_cname"}},

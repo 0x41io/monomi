@@ -436,7 +436,8 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
     under it and the refusing "ns_ips". "grade" is "theoretical" when those
     nameservers are on a pooled DNS service ("provider", e.g. AWS Route 53),
     where getting the same set assigned again is impractical, else
-    "investigate". Those hosts still show "servfail" in "results".
+    "investigate". Those hosts still show "servfail" in "results", but the
+    summary doesn't count them in "unknown_count" (their answer is known).
     Each lead and stale record has "owners": the roles that would fix it, never people.
     Each lead also has a "gate" (Monomi's validation gate, checks 4 and 6):
     result "finding" only when DNS-over-HTTPS confirmed the target doesn't
@@ -484,7 +485,10 @@ def check_takeover(hostnames: list[str] | None = None, domain: str | None = None
 def takeover_summary(full: dict) -> dict:
     """check_takeover in short: drop the per-host results, keep what to act on."""
     results = full.get("results", {})
-    unknown = [h for h, r in results.items() if r["status"] in ("error", "servfail", "conflicting")]
+    # a lame host's servfail is explained in ns_delegations, so it isn't unknown
+    lame = {h for d in full.get("ns_delegations", []) for h in d["hosts"]}
+    unknown = [h for h, r in results.items()
+               if r["status"] in ("error", "servfail", "conflicting") and h not in lame]
     return {
         "hosts_checked": full["hosts_checked"],
         "hosts_skipped": full["hosts_skipped"],

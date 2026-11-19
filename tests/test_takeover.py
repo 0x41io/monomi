@@ -226,7 +226,7 @@ def test_lame_delegation_grouped_under_its_zone_cut(monkeypatch):
         raise _lame(["205.251.192.127"])
     monkeypatch.setattr(takeover, "get_cname", cname)
     monkeypatch.setattr(takeover, "find_zone_cut",
-                        lambda h: ("local-dev.example.com", {"detail": "d", "ns_ips": ["205.251.192.127"]}))
+                        lambda h, **kw: ("local-dev.example.com", {"detail": "d", "ns_ips": ["205.251.192.127"]}))
     report = check_hosts(["alice.local-dev.example.com", "bob.local-dev.example.com"])
     assert len(report["ns_delegations"]) == 1
     d = report["ns_delegations"][0]
@@ -241,12 +241,28 @@ def test_zone_cut_found_once_for_many_hosts(monkeypatch):
     calls = []
     monkeypatch.setattr(takeover, "get_cname", lambda name: (_ for _ in ()).throw(_lame(["203.0.113.9"])))
 
-    def counting_cut(h):
+    def counting_cut(h, **kw):
         calls.append(h)
         return ("dev.example.com", {"detail": "d", "ns_ips": ["203.0.113.9"]})
     monkeypatch.setattr(takeover, "find_zone_cut", counting_cut)
     check_hosts(["a.dev.example.com", "b.dev.example.com", "c.dev.example.com"])
     assert len(calls) == 1          # walked the delegation once, not once per host
+
+
+def test_walk_gets_known_lame_info_and_one_shared_cache(monkeypatch):
+    # v1.17.1: the host's own lame answer is handed to the walk (not asked
+    # again), and every walk in the run shares one cache
+    seen = []
+
+    def spy_cut(h, known=None, cache=None):
+        seen.append((h, known, cache))
+        return (h.split(".", 1)[1], known)
+    monkeypatch.setattr(takeover, "get_cname", lambda name: (_ for _ in ()).throw(_lame(["203.0.113.9"])))
+    monkeypatch.setattr(takeover, "find_zone_cut", spy_cut)
+    check_hosts(["a.one.example.com", "b.two.example.com"])
+    assert len(seen) == 2
+    assert all(known and known["ns_ips"] == ["203.0.113.9"] for _, known, _ in seen)
+    assert seen[0][2] is seen[1][2]     # the same dict, not a fresh one per walk
 
 
 def test_plain_servfail_is_not_a_delegation(monkeypatch):
@@ -274,7 +290,7 @@ def test_grade_no_ips_investigate():
 def test_delegation_record_carries_its_grade(monkeypatch):
     monkeypatch.setattr(takeover, "get_cname", lambda name: (_ for _ in ()).throw(_lame(["205.251.196.249"])))
     monkeypatch.setattr(takeover, "find_zone_cut",
-                        lambda h: ("local-dev.example.com", {"detail": "d", "ns_ips": ["205.251.196.249"]}))
+                        lambda h, **kw: ("local-dev.example.com", {"detail": "d", "ns_ips": ["205.251.196.249"]}))
     d = check_hosts(["a.local-dev.example.com"])["ns_delegations"][0]
     assert (d["grade"], d["provider"]) == ("theoretical", "AWS Route 53")
 
@@ -289,3 +305,35 @@ def test_delegation_becomes_one_evidence_fact():
     assert facts[0]["host"] == "local-dev.example.com"
     assert "lame delegation" in facts[0]["fact"] and "AWS Route 53" in facts[0]["fact"]
     assert facts[0]["owners"] == ["DNS admin"]
+
+
+# --- v1.17.1: the CLI counts lame hosts as checked ---
+
+def test_cli_counts_lame_hosts_as_checked(monkeypatch, capsys):
+    from monomi import cli
+    monkeypatch.setattr(cli.takeover, "check_hosts", lambda hosts, domain=None: {
+        "leads": [], "stale": [], "checked": 4,
+        "results": {}, "errors": {"a.dev.example.test": "SERVFAIL", "b.dev.example.test": "SERVFAIL",
+                                  "busy.example.test": "SERVFAIL"},
+        "ns_delegations": [{"cut": "dev.example.test",
+                            "hosts": ["a.dev.example.test", "b.dev.example.test"],
+                            "ns_ips": ["205.251.192.127"], "detail": "d", "collected_at": None,
+                            "grade": "theoretical", "provider": "AWS Route 53"}]})
+    cli.run_takeover({"subdomains": ["x"] * 4, "target": "example.test"})
+    out = capsys.readouterr().out
+    assert "1 host(s) couldn't be checked" in out
+    assert "No takeover leads among 3 hosts checked" in out     # 4 minus the 1 plain SERVFAIL
+
+
+def test_cli_all_lame_hosts_means_none_unchecked(monkeypatch, capsys):
+    from monomi import cli
+    monkeypatch.setattr(cli.takeover, "check_hosts", lambda hosts, domain=None: {
+        "leads": [], "stale": [], "checked": 1, "results": {},
+        "errors": {"a.dev.example.test": "SERVFAIL"},
+        "ns_delegations": [{"cut": "dev.example.test", "hosts": ["a.dev.example.test"],
+                            "ns_ips": ["198.51.100.9"], "detail": "d", "collected_at": None,
+                            "grade": "investigate", "provider": None}]})
+    cli.run_takeover({"subdomains": ["x"], "target": "example.test"})
+    out = capsys.readouterr().out
+    assert "couldn't be checked" not in out
+    assert "No takeover leads among 1 hosts checked" in out
