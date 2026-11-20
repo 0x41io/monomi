@@ -9,14 +9,19 @@ app by default; see CLIENTS for the others).
     python monomi.py mcp setup --no-active     # turn ACTIVE tools back off
     python monomi.py mcp setup --scope FILE    # approve the scope file for ACTIVE tools
     python monomi.py mcp setup --no-scope      # clear the approved scope
+    python monomi.py mcp setup --research FILE # approve a research-header file (asks you first)
+    python monomi.py mcp setup --no-research   # stop sending it
+    python monomi.py mcp setup --rate N        # active requests per second (default 1)
+    python monomi.py mcp setup --no-rate       # back to the default (1/s)
     python monomi.py mcp setup --client NAME   # set up another MCP client (see CLIENTS)
 
 Without --allow-active/--no-active or --scope/--no-scope, setup keeps
 whatever the config has now. Turning active tools ON, and setting or
-changing the scope, always ask you to type "yes" at a real terminal, even
-with --yes: an agent running commands for you can't do either. The scope
-file's sha256 is saved next to its path, so the server refuses active
-checks if the file is edited after you approved it.
+changing the scope or the research file, always ask you to type "yes" at
+a real terminal, even with --yes: an agent running commands for you can't
+do any of them. The scope and research files' sha256 is saved next to each
+path, so the server refuses active checks if either is edited after you
+approved it. --rate keeps the normal "Write this?" question.
 
 Safe by design: only the "monomi" entry changes (other servers and settings
 stay as they are), the old file is backed up first, a file that can't be
@@ -46,7 +51,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 from tomlkit.exceptions import TOMLKitError
 
-from monomi import home, scope, ui
+from monomi import home, rate, research, scope, ui
 
 SERVER = os.path.join(home.REPO_DIR, "mcp_server.py")  # the root wrapper, in a copy of the repo
 NAME = "monomi"            # the server's name in the config
@@ -62,6 +67,9 @@ ACTIVE_WARNING = (
     "and `python monomi.py doctor` shows the setting and the scope.")
 SCOPE_FLAG = "--scope"              # mcp_server.py's flag: the approved scope file
 SCOPE_HASH_FLAG = "--scope-sha256"  # ...and the sha256 it had when you approved it
+RESEARCH_FLAG = "--research"              # the approved research-header file (v1.19)
+RESEARCH_HASH_FLAG = "--research-sha256"  # ...and its sha256 when you approved it
+RATE_FLAG = "--rate"                      # active requests per second (v1.19)
 
 
 class SetupError(Exception):
@@ -115,40 +123,99 @@ def with_active(entry, on):
     return {**entry, "args": args + ([ACTIVE_FLAG] if on else [])}
 
 
-def scope_args(entry):
-    """(scope file path, approved sha256) from a config entry, or (None, None)."""
+def flag_values(entry, *flags):
+    """The value after each flag in a config entry's args (None when absent)."""
     if not isinstance(entry, dict):
-        return None, None
+        return tuple(None for _ in flags)
     args = entry.get("args") or []
     found = {}
-    for flag in (SCOPE_FLAG, SCOPE_HASH_FLAG):
+    for flag in flags:
         if flag in args:
             i = args.index(flag)
             found[flag] = args[i + 1] if i + 1 < len(args) else None
-    return found.get(SCOPE_FLAG), found.get(SCOPE_HASH_FLAG)
+    return tuple(found.get(flag) for flag in flags)
 
 
-def with_scope(entry, path, sha256):
-    """A copy of the entry with the scope pair set (or removed if path is None).
-    Each flag is removed together with its value, so it's never added twice."""
-    old, args, skip = entry.get("args", []), [], False
-    for a in old:
+def without_flags(entry, *flags):
+    """A copy of the entry without these flags, each removed together with its
+    value, so a flag is never added twice."""
+    args, skip = [], False
+    for a in entry.get("args", []):
         if skip:
             skip = False
-        elif a in (SCOPE_FLAG, SCOPE_HASH_FLAG):
+        elif a in flags:
             skip = True  # also drop the value that follows the flag
         else:
             args.append(a)
-    if path:
-        args += [SCOPE_FLAG, path, SCOPE_HASH_FLAG, sha256]
     return {**entry, "args": args}
 
 
-def build_entry(on, path, sha256, base=None):
-    """The full entry: the server, the scope pair, then --allow-active last.
-    Always built in this order, so the same settings give the same entry.
-    base: how the client starts the server (default: the Claude app's way)."""
-    return with_active(with_scope(base or server_entry(), path, sha256), on)
+def scope_args(entry):
+    """(scope file path, approved sha256) from a config entry, or (None, None)."""
+    return flag_values(entry, SCOPE_FLAG, SCOPE_HASH_FLAG)
+
+
+def with_scope(entry, path, sha256):
+    """A copy of the entry with the scope pair set (or removed if path is None)."""
+    entry = without_flags(entry, SCOPE_FLAG, SCOPE_HASH_FLAG)
+    if path:
+        entry["args"] += [SCOPE_FLAG, path, SCOPE_HASH_FLAG, sha256]
+    return entry
+
+
+def research_args(entry):
+    """(research file path, approved sha256) from a config entry, or (None, None)."""
+    return flag_values(entry, RESEARCH_FLAG, RESEARCH_HASH_FLAG)
+
+
+def with_research(entry, path, sha256):
+    """A copy of the entry with the research pair set (or removed if path is None)."""
+    entry = without_flags(entry, RESEARCH_FLAG, RESEARCH_HASH_FLAG)
+    if path:
+        entry["args"] += [RESEARCH_FLAG, path, RESEARCH_HASH_FLAG, sha256]
+    return entry
+
+
+def rate_arg(entry):
+    """The --rate value (as written in the config) or None for the default."""
+    return flag_values(entry, RATE_FLAG)[0]
+
+
+def with_rate(entry, value):
+    """A copy of the entry with --rate set (or removed if value is None)."""
+    entry = without_flags(entry, RATE_FLAG)
+    if value is not None:
+        entry["args"] += [RATE_FLAG, value]
+    return entry
+
+
+def build_entry(on, path, sha256, base=None, research=(None, None), rate_value=None):
+    """The full entry: the server, the scope pair, the research pair, --rate,
+    then --allow-active last. Always built in this order, so the same settings
+    give the same entry. base: how the client starts the server (default: the
+    Claude app's way)."""
+    entry = with_scope(base or server_entry(), path, sha256)
+    entry = with_rate(with_research(entry, *research), rate_value)
+    return with_active(entry, on)
+
+
+def same_settings(base, old):
+    """base with every setting old has (scope, research, rate, active): what
+    doctor compares against, so those settings never make an entry "different"."""
+    return build_entry(is_active(old), *scope_args(old), base=base,
+                       research=research_args(old), rate_value=rate_arg(old))
+
+
+def rate_value(text):
+    """--rate N for setup: checked, then written as it reads back ("1", "0.5")."""
+    try:
+        return f"{rate.parse(text):g}"
+    except rate.RateError as e:
+        raise SetupError(f"{e}. Nothing was changed.")
+
+
+def describe_rate(value):
+    return f"{value}/s" if value else f"{rate.SCOPED_DEFAULT:g}/s (the default)"
 
 
 # ---------- Where the config is ----------
@@ -634,16 +701,19 @@ def show_scope(s):
     print("  Active tools will only ever send requests to hosts these rules allow.")
 
 
-def confirm(turning_on, new_scope):
-    """Turning active tools on, or setting/changing the scope, needs a person:
-    a real terminal and the word "yes". --yes never skips this, and piped
-    input (how agents run commands) is refused."""
+def confirm(turning_on, new_scope, new_research=None):
+    """Turning active tools on, or setting/changing the scope or the research
+    file, needs a person: a real terminal and the word "yes". --yes never
+    skips this, and piped input (how agents run commands) is refused."""
     if turning_on:
         print(f"\n{ui.paint('Turning ACTIVE tools on', ui.BOLD, ui.YELLOW)}")
         print(ACTIVE_WARNING)
     if new_scope:
         show_scope(new_scope)
-    asks = [("allow active tools", turning_on), ("approve this scope", new_scope)]
+    if new_research:
+        show_research(new_research)
+    asks = [("allow active tools", turning_on), ("approve this scope", new_scope),
+            ("approve this research file", new_research)]
     what = " and ".join(words for words, needed in asks if needed)
     if not sys.stdin.isatty():
         ui.fail(f"To {what}, you have to type it yourself at a terminal "
@@ -670,18 +740,42 @@ def describe_scope(path, sha256):
     return f"{path} (sha256 {sha256[:12]}...)" if path else "none"
 
 
-def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=None):
+def load_new_research(path):
+    """Read the research file once (what's shown is what's hashed).
+    Raises SetupError if it can't be used, so nothing is written."""
+    try:
+        return research.load(os.path.abspath(path))
+    except research.ResearchError as e:
+        raise SetupError(f"--research: {e}. Nothing was changed.")
+
+
+def show_research(r):
+    """Everything you're approving: the file, its hash, every header it adds."""
+    print(f"\n{ui.paint('Research header file for ACTIVE tools', ui.BOLD, ui.YELLOW)}")
+    print(f"  file:   {r.path}")
+    print(f"  sha256: {r.sha256}")
+    for name, value in r.headers.items():
+        print(f"    {ui.safe(name)}: {ui.safe(value)}")
+    print("  Every active request will carry these headers, and only these.")
+
+
+def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=None,
+          research_file=None, clear_research=False, rate_text=None, clear_rate=False):
     """active: True = allow ACTIVE tools, False = turn them off, None = keep each config's setting.
     scope_file: approve this scope file; clear_scope: remove it; neither = keep each config's.
+    research_file / clear_research: the same for the research-header file.
+    rate_text: set --rate; clear_rate: back to the default; neither = keep each config's.
     client: which MCP client to set up (a Client; default the Claude app)."""
     client = client or CLIENTS["claude"]
     new_scope = load_new_scope(scope_file) if scope_file else None
+    new_research = load_new_research(research_file) if research_file else None
+    new_rate = rate_value(rate_text) if rate_text is not None else None
     found, standard = client.paths()
     targets = found or [standard]
     # Read every file first: if any is broken, nothing gets written anywhere
     configs = {path: client.load(path) for path in targets}
 
-    plans, turning_on, scope_changing = {}, False, False
+    plans, turning_on, scope_changing, research_changing = {}, False, False, False
     for path, cfg in configs.items():
         old = client.entry(cfg)
         on = is_active(old) if active is None else active
@@ -691,11 +785,20 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=Non
             pair = (new_scope.path, new_scope.sha256)
         else:
             pair = scope_args(old)
-        entry = build_entry(on, *pair, base=client.base())
+        if clear_research:
+            rpair = (None, None)
+        elif new_research:
+            rpair = (new_research.path, new_research.sha256)
+        else:
+            rpair = research_args(old)
+        speed = None if clear_rate else new_rate if new_rate is not None else rate_arg(old)
+        entry = build_entry(on, *pair, base=client.base(), research=rpair, rate_value=speed)
         status = "new" if old is None else "unchanged" if old == entry else "changing"
         plans[path] = (status, old, entry)
         turning_on = turning_on or (on and not is_active(old))
         scope_changing = scope_changing or (new_scope is not None and pair != scope_args(old))
+        research_changing = research_changing or (new_research is not None
+                                                  and rpair != research_args(old))
 
     for path, (status, old, entry) in plans.items():
         print(f"\n{ui.paint(path, ui.BOLD, ui.WHITE)}")
@@ -704,6 +807,8 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=Non
         print(f"  monomi: {status}")
         print(f"  active tools: {'ON' if is_active(entry) else 'off'}")
         print(f"  scope: {describe_scope(*scope_args(entry))}")
+        print(f"  research header: {describe_scope(*research_args(entry))}")
+        print(f"  active request rate: {describe_rate(rate_arg(entry))}")
         if status == "changing":
             show_entry("now:", old, client)
         if status != "unchanged":
@@ -713,8 +818,9 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=Non
     if not to_write:
         ui.good(f"Monomi is already set up in {client.label}. Nothing to change.")
         return 0
-    if turning_on or scope_changing:
-        if not confirm(turning_on, new_scope if scope_changing else None):
+    if turning_on or scope_changing or research_changing:
+        if not confirm(turning_on, new_scope if scope_changing else None,
+                       new_research if research_changing else None):
             ui.info("Nothing was changed.")
             return 0
     elif not yes and not ask("\nWrite this? [y/N] "):
@@ -726,8 +832,8 @@ def setup(yes=False, active=None, scope_file=None, clear_scope=False, client=Non
         ui.good(f"Updated {path}")
         if backup:
             ui.info(f"Backup of the old file: {backup}")
-    print(f"\nNext: {client.restart}. A change to active tools "
-          "or the scope only takes effect after that restart.")
+    print(f"\nNext: {client.restart}. A change to active tools, the scope, "
+          "the research file or the rate only takes effect after that restart.")
     if any(is_active(e) and not scope_args(e)[0] for _, _, e in plans.values()):
         ui.warn("ACTIVE tools are on but no scope file is approved, so every active "
                 "check will refuse. Approve one with: python monomi.py mcp setup --scope FILE")
@@ -755,6 +861,17 @@ def main(argv=None) -> int:
                               "(asks you first)")
     scoping.add_argument("--no-scope", dest="clear_scope", action="store_true",
                          help="remove the approved scope (active tools then refuse everything)")
+    researching = parser.add_mutually_exclusive_group()
+    researching.add_argument("--research", dest="research_file", metavar="FILE",
+                             help="approve a research-header file: every ACTIVE request carries "
+                                  "its 'Name: value' headers (asks you first)")
+    researching.add_argument("--no-research", dest="clear_research", action="store_true",
+                             help="stop sending a research header")
+    pacing = parser.add_mutually_exclusive_group()
+    pacing.add_argument("--rate", dest="rate_text", metavar="N",
+                        help=f"ACTIVE requests per second, in total (default {rate.SCOPED_DEFAULT:g})")
+    pacing.add_argument("--no-rate", dest="clear_rate", action="store_true",
+                        help=f"back to the default rate ({rate.SCOPED_DEFAULT:g}/s)")
     parser.add_argument("--no-color", action="store_true",
                         help="plain output (also respects NO_COLOR)")
     args = parser.parse_args(argv)
@@ -765,12 +882,17 @@ def main(argv=None) -> int:
         client = CLIENTS[args.client]
         if args.print_only:
             s = load_new_scope(args.scope_file) if args.scope_file else None
+            r = load_new_research(args.research_file) if args.research_file else None
+            speed = rate_value(args.rate_text) if args.rate_text is not None else None
             entry = build_entry(bool(args.active), s.path if s else None, s.sha256 if s else None,
-                                base=client.base())
+                                base=client.base(), research=(r.path, r.sha256) if r else (None, None),
+                                rate_value=speed)
             print(client.printable(entry))
             return 0
         return setup(yes=args.yes, active=args.active, scope_file=args.scope_file,
-                     clear_scope=args.clear_scope, client=client)
+                     clear_scope=args.clear_scope, client=client,
+                     research_file=args.research_file, clear_research=args.clear_research,
+                     rate_text=args.rate_text, clear_rate=args.clear_rate)
     except SetupError as e:
         ui.fail(str(e))
         return 1

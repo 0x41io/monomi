@@ -25,7 +25,8 @@ from monomi.emailauth import check_email
 from monomi.takeover import check_hosts
 from monomi.enrich import enrich
 from monomi.evidence import OWNERS
-from monomi import activelog, exposed, fingerprint, gate, home, internetdb, scope, threatintel
+from monomi import (activelog, exposed, fingerprint, gate, home, internetdb, rate, research, scope,
+                    threatintel)
 from monomi.importers import subfinder
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -52,6 +53,11 @@ FP_TIMEOUT = 8
 MAX_EXP_HOSTS = 10
 EXP_WORKERS = 8
 EXP_TIMEOUT = 8
+# Under --rate (v1.19) the requests of one call are spread out, so a call
+# checks only as many hosts as fit in this many seconds of pacing (worst
+# case per host: fingerprint 2 requests, the HTTP retry; exposed 13).
+ACTIVE_BUDGET = 40
+FP_REQUESTS_PER_HOST = 2
 
 
 def owners(*keys: str) -> list[str]:
@@ -159,6 +165,27 @@ ALLOW_ACTIVE = False
 SCOPE = None
 SCOPE_PROBLEM = scope.NO_SCOPE
 ACTIVE_LOG = os.path.join(SCANS_DIR, "active.log")
+# --rate and --research (v1.19), set once at startup (see main). Active
+# tools always need a scope, so the default is the scoped one: 1/s. One
+# limiter for the whole server, so calls running side by side share it.
+LIMITER = rate.Limiter(rate.SCOPED_DEFAULT)
+RESEARCH = None          # the approved research file, or None for none
+SETTINGS_PROBLEM = None  # a research file or rate that can't be used: active tools refuse
+
+
+def hosts_per_call(tool: str, maximum: int, per_host: int) -> int:
+    """How many hosts one call of an active tool checks at the server's rate,
+    so its requests fit in ACTIVE_BUDGET seconds (and the call in the app's
+    60s limit). Refuses when even one host doesn't fit."""
+    fits = int(ACTIVE_BUDGET * LIMITER.rate // per_host) if LIMITER.rate else maximum
+    if fits < 1:
+        log_refusal(tool, f"rate {LIMITER.rate:g}/s too slow for one host per call")
+        raise ToolError(
+            f"{tool} sends up to {per_host} requests per host, which at {LIMITER.rate:g} "
+            f"request(s)/second takes longer than one tool call may run, so nothing was sent. "
+            f"Use the CLI instead (it has no time limit), or raise the rate with "
+            f"`python monomi.py mcp setup --rate N` if the program allows it.")
+    return min(maximum, fits)
 
 
 def require_active(tool: str) -> None:
@@ -177,12 +204,25 @@ def require_active(tool: str) -> None:
             f"{tool} is an ACTIVE check and nothing was sent: {SCOPE_PROBLEM}. "
             "Only the person running Monomi can approve a scope (the scope can't be "
             "passed to a tool), then fully restart the Claude app.")
+    if SETTINGS_PROBLEM:
+        log_refusal(tool, SETTINGS_PROBLEM)
+        raise ToolError(
+            f"{tool} is an ACTIVE check and nothing was sent: {SETTINGS_PROBLEM}. "
+            "Only the person running Monomi can fix this (with `python monomi.py mcp setup`), "
+            "then fully restart the Claude app.")
 
 
 def log_request(tool: str, host: str, url: str, scope_rule: str | None) -> None:
     """One line in scans/active.log for every active request, before it's sent:
     the rule that allowed it and the approved scope's hash (see activelog.py)."""
-    activelog.request(ACTIVE_LOG, "mcp", tool, host, url, scope_rule, SCOPE)
+    activelog.request(ACTIVE_LOG, "mcp", tool, host, url, scope_rule, SCOPE,
+                      rate=LIMITER.rate, research=RESEARCH)
+
+
+def sent_as() -> dict:
+    """How this server's active requests go out, for every active tool's reply."""
+    return {"rate_per_second": LIMITER.rate, "research_sha256": research.sha_of(RESEARCH),
+            "research_headers": sorted(RESEARCH.headers) if RESEARCH else []}
 
 
 def log_refusal(tool: str, reason: str, host: str | None = None) -> None:
@@ -723,13 +763,15 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
     """
     ran = check_already_ran(already_ran)
     require_active("fingerprint_hosts")  # before any lookup or request
-    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_FP_HOSTS)
+    per_call = hosts_per_call("fingerprint_hosts", MAX_FP_HOSTS, FP_REQUESTS_PER_HOST)
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, per_call)
     checked, out_of_scope = scope_filter("fingerprint_hosts", checked)  # before any lookup
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         fp = fingerprint.fingerprint_all(
-            enrichment, workers=FP_WORKERS, max_hosts=MAX_FP_HOSTS, timeout=FP_TIMEOUT,
+            enrichment, workers=FP_WORKERS, max_hosts=per_call, timeout=FP_TIMEOUT,
             scope=SCOPE,  # checked again before every request
+            limiter=LIMITER, research=RESEARCH,
             on_request=lambda host, url, rule: log_request("fingerprint_hosts", host, url, rule))
     for r in fp["hosts"].values():
         for t in r["techs"]:
@@ -745,6 +787,7 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "out_of_scope": out_of_scope,
             "batch": batch, "requests_sent": fp["requests"], "active_log": ACTIVE_LOG,
+            "sent_as": sent_as(),
             "not_requested": sorted(set(checked) - requested),
             "hosts": fp["hosts"], "errors": fp["errors"]}
     summary = fingerprint_summary(full)
@@ -777,6 +820,7 @@ def fingerprint_summary(full: dict) -> dict:
         "batch": full["batch"],
         "requests_sent": full["requests_sent"],
         "active_log": full["active_log"],
+        "sent_as": full["sent_as"],
         "answered": len(hosts),
         "status_counts": dict(Counter(r["status"] for r in hosts.values()).most_common()),
         "version_leaks": leaks,
@@ -839,13 +883,15 @@ def check_exposed_files(hostnames: list[str] | None = None, detail: str = "summa
     """
     ran = check_already_ran(already_ran)
     require_active("check_exposed_files")  # before any lookup or request
-    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, MAX_EXP_HOSTS)
+    per_call = hosts_per_call("check_exposed_files", MAX_EXP_HOSTS, exposed.MAX_REQUESTS)
+    checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, per_call)
     checked, out_of_scope = scope_filter("check_exposed_files", checked)  # before any lookup
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         ex = exposed.check_all(
-            enrichment, workers=EXP_WORKERS, max_hosts=MAX_EXP_HOSTS, timeout=EXP_TIMEOUT,
+            enrichment, workers=EXP_WORKERS, max_hosts=per_call, timeout=EXP_TIMEOUT,
             scope=SCOPE,  # checked again before every request
+            limiter=LIMITER, research=RESEARCH,
             on_request=lambda host, url, rule: log_request("check_exposed_files", host, url, rule))
     for finding in ex["hosts"].values():
         if finding["spec"]:
@@ -855,6 +901,7 @@ def check_exposed_files(hostnames: list[str] | None = None, detail: str = "summa
     full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
             "out_of_scope": out_of_scope,
             "batch": batch, "requests_sent": ex["requests"], "active_log": ACTIVE_LOG,
+            "sent_as": sent_as(),
             "not_requested": sorted(set(checked) - set(ex["requested"])),
             "hosts": ex["hosts"]}
     summary = exposed_summary(full)
@@ -936,14 +983,47 @@ def main(argv=None) -> None:
                         help="the approved scope file: active tools only reach hosts it allows")
     parser.add_argument("--scope-sha256", metavar="HEX",
                         help="the file's sha256 when it was approved (set by mcp setup)")
+    parser.add_argument("--research", metavar="FILE",
+                        help="the approved research-header file: every active request carries it")
+    parser.add_argument("--research-sha256", metavar="HEX",
+                        help="the research file's sha256 when it was approved (set by mcp setup)")
+    parser.add_argument("--rate", metavar="N",
+                        help=f"active requests per second, in total (default {rate.SCOPED_DEFAULT:g})")
     args = parser.parse_args(argv)
     global ALLOW_ACTIVE, SCOPE, SCOPE_PROBLEM
     ALLOW_ACTIVE = args.allow_active
     SCOPE, SCOPE_PROBLEM = scope.check_pinned(args.scope, args.scope_sha256)
+    load_settings(args.rate, args.research, args.research_sha256)
     # stderr, never stdout: stdout carries the MCP messages
     print(f"monomi MCP server: active tools {'ON' if ALLOW_ACTIVE else 'off'}; "
-          f"{scope_status()}", file=sys.stderr)
+          f"{scope_status()}; {settings_status()}", file=sys.stderr)
     mcp.run()
+
+
+def load_settings(rate_text, research_path, research_sha256) -> None:
+    """--rate and the pinned research file, once at startup. Anything unusable
+    is kept in SETTINGS_PROBLEM and every active tool refuses (fail closed:
+    a program that requires the header must never get requests without it)."""
+    global LIMITER, RESEARCH, SETTINGS_PROBLEM
+    problems = []
+    try:
+        LIMITER = rate.Limiter(rate.choose(rate.parse(rate_text) if rate_text else None, scoped=True))
+    except rate.RateError as e:
+        LIMITER = rate.Limiter(rate.SCOPED_DEFAULT)
+        problems.append(str(e))
+    RESEARCH, problem = research.check_pinned(research_path, research_sha256)
+    if problem:
+        problems.append(problem)
+    SETTINGS_PROBLEM = "; ".join(problems) or None
+
+
+def settings_status() -> str:
+    """One line about the rate and research file for the startup message."""
+    if SETTINGS_PROBLEM:
+        return f"settings REFUSED: {SETTINGS_PROBLEM}"
+    header = (f"research {RESEARCH.path} sha256 {RESEARCH.sha256}" if RESEARCH
+              else "no research header")
+    return f"rate {LIMITER.describe()}; {header}"
 
 
 def scope_status() -> str:

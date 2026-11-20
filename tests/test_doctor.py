@@ -914,3 +914,46 @@ def test_client_check_writes_nothing(monkeypatch, tmp_path):
 
 def test_doctor_runs_the_clients_check():
     assert doctor.check_clients in doctor.CHECKS
+
+
+# ---------- rate and research file for MCP (v1.19) ----------
+
+def with_settings(rate_value=None, research=(None, None)):
+    return doctor.mcp_setup.build_entry(True, None, None, base=dict(ENTRY), research=research,
+                                        rate_value=rate_value)
+
+
+def test_settings_default_rate_and_no_research(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings())})
+    rate_line, research_line = doctor.check_settings()
+    assert rate_line["detail"] == "active requests: 1/s (the default), in total"
+    assert "no research header" in research_line["detail"] and research_line["status"] == doctor.OK
+
+
+def test_settings_show_the_approved_research_file(monkeypatch, tmp_path):
+    import hashlib
+    p = tmp_path / "research.txt"
+    p.write_text("X-Intigriti: x41ok\n")
+    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings("2", (str(p), sha)))})
+    rate_line, research_line = doctor.check_settings()
+    assert "2/s" in rate_line["detail"]
+    assert "sends X-Intigriti: x41ok" in research_line["detail"] and "matches" in research_line["detail"]
+
+
+def test_settings_warn_on_an_edited_research_file(monkeypatch, tmp_path):
+    p = tmp_path / "research.txt"
+    p.write_text("X-Intigriti: x41ok\n")
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings(None, (str(p), "0" * 64)))})
+    _, research_line = doctor.check_settings()
+    assert research_line["status"] == doctor.WARN and "changed since it was approved" in research_line["detail"]
+
+
+def test_settings_dont_make_the_entry_different(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings("2", ("/r.txt", "ab" * 32)))})
+    [r] = doctor.check_mcp()
+    assert r["status"] == doctor.OK
+
+
+def test_doctor_runs_the_settings_check():
+    assert doctor.check_settings in doctor.CHECKS

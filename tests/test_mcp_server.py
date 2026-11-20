@@ -1082,3 +1082,86 @@ def test_breaking_the_takeover_gate_lets_an_unconfirmed_lead_through(monkeypatch
     monkeypatch.setattr(mcp_server.gate, "TAKEOVER_CHECKS", ())
     lead = gated_leads(monkeypatch, dict(CONFIRMED, nxdomain_confirmed_by=[]))["leads"][0]
     assert lead["gate"]["result"] == "finding"
+
+
+# --- --rate and --research on the server (v1.19) ------------------------------
+
+def test_default_rate_is_1_per_second_and_no_research(monkeypatch, capsys):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    mcp_server.main([])
+    assert mcp_server.LIMITER.rate == 1.0 and mcp_server.RESEARCH is None
+    assert mcp_server.SETTINGS_PROBLEM is None
+    assert "rate 1 request(s)/second; no research header" in capsys.readouterr().err
+
+
+def test_a_research_file_edited_after_approval_refuses_active_tools(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    p = tmp_path / "research.txt"
+    p.write_text("X-Intigriti: x41ok\n")
+    mcp_server.main(["--research", str(p), "--research-sha256", "0" * 64])
+    assert "changed since it was approved" in mcp_server.SETTINGS_PROBLEM
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    sent = fake_web(monkeypatch)
+    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
+        mcp_server.fingerprint_hosts(["app"])
+    assert sent == []
+
+
+def test_a_bad_rate_refuses_active_tools(monkeypatch):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    mcp_server.main(["--rate", "fast"])
+    assert "--rate needs a number" in mcp_server.SETTINGS_PROBLEM
+
+
+def test_research_header_and_rate_go_on_every_request_and_log_line(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    r = mcp_server.research.Research({"X-Intigriti": "x41ok"}, "ab" * 32, "research.txt")
+    monkeypatch.setattr(mcp_server, "RESEARCH", r)
+    monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1000))
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {"app": {"ips": ["8.8.8.8"]}}})
+    headers = []
+
+    def get(url, **kwargs):
+        headers.append(kwargs["headers"])
+        return FAKE_SITES["https://app/"]
+    monkeypatch.setattr(mcp_server.fingerprint.requests, "get", get)
+    result = mcp_server.fingerprint_hosts(["app"])
+    assert headers and all(h["X-Intigriti"] == "x41ok" for h in headers)
+    assert result["sent_as"] == {"rate_per_second": 1000, "research_sha256": "ab" * 32,
+                                 "research_headers": ["X-Intigriti"]}
+    [line] = [x for x in read_log(results_dir) if x["event"] == "request"]
+    assert line["rate"] == 1000 and line["research_sha256"] == "ab" * 32
+
+
+@pytest.mark.parametrize("speed, fp_hosts, exp_hosts", [(None, 30, 10), (1, 20, 3), (10, 30, 10)])
+def test_hosts_per_call_fits_the_rate(monkeypatch, speed, fp_hosts, exp_hosts):
+    monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(speed))
+    assert mcp_server.hosts_per_call("t", mcp_server.MAX_FP_HOSTS, mcp_server.FP_REQUESTS_PER_HOST) == fp_hosts
+    assert mcp_server.hosts_per_call("t", mcp_server.MAX_EXP_HOSTS, mcp_server.exposed.MAX_REQUESTS) == exp_hosts
+
+
+def test_at_1_per_second_exposed_files_goes_in_batches_of_3(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1))
+    seen = {}
+
+    def check_all(enrichment, **kwargs):
+        seen["max_hosts"] = kwargs["max_hosts"]
+        return {"hosts": {}, "requested": [], "checked": 0, "requests": 0, "skipped": 0}
+    monkeypatch.setattr(mcp_server.exposed, "check_all", check_all)
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {}})
+    result = mcp_server.check_exposed_files([f"h{i}" for i in range(7)])
+    assert seen["max_hosts"] == 3
+    assert result["batch"]["size"] == 3 and result["batch"]["next_start"] == 3
+
+
+def test_a_rate_too_slow_for_one_host_refuses_before_any_lookup(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
+    monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(0.1))
+
+    def boom(hosts):
+        raise AssertionError("DNS lookup ran for a call that can't fit")
+    monkeypatch.setattr(mcp_server, "enrich", boom)
+    with pytest.raises(mcp_server.ToolError, match="Use the CLI instead"):
+        mcp_server.check_exposed_files(["app"])
+    assert read_log(results_dir)[-1]["event"] == "refused"

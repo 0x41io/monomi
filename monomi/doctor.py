@@ -26,8 +26,8 @@ from datetime import datetime
 
 import requests
 
-from monomi import (activelog, aws_ranges, dnscheck, home, internetdb, mcp_setup, scope,
-                    threatintel, ui)
+from monomi import (activelog, aws_ranges, dnscheck, home, internetdb, mcp_setup, rate, research,
+                    scope, threatintel, ui)
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, pacing, saved
 from monomi.common import USER_AGENT
 
@@ -577,9 +577,8 @@ def mcp_state(path, entry):
     except OSError:
         return "unreadable"
     old = config.get("mcpServers", {}).get(mcp_setup.NAME)
-    # the same order mcp setup builds it in: the scope pair, then --allow-active
-    entry = mcp_setup.with_scope(entry, *mcp_setup.scope_args(old))
-    entry = mcp_setup.with_active(entry, mcp_setup.is_active(old))
+    # built the way mcp setup builds it, with old's settings (scope, research, rate, active)
+    entry = mcp_setup.same_settings(entry, old)
     status, _ = mcp_setup.change(config, entry)
     return {"new": "missing", "unchanged": "ok", "changing": "different"}[status]
 
@@ -777,6 +776,57 @@ def check_scope():
                    f"matches the approval{rejected_lines(s)}")]
 
 
+def check_settings():
+    """The rate and research file the MCP server's active tools will use (v1.19).
+
+    Uses research.check_pinned and rate.parse, what the server runs at
+    startup, so doctor and the server always agree. Read-only."""
+    try:
+        found, _ = mcp_setup.config_paths()
+    except mcp_setup.SetupError:
+        found = []
+    entries = {}
+    for path in found:
+        try:
+            config = mcp_setup.load_config(path)
+        except (mcp_setup.SetupError, OSError):
+            continue  # check_mcp already reports broken or unreadable files
+        entry = config.get("mcpServers", {}).get(mcp_setup.NAME)
+        if entry is not None:
+            entries[path] = (mcp_setup.rate_arg(entry), mcp_setup.research_args(entry))
+    if not entries:
+        return []
+    fix = "python monomi.py mcp setup --rate N / --research FILE"
+    if len(set(entries.values())) > 1:
+        files = "".join(f"\n      {mcp_setup.describe_rate(r)}, research "
+                        f"{mcp_setup.describe_scope(*pair)} in {path}"
+                        for path, (r, pair) in entries.items())
+        return [result(MCP, "settings", WARN,
+                       "rate/research: the config files disagree, and the Claude app reads "
+                       f"only one of them{files}", f"{fix}, to make them match")]
+    rate_text, (path, sha256) = next(iter(entries.values()))
+    out = []
+    try:
+        if rate_text:
+            rate.parse(rate_text)
+        out.append(result(MCP, "rate", OK,
+                          f"active requests: {mcp_setup.describe_rate(rate_text)}, in total"))
+    except rate.RateError as e:
+        out.append(result(MCP, "rate", WARN, f"{e}, so active tools refuse", fix))
+    r, problem = research.check_pinned(path, sha256)
+    if problem:
+        out.append(result(MCP, "research", WARN, f"research file {path}: {problem}",
+                          f"python monomi.py mcp setup --research {path} (and type yes)"))
+    elif r:
+        out.append(result(MCP, "research", OK,
+                          f"research file {path}: sends {ui.safe(r.summary)}, "
+                          f"sha256 {r.sha256[:12]}... matches the approval"))
+    else:
+        out.append(result(MCP, "research", OK,
+                          "no research header (active requests carry only Monomi's User-Agent)"))
+    return out
+
+
 # ---------- Running and showing the checks ----------
 
 # ---------- 6. Other MCP clients (v1.13): Codex, OpenCode, Hermes ----------
@@ -797,8 +847,7 @@ def client_state(client, path):
     old = client.entry(doc)
     if old is None:
         return "missing", None
-    want = mcp_setup.with_scope(client.base(), *mcp_setup.scope_args(old))
-    want = mcp_setup.with_active(want, mcp_setup.is_active(old))
+    want = mcp_setup.same_settings(client.base(), old)
     return ("ok" if old == want else "different"), old
 
 
@@ -862,7 +911,7 @@ def check_clients():
 
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list, check_mcp, check_active, check_scope, check_clients]
+          check_tor_list, check_mcp, check_active, check_scope, check_settings, check_clients]
 
 
 def run_all(checks=None):

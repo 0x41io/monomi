@@ -78,6 +78,29 @@ def request_headers(research: Research | None = None) -> dict:
     return headers
 
 
+def check_pinned(path: str | None, sha256: str | None) -> tuple[Research | None, str | None]:
+    """Load the approved research file and check it's exactly what was approved.
+
+    Returns (research, None) when it can be used, (None, None) when none is
+    set (that's fine: requests just carry the User-Agent), or (None, why not).
+    The MCP server calls this at startup and doctor to report, so both always
+    agree. A file edited after approval refuses: a program that requires the
+    header must never get requests without it, or with something else in it."""
+    if not path:
+        return None, None
+    fix = f"`python monomi.py mcp setup --research {path}` (and type yes)"
+    if not sha256:
+        return None, f"the research file has no approved hash; run {fix} again"
+    try:
+        r = load(path)
+    except ResearchError as e:
+        return None, f"the research file can't be used ({e}); fix it, then run {fix}"
+    if r.sha256 != sha256.lower():
+        return None, ("the research file changed since it was approved, so active checks "
+                      f"refuse until you approve it again: {fix}")
+    return r, None
+
+
 def sha_of(research: Research | None) -> str | None:
     """The approved file's hash, for active.log (None when no file is loaded)."""
     return research.sha256 if research is not None else None

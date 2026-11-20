@@ -946,3 +946,103 @@ def test_hermes_keeps_other_list_styles_too(monkeypatch, tmp_path, text):
     f = hermes_home(monkeypatch, tmp_path, text)
     assert mcp_setup.setup(yes=True, client=HERMES) == 0
     assert f.read_text(encoding="utf-8").startswith(text)
+
+
+# ---------- --research and --rate (v1.19) ----------
+
+def research_txt(tmp_path, text="X-Intigriti: x41ok\n"):
+    p = tmp_path / "research.txt"
+    p.write_bytes(text.encode())
+    return p
+
+
+def test_with_research_and_rate_add_and_remove_their_flags_once():
+    e = mcp_setup.with_rate(mcp_setup.with_research(ENTRY, "/r.txt", "ab" * 32), "1")
+    assert mcp_setup.research_args(e) == ("/r.txt", "ab" * 32) and mcp_setup.rate_arg(e) == "1"
+    again = mcp_setup.with_rate(mcp_setup.with_research(e, "/q.txt", "cd" * 32), "0.5")
+    assert again["args"].count("--research") == 1 and again["args"].count("--rate") == 1
+    assert mcp_setup.research_args(again)[0] == "/q.txt" and mcp_setup.rate_arg(again) == "0.5"
+    assert mcp_setup.with_rate(mcp_setup.with_research(e, None, None), None) == ENTRY
+
+
+def test_entry_order_is_scope_research_rate_then_active(monkeypatch):
+    monkeypatch.setattr(mcp_setup, "server_entry", lambda: ENTRY)
+    e = mcp_setup.build_entry(True, "/s.txt", "ab" * 32, research=("/r.txt", "cd" * 32), rate_value="2")
+    assert e["args"][-11:] == ["--scope", "/s.txt", "--scope-sha256", "ab" * 32,
+                               "--research", "/r.txt", "--research-sha256", "cd" * 32,
+                               "--rate", "2", "--allow-active"]
+
+
+def test_research_needs_a_typed_yes_at_a_terminal(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(False))  # piped, like an agent
+    assert mcp_setup.setup(yes=True, research_file=str(research_txt(tmp_path))) == 0
+    assert f.read_text() == before
+    assert "approve this research file, you have to type it yourself" in capsys.readouterr().out
+
+
+def test_research_typed_yes_writes_path_and_hash(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    monkeypatch.setattr(mcp_setup.sys, "stdin", Terminal(True))
+    r = research_txt(tmp_path)
+    assert mcp_setup.main(["setup", "--research", str(r)]) == 0
+    entry = json.loads(f.read_text())["mcpServers"][NAME]
+    assert mcp_setup.research_args(entry) == (str(r), digest(r)) and mcp_setup.is_active(entry)
+    out = capsys.readouterr().out
+    assert "X-Intigriti: x41ok" in out and digest(r) in out   # you see what you approve
+
+
+def test_unusable_research_file_writes_nothing(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f, answer="yes")
+    assert mcp_setup.main(["setup", "--research", str(research_txt(tmp_path, "Host: evil\n"))]) == 1
+    assert f.read_text() == before
+    assert "Nothing was changed" in capsys.readouterr().out
+
+
+def test_rate_is_a_plain_write_and_is_kept_by_plain_setup(monkeypatch, tmp_path):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    fake_setup(monkeypatch, [f], f, answer="y")
+    assert mcp_setup.main(["setup", "--rate", "0.50"]) == 0
+    entry = json.loads(f.read_text())["mcpServers"][NAME]
+    assert mcp_setup.rate_arg(entry) == "0.5"
+    assert mcp_setup.main(["setup", "--yes"]) == 0                     # keeps it
+    assert mcp_setup.rate_arg(json.loads(f.read_text())["mcpServers"][NAME]) == "0.5"
+    assert mcp_setup.main(["setup", "--no-rate", "--yes"]) == 0        # back to the default
+    assert mcp_setup.rate_arg(json.loads(f.read_text())["mcpServers"][NAME]) is None
+
+
+def test_bad_rate_writes_nothing(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "config.json"
+    write_json(f, {"mcpServers": {NAME: ACTIVE_ENTRY}})
+    before = f.read_text()
+    fake_setup(monkeypatch, [f], f)
+    assert mcp_setup.main(["setup", "--rate", "0"]) == 1
+    assert f.read_text() == before
+
+
+def test_research_and_rate_flags_match_the_server():
+    import inspect
+
+    from monomi import mcp_server
+    server_args = inspect.getsource(mcp_server.main)
+    for flag in (mcp_setup.RESEARCH_FLAG, mcp_setup.RESEARCH_HASH_FLAG, mcp_setup.RATE_FLAG):
+        assert f'"{flag}"' in server_args
+
+
+def test_server_accepts_research_and_rate_from_setup(monkeypatch, tmp_path):
+    from monomi import mcp_server
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    s, r = scope_file(tmp_path), research_txt(tmp_path)
+    entry = mcp_setup.build_entry(True, str(s), digest(s), research=(str(r), digest(r)), rate_value="2")
+    mcp_server.main(entry["args"][entry["args"].index(mcp_setup.SCOPE_FLAG):])
+    assert mcp_server.SETTINGS_PROBLEM is None and mcp_server.LIMITER.rate == 2.0
+    assert mcp_server.RESEARCH.headers == {"X-Intigriti": "x41ok"}
