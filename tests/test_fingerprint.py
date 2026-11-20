@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from monomi import fingerprint, scope
+from monomi import fingerprint, research, scope
 from monomi.scope import UNSCOPED_CLI
 from monomi.fingerprint import detect
 
@@ -186,3 +186,78 @@ def test_fingerprint_all_rechecks_every_host(monkeypatch):
     sent = no_network(monkeypatch)
     fp = fingerprint.fingerprint_all({"hosts": {"evil.test": {"ips": ["8.8.8.8"]}}}, scope=LAB)
     assert sent == [] and fp["requests"] == 0 and fp["errors"] == {"evil.test": "OutOfScope"}
+
+
+# ---------- --rate and the research header (v1.19) ----------
+
+class Recorder:
+    """A limiter that writes down when it was asked, next to the log."""
+    def __init__(self, events):
+        self.events = events
+
+    def wait(self):
+        self.events.append("wait")
+
+
+def test_research_headers_go_on_the_request(monkeypatch):
+    seen = {}
+
+    def get(url, **kwargs):
+        seen.update(kwargs["headers"])
+        return Answer()
+    monkeypatch.setattr(fingerprint.requests, "get", get)
+    r = research.Research({"X-Intigriti": "x41ok"}, "abc", "f")
+    fingerprint.fetch_headers("dev", scope=UNSCOPED_CLI, research=r)
+    assert seen["X-Intigriti"] == "x41ok" and seen["User-Agent"].startswith("0x41-monomi/")
+
+
+def test_without_research_only_the_user_agent_is_sent(monkeypatch):
+    seen = {}
+
+    def get(url, **kwargs):
+        seen.update(kwargs["headers"])
+        return Answer()
+    monkeypatch.setattr(fingerprint.requests, "get", get)
+    fingerprint.fetch_headers("dev", scope=UNSCOPED_CLI)
+    assert list(seen) == ["User-Agent"]
+
+
+def test_the_slot_is_taken_before_the_log_line_and_the_send(monkeypatch):
+    events = []
+
+    def get(url, **kwargs):
+        events.append("send")
+        return Answer()
+    monkeypatch.setattr(fingerprint.requests, "get", get)
+    fingerprint.fetch_headers("dev", scope=UNSCOPED_CLI, limiter=Recorder(events),
+                              on_request=lambda h, u, r: events.append("log"))
+    assert events == ["wait", "log", "send"]
+
+
+def test_the_http_retry_waits_for_its_own_slot(monkeypatch):
+    events = []
+    fake_get(monkeypatch, https=requests.exceptions.SSLError, http=Answer())
+    fingerprint._safe_fetch("dev", scope=UNSCOPED_CLI, limiter=Recorder(events))
+    assert events == ["wait", "wait"]
+
+
+def test_an_out_of_scope_host_never_uses_a_slot(tmp_path):
+    p = tmp_path / "scope.txt"
+    p.write_text("*.inscope.test\n")
+    events = []
+    host, result, err, n = fingerprint._safe_fetch(
+        "dev.other.test", scope=scope.load(str(p)), limiter=Recorder(events))
+    assert err == "OutOfScope" and n == 0 and events == []
+
+
+def test_fingerprint_all_passes_the_limiter_and_research_down(monkeypatch):
+    got = []
+
+    def fake(host, timeout, on_request, *, scope, limiter, research):
+        got.append((limiter, research))
+        return host, None, "Timeout", 1
+    monkeypatch.setattr(fingerprint, "_safe_fetch", fake)
+    lim, r = object(), object()
+    fingerprint.fingerprint_all({"hosts": {"a": {"ips": ["8.8.8.8"]}, "b": {"ips": ["1.1.1.1"]}}},
+                                scope=UNSCOPED_CLI, limiter=lim, research=r)
+    assert got == [(lim, r), (lim, r)]

@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import pytest
 import requests
 
-from monomi import exposed, scope
+from monomi import exposed, research, scope
 from monomi.scope import UNSCOPED_CLI
 
 
@@ -324,3 +324,28 @@ def test_every_request_logs_its_scope_rule(monkeypatch):
     exposed.check_host("www.example.test", scope=LAB,
                        on_request=lambda host, url, rule: rules.append(rule))
     assert rules and set(rules) == {"*.example.test"}
+
+
+# ---------- --rate and the research header (v1.19) ----------
+
+def test_every_exposed_request_waits_for_a_slot_and_carries_research(monkeypatch):
+    pages = {"https://lab/": Resp(body=b'<script src="/a.js"></script>'),
+             "https://lab/a.js": Resp(body=b"//# sourceMappingURL=a.js.map"),
+             "https://lab/a.js.map": Resp(body=b'{"version":3,"sources":[]}')}
+    headers_seen = []
+
+    def get(url, **kwargs):
+        headers_seen.append(kwargs["headers"])
+        page = pages.get(url)
+        return page if page is not None else Resp(404, body=b"not found")
+    monkeypatch.setattr(exposed.requests, "get", get)
+
+    class Count:
+        n = 0
+
+        def wait(self):
+            Count.n += 1
+    r = research.Research({"X-HackerOne-Researcher": "x41ok"}, "abc", "f")
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI, limiter=Count(), research=r)
+    assert Count.n == n == len(headers_seen)      # one slot per request sent
+    assert all(h["X-HackerOne-Researcher"] == "x41ok" for h in headers_seen)

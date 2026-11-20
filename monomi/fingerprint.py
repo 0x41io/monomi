@@ -15,8 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-from monomi.common import ACTIVE_USER_AGENT, now_utc
+from monomi import rate as ratemod
+from monomi.common import now_utc
 from monomi.headers import check_headers
+from monomi.research import request_headers
 from monomi.scope import UNSCOPED_CLI, OutOfScope, check_url
 
 # A version number like 2.4.41 or 7.4: digits, then one or more ".digits".
@@ -52,7 +54,8 @@ MAX_HOSTS = 100
 
 
 def fetch_headers(host: str, timeout: int = 10, on_request=None,
-                  scheme: str = "https", *, scope) -> dict:
+                  scheme: str = "https", *, scope, limiter=ratemod.UNLIMITED,
+                  research=None) -> dict:
     """Request scheme://host/ once (https unless told otherwise) and return what came back.
 
     scope (required, no default): a scope.Scope, or scope.UNSCOPED_CLI for a
@@ -60,16 +63,21 @@ def fetch_headers(host: str, timeout: int = 10, on_request=None,
     anything else; out of scope raises scope.OutOfScope and nothing is sent.
     on_request(host, url, scope_rule), if given, is called right before the
     request is sent (it writes the audit log).
+    limiter (rate.Limiter) holds the request until its --rate slot; it's
+    shared by every thread. research (research.Research or None) adds the
+    research headers. Order: scope check, wait for the slot, log, send, so
+    the log time is the send time and a refused URL never uses a slot.
     Returns {"host", "url", "status", "headers", "collected_at"}.
     Raises requests.RequestException if the host can't be reached.
     """
     url = f"{scheme}://{host}/"
     rule = check_url(scope, url)  # raises OutOfScope: no log line, no request
+    limiter.wait()
     if on_request:
         on_request(host, url, rule)
     resp = requests.get(
         url,
-        headers={"User-Agent": ACTIVE_USER_AGENT},
+        headers=request_headers(research),
         timeout=timeout,
         allow_redirects=False,
         stream=True,
@@ -140,7 +148,8 @@ def _retry_on_http(error: Exception) -> bool:
     return isinstance(error, requests.ConnectionError)  # SSLError is one too
 
 
-def _safe_fetch(host: str, timeout: int = 10, on_request=None, *, scope):
+def _safe_fetch(host: str, timeout: int = 10, on_request=None, *, scope,
+                limiter=ratemod.UNLIMITED, research=None):
     """fetch_headers() that never crashes: returns (host, result, error, requests sent).
 
     If HTTPS fails in a way plain HTTP might not (see _retry_on_http),
@@ -150,7 +159,7 @@ def _safe_fetch(host: str, timeout: int = 10, on_request=None, *, scope):
     """
     try:
         return host, fetch_headers(host, timeout=timeout, on_request=on_request,
-                                   scope=scope), None, 1
+                                   scope=scope, limiter=limiter, research=research), None, 1
     except OutOfScope:
         return host, None, "OutOfScope", 0  # nothing was sent, and no HTTP retry
     except requests.RequestException as e:
@@ -159,7 +168,7 @@ def _safe_fetch(host: str, timeout: int = 10, on_request=None, *, scope):
             return host, None, https_error, 1
     try:
         result = fetch_headers(host, timeout=timeout, on_request=on_request,
-                               scheme="http", scope=scope)
+                               scheme="http", scope=scope, limiter=limiter, research=research)
     except requests.RequestException as e:
         return host, None, f"{https_error}; http: {type(e).__name__}", 2
     result["https_error"] = https_error
@@ -167,11 +176,13 @@ def _safe_fetch(host: str, timeout: int = 10, on_request=None, *, scope):
 
 
 def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
-                    max_hosts: int = MAX_HOSTS, timeout: int = 10, *, scope) -> dict:
+                    max_hosts: int = MAX_HOSTS, timeout: int = 10, *, scope,
+                    limiter=ratemod.UNLIMITED, research=None) -> dict:
     """Fingerprint every host from --enrich that has a public IP.
 
     scope is required (see fetch_headers): every request is checked
-    against it again, right before it's sent.
+    against it again, right before it's sent. limiter and research: see
+    fetch_headers (one limiter for the whole run, so --rate is a total).
 
     on_request, max_hosts and timeout let the MCP server log every request,
     check fewer hosts per call and wait less per host (its calls must
@@ -188,7 +199,8 @@ def fingerprint_all(enrichment: dict, workers: int = 8, on_request=None,
     hosts = hosts[:max_hosts]
 
     def fetch(host):
-        return _safe_fetch(host, timeout=timeout, on_request=on_request, scope=scope)
+        return _safe_fetch(host, timeout=timeout, on_request=on_request, scope=scope,
+                           limiter=limiter, research=research)
 
     found, errors, sent = {}, {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:

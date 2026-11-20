@@ -25,7 +25,9 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from monomi.common import ACTIVE_USER_AGENT, now_utc
+from monomi import rate as ratemod
+from monomi.common import now_utc
+from monomi.research import request_headers
 from monomi.scope import check_url
 
 # Well-known places an OpenAPI/Swagger spec is served, tried in order.
@@ -53,7 +55,8 @@ PATHS_SHOWN = 20
 SOURCES_SHOWN = 10
 
 
-def _fetch(url, timeout, on_request, host, want_body=False, cap=0, *, scope):
+def _fetch(url, timeout, on_request, host, want_body=False, cap=0, *, scope,
+           limiter=ratemod.UNLIMITED, research=None):
     """One GET. Returns {"url", "status", "headers", "body" (bytes|None),
     "truncated"}; raises requests.RequestException if the host can't answer.
 
@@ -66,13 +69,16 @@ def _fetch(url, timeout, on_request, host, want_body=False, cap=0, *, scope):
     request so the audit log is written. Only `cap` bytes of the body are
     read (truncated=True if there was more), so one huge file can't blow up
     memory or the time budget.
+    limiter and research: see fingerprint.fetch_headers (same order: scope
+    check, wait for the --rate slot, log, send).
     """
     rule = check_url(scope, url)  # raises OutOfScope: no log line, no request
+    limiter.wait()
     if on_request:
         on_request(host, url, rule)
     resp = requests.get(
         url,
-        headers={"User-Agent": ACTIVE_USER_AGENT},
+        headers=request_headers(research),
         timeout=timeout,
         allow_redirects=False,
         stream=True,
@@ -261,7 +267,8 @@ def _find_source_maps(host, fetch):
     return maps, sent
 
 
-def check_host(host, timeout=8, on_request=None, *, scope):
+def check_host(host, timeout=8, on_request=None, *, scope,
+               limiter=ratemod.UNLIMITED, research=None):
     """Check one host for an exposed spec and source maps.
     Returns (finding dict or None, requests_sent). None = nothing found.
     scope is required (see _fetch). requests_sent counts the requests that
@@ -276,7 +283,7 @@ def check_host(host, timeout=8, on_request=None, *, scope):
 
     def fetch(url, want_body=False, cap=0):
         return _fetch(url, timeout, sent_now, host, want_body=want_body, cap=cap,
-                      scope=scope)
+                      scope=scope, limiter=limiter, research=research)
 
     spec, _ = _find_spec(host, fetch)
     maps, _ = _find_source_maps(host, fetch)
@@ -287,9 +294,11 @@ def check_host(host, timeout=8, on_request=None, *, scope):
             "collected_at": now_utc()}, sent
 
 
-def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeout=8, *, scope):
+def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeout=8, *, scope,
+              limiter=ratemod.UNLIMITED, research=None):
     """Check every host from --enrich that has a public IP.
-    scope is required (see _fetch).
+    scope is required (see _fetch); limiter and research too (one limiter
+    for the whole run, so --rate is a total across threads).
 
     Returns {"hosts": {host: finding}, "requested", "checked", "requests",
     "skipped"}. "hosts" holds only hosts where something was found (never
@@ -307,7 +316,8 @@ def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeo
     hosts = hosts[:max_hosts]
 
     def run(host):
-        return host, check_host(host, timeout=timeout, on_request=on_request, scope=scope)
+        return host, check_host(host, timeout=timeout, on_request=on_request, scope=scope,
+                                limiter=limiter, research=research)
 
     found, sent = {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:

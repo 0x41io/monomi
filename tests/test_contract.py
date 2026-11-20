@@ -366,7 +366,8 @@ API = {
     dnscheck.get_cname: "(name: str) -> str | None",
     dnscheck.doh_lookup: "(name: str, rtype: str, retry: bool = True) -> tuple[str, list[str]]",
     # HTTP fetch layer with the scope re-check (scope has no default on purpose)
-    fingerprint.fetch_headers: "(host: str, timeout: int = 10, on_request=None, scheme: str = 'https', *, scope) -> dict",
+    fingerprint.fetch_headers: ("(host: str, timeout: int = 10, on_request=None, scheme: str = 'https', *, scope, "
+                                "limiter=Limiter(None), research=None) -> dict"),
     # takeover service lists
     takeover.match_service: "(target: str) -> str | None",
     takeover.match_not_claimable: "(target: str) -> str | None",
