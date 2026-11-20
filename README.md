@@ -119,7 +119,7 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.18.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.19.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
 
 **Reading a saved scan (`--json`, since v1.15.0).** The file starts with `"monomi_version"`. Compare it as numbers with `monomi.common.scan_version(results)` (as text, `"1.15.0"` sorts before `"1.9.0"`); it's `None` for scans saved before v1.15.0, which don't have the fields below. In `"paths"`, every item in `paths`, `leads` and `set_aside` has:
 
@@ -238,6 +238,14 @@ python monomi.py example.com --exposed-files
 # Only let the active checks reach hosts your scope file allows (see "Scope file" below);
 # attack paths through hosts the file doesn't allow are set aside, with or without active checks
 python monomi.py example.com --fingerprint --exposed-files --scope scope.txt
+
+# Bug bounty rules (v1.19): cap active requests (1/s is the default with --scope) and
+# send the identifying header the program asks for (research.txt: "X-Intigriti: yourname")
+python monomi.py example.com --fingerprint --scope scope.txt --rate 1 --research research.txt
+
+# Single hosts on other domains from the same program (checked on their own: their
+# domains are never searched for subdomains; with --scope each must be in scope)
+python monomi.py example.com --enrich --takeover --extra-hosts extra.txt --scope scope.txt
 
 # Check email spoofing protection (SPF, DMARC, DKIM; DNS lookups only)
 python monomi.py example.com --email
@@ -382,6 +390,8 @@ Approve it with `python monomi.py mcp setup --scope scope.txt`. Setup shows ever
 
 Out-of-scope hosts are dropped before any DNS lookup and come back in `out_of_scope` with the reason, and every URL is checked again right before it's fetched (homepage, HTTP fallback, scripts, source maps). `scans/active.log` records each request with the rule that allowed it and the scope's sha256, plus every refusal (out-of-scope hosts, active off, no or changed scope), and whether it came from the CLI or MCP. On the CLI, `--scope FILE` is optional (you're the one running it) but strict when given.
 
+**Rate and research header (v1.19).** Programs often limit automated tools ("max 1 request per second") and ask for an identifying header (`X-Intigriti: <you>`, `X-HackerOne-Researcher: <you>`). `--rate N` caps every active request, in total across all threads (one limiter per run; `0.5` = one every 2 seconds); with `--scope` and no `--rate` it's 1/s, without `--scope` there's no limit unless you ask. `--research FILE` (one `Name: value` header per line, `#` comments) adds those headers to active requests only, never to passive lookups; `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` are refused, since the file may only say who sent a request. A bad file stops the run before anything is sent. Every `active.log` line has the `rate` and the file's `research_sha256`. Over MCP, approve them with `python monomi.py mcp setup --research FILE` (typed `yes`, sha256 pinned like the scope: an edited file makes every active tool refuse) and `--rate N` (default 1/s); each active call then checks only as many hosts as fit in about 40 seconds at that rate (at 1/s: 20 for `fingerprint_hosts`, 3 for `check_exposed_files`, the rest in batches), replies say how they were sent (`sent_as`), and `doctor` shows both settings. Akashi reads the same file format.
+
 Rejected lines (they don't count, and setup and doctor show why): a bare `*`, `*` anywhere but the start, single labels (`com`, `*.com`), shared suffixes many owners use (`co.uk`, `com.au`, `vercel.app`, `github.io`, `cloudfront.net`...; `example.co.uk` is fine), non-ASCII names, URLs, and IP addresses or ranges. Limits: scope is by hostname only (the IP a host resolves to isn't checked), and anything that can edit the Claude app's config file can change the approved hash, the same limit as `--allow-active`.
 
 Every call is built to fit the Claude app's 60-second tool limit: `find_subdomains` gives its sources 45 seconds in total, returns whatever finished, and lists skipped sources in `errors`.
@@ -475,6 +485,8 @@ monomi/                     # the repo
 │   ├── mcp_setup.py        # adds Monomi to an MCP client's config: Claude, Codex, OpenCode, Hermes (monomi.py mcp setup)
 │   ├── scope.py            # scope file for active checks: parse, match, hash pinning
 │   ├── activelog.py        # scans/active.log: every active request and refusal
+│   ├── rate.py             # --rate: one shared limiter for active requests
+│   ├── research.py         # --research: the identifying header file (Akashi imports it)
 │   ├── emailauth.py        # email spoofing check: SPF, DMARC, DKIM + verdict (--email)
 │   ├── takeover.py         # dangling CNAME / subdomain takeover check (--takeover)
 │   ├── threatintel.py      # IP threat-intel: Tor list, ASN, reverse DNS, Shodan, labels (--investigate-ip)
@@ -591,9 +603,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.17.1: lame delegations tidy-up: hosts under a lame delegation count as checked (they have an answer) in the CLI's "hosts checked" line and stay out of MCP `unknown_count`/`unknown_hosts` (their `results` status is still `servfail`); the zone-cut walk no longer re-asks the host, asks each ancestor once per DoH server with no retry pause, and shares one cache across the run, so a walk takes seconds instead of ~30s
 - [x] v1.18.0: wildcard DNS detection: hosts that only resolve through a wildcard record are set aside (one line per wildcard, full list in `--json`, left out of counts, checks and attack paths), including private ingress wildcards, grouped by answer, with certificate-backed names called out; go-around-the-CDN leads about the same CDN hosts are printed as one block, one line per origin server, each keeping its own lead id for Akashi. Found on a bug bounty run where most of 959 subdomains were wildcard noise
 
+- [x] v1.19.0: bug bounty rules on Monomi's own active checks: `--rate N` (one limiter shared by every thread, 1/s by default with `--scope`) and `--research FILE` (identifying headers, sha256 in `active.log`; module shared with Akashi), both over MCP through `mcp setup` (research file pinned, host count per call fitted to the rate) and in `doctor`; `--extra-hosts FILE` checks a program's single hosts on other domains in the same run (no subdomain search for their domains, scope fail-closed, labeled `[extra]`, left out of change history); the takeover section says how many names under a wildcard DNS can't check. From an Intigriti field run
+
 **Next**
 - [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
-- [ ] `--rate` and the research header on Monomi's own active checks; single hosts on other domains in the same run (`--extra-hosts`)
 - [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
