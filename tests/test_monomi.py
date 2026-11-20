@@ -506,3 +506,97 @@ def test_one_limiter_is_shared_by_both_active_checks(monkeypatch, tmp_path, acti
     cli.run_fingerprint({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
     cli.run_exposed({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
     assert seen[0] is seen[1] is run.limiter
+
+
+# ---------- --extra-hosts (v1.19) ----------
+
+
+def extra_file(tmp_path, text):
+    p = tmp_path / "extra.txt"
+    p.write_text(text)
+    return str(p)
+
+
+def test_extra_hosts_keep_other_domains_and_refuse_the_rest(tmp_path):
+    path = extra_file(tmp_path, "app.other.test\nBrand.test.\n# note\nwww.example.test\n"
+                                "not a host!\napp.other.test\n")
+    hosts, refused = cli.read_extra_hosts(path, "example.test", cli.scope.UNSCOPED_CLI)
+    assert hosts == ["app.other.test", "brand.test"]
+    assert {r["host"]: r["reason"] for r in refused} == {
+        "www.example.test": "part of example.test: use --hosts for it",
+        "not a host!": "not a hostname"}
+
+
+def test_extra_hosts_must_be_in_scope_when_there_is_one(tmp_path):
+    s = cli.load_cli_scope(lab_file(tmp_path, "*.example.test\napp.other.test\n!old.other.test\n"))
+    path = extra_file(tmp_path, "app.other.test\nold.other.test\nbrand.test\n")
+    hosts, refused = cli.read_extra_hosts(path, "example.test", s)
+    assert hosts == ["app.other.test"]
+    reasons = {r["host"]: r["reason"] for r in refused}
+    assert set(reasons) == {"old.other.test", "brand.test"}
+    assert all(r.startswith("out of scope (") for r in reasons.values())
+
+
+def test_extra_hosts_domains_are_never_searched(monkeypatch, tmp_path, capsys):
+    searched = []
+
+    def collect_ct(results, domain):
+        searched.append(domain)
+        results["sources"]["certspotter"] = {"source": "certspotter", "subdomains": ["www.example.test"]}
+    monkeypatch.setattr(cli, "collect_ct", collect_ct)
+    monkeypatch.setattr(cli, "show_changes", lambda results: None)
+    saved = {}
+    monkeypatch.setattr(cli, "save_json", lambda results, path: saved.update(results))
+    monkeypatch.setattr(cli.sys, "argv", ["monomi.py", "example.test", "--json", "x.json",
+                                          "--extra-hosts", extra_file(tmp_path, "app.other.test\n")])
+    assert cli.main() == 0
+    assert searched == ["example.test"]          # only the scanned domain, never other.test
+    assert saved["subdomains"] == ["app.other.test", "www.example.test"]
+    assert saved["extra_hosts"]["hosts"] == ["app.other.test"]
+    assert "1 single host(s) on other domains" in capsys.readouterr().out
+
+
+def test_extra_hosts_stay_out_of_change_history():
+    results = {"sources": {"certspotter": {"source": "certspotter", "subdomains": ["www.example.test"]},
+                           cli.EXTRA_HOSTS: {"source": cli.EXTRA_HOSTS, "subdomains": ["app.other.test"]}},
+               "errors": {}}
+    fresh, partial, notes = cli.history_input(results)
+    assert "app.other.test" not in {h for hosts in fresh.values() for h in hosts}
+
+
+def test_extra_hosts_are_labeled_in_the_enrichment_and_the_table(monkeypatch, capsys):
+    monkeypatch.setattr(cli.enrich, "enrich", lambda hosts: {
+        "hosts": {h: {"ips": ["8.8.8.8"], "provider": "Google", "country": "US"} for h in hosts},
+        "asn_error": None, "resolved": len(hosts), "unique_ips": 1, "providers": {"Google": len(hosts)},
+        "private_ip_hosts": []})
+    results = {"target": "example.test", "subdomains": ["app.other.test", "www.example.test"],
+               "sources": {}, "extra_hosts": {"hosts": ["app.other.test"]}}
+    data = cli.run_enrich(results, ports_on=False)
+    assert data["hosts"]["app.other.test"]["extra"] is True
+    assert "extra" not in data["hosts"]["www.example.test"]
+    out = capsys.readouterr().out
+    assert "app.other.test [extra]" in out and "www.example.test [extra]" not in out
+
+
+def test_takeover_judges_an_extra_host_by_its_own_name(monkeypatch, capsys):
+    seen = {}
+
+    def check_hosts(hosts, domain, domains=None):
+        seen["domain"], seen["domains"] = domain, domains
+        return _takeover_report()
+    monkeypatch.setattr(cli.takeover, "check_hosts", check_hosts)
+    cli.run_takeover({"target": "example.test", "subdomains": ["app.other.test", "www.example.test"],
+                      "extra_hosts": {"hosts": ["app.other.test"]}})
+    assert seen == {"domain": "example.test", "domains": {"app.other.test": "app.other.test"}}
+
+
+def test_takeover_same_domain_rule_uses_the_per_host_domain(monkeypatch):
+    # a CNAME from an extra host into the scanned domain is NOT "same domain" for it
+    calls = []
+    monkeypatch.setattr(cli.takeover, "_safe_check",
+                        lambda h, d: calls.append((h, d)) or (h, {"status": "live", "cname": None,
+                                                                  "lead": None, "stale": None},
+                                                              None, None, None))
+    cli.takeover.check_hosts(["app.other.test", "www.example.test"], workers=1, domain="example.test",
+                             domains={"app.other.test": "app.other.test"})
+    assert sorted(calls) == [("app.other.test", "app.other.test"), ("www.example.test", "example.test")]

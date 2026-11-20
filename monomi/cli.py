@@ -89,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
+    parser.add_argument("--extra-hosts", metavar="FILE",
+                        help="also check single hosts on OTHER domains (one per line), e.g. "
+                             "app.other.com from a program's scope: enrich/ports/takeover only, "
+                             "their domains are never searched for subdomains; with --scope, "
+                             "each one must be in scope")
     parser.add_argument("--subfinder", metavar="FILE",
                         help="also check the hostnames in a subfinder output file (plain, -oJ or -oI); "
                              "Monomi never runs subfinder itself")
@@ -167,6 +172,63 @@ def add_hosts_file(results: dict, path: str, domain: str) -> bool:
     if len(skipped) > 10:
         warn(f"...and {len(skipped) - 10} more skipped lines")
     return True
+
+
+EXTRA_HOSTS = "extra hosts"
+
+
+def read_extra_hosts(path: str, domain: str, active_scope) -> tuple[list[str], list[dict]]:
+    """--extra-hosts FILE: single hosts on other domains ("#" starts a comment).
+
+    Returns (hosts to check, refused lines, each {"host", "reason"}). With
+    --scope every host must match it (fail closed, as for active checks),
+    so a program's single-host assets can be checked without sweeping
+    their domains. Hosts under the scanned domain belong in --hosts."""
+    names, refused = [], []
+    with open(path) as f:
+        for line in f:
+            name = line.split("#")[0].strip().lower().rstrip(".")
+            if not name:
+                continue
+            if not is_hostname(name):
+                refused.append({"host": name[:60], "reason": "not a hostname"})
+            elif name == domain or name.endswith("." + domain):
+                refused.append({"host": name, "reason": f"part of {domain}: use --hosts for it"})
+            elif name not in names:
+                names.append(name)
+    if active_scope is not scope.UNSCOPED_CLI:
+        inside, outside = scope.split(active_scope, names)
+        refused += [{"host": o["host"], "reason": f"out of scope ({o['reason']})"} for o in outside]
+        names = inside
+    names = sorted(names)
+    if len(names) > MAX_HOSTS_FILE:
+        refused.append({"host": f"{len(names) - MAX_HOSTS_FILE} more",
+                        "reason": f"over the {MAX_HOSTS_FILE} limit"})
+    return names[:MAX_HOSTS_FILE], refused
+
+
+def add_extra_hosts(results: dict, path: str, domain: str, active_scope) -> bool:
+    """--extra-hosts: add the file's hosts as their own source (never sent to
+    CT logs, OTX or subfinder, and left out of change history). False if unreadable."""
+    try:
+        hosts, refused = read_extra_hosts(path, domain, active_scope)
+    except OSError as e:
+        fail(f"Can't read the extra hosts file: {e}")
+        return False
+    results["sources"][EXTRA_HOSTS] = {"source": EXTRA_HOSTS, "file": path,
+                                       "subdomains": hosts, "collected_at": now_utc()}
+    results["extra_hosts"] = {"file": path, "hosts": hosts, "refused": refused}
+    good(f"{EXTRA_HOSTS}: {len(hosts)} single host(s) on other domains from {short_path(path)} "
+         "(checked on their own, no subdomain search)")
+    for r in refused[:10]:
+        warn(f"Skipped {ui.safe(r['host'])}: {ui.safe(r['reason'])}")
+    if len(refused) > 10:
+        warn(f"...and {len(refused) - 10} more skipped lines")
+    return True
+
+
+def extra_set(results: dict) -> set[str]:
+    return set(results.get("extra_hosts", {}).get("hosts", []))
 
 
 def add_subfinder(results: dict, path: str, domain: str) -> bool:
@@ -358,6 +420,8 @@ def run_enrich(results: dict, ports_on: bool) -> dict:
     info("Resolving hosts and looking up hosting providers...")
     data = enrich.enrich(all_subs)
     data["collected_at"] = now_utc()
+    for h in extra_set(results) & set(data["hosts"]):
+        data["hosts"][h]["extra"] = True   # labeled in the table and in --json
     results["enrichment"] = data
     if data["asn_error"]:
         warn(f"{data['asn_error']} (showing IPs without provider info)")
@@ -718,7 +782,10 @@ def run_takeover(results: dict) -> None:
     hosts = results["subdomains"]
     print()
     info(f"Checking {len(hosts)} hosts for dangling CNAMEs / subdomain takeover (DNS lookups only)...")
-    report = takeover.check_hosts(hosts, domain=results["target"])
+    # an extra host is judged by its own name: a CNAME under the scanned domain
+    # isn't "same domain" for it (that only holds for the target's own hosts)
+    own = {h: h for h in extra_set(results)}
+    report = takeover.check_hosts(hosts, domain=results["target"], **({"domains": own} if own else {}))
     report["collected_at"] = now_utc()
     results["takeover"] = report
 
@@ -1260,6 +1327,8 @@ def main() -> int:
     if args.hosts and not add_hosts_file(results, args.hosts, domain):
         return 1
     if args.subfinder and not add_subfinder(results, args.subfinder, domain):
+        return 1
+    if args.extra_hosts and not add_extra_hosts(results, args.extra_hosts, domain, active_scope):
         return 1
 
     if not any(r["subdomains"] for r in results["sources"].values()):

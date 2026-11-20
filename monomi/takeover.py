@@ -236,10 +236,13 @@ def _safe_check(host: str, domain: str | None = None):
         return host, None, str(e), "error", None
 
 
-def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) -> dict:
+def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None,
+                domains: dict | None = None) -> dict:
     """Run the takeover check on every hostname.
 
     domain: the domain being scanned (e.g. 'wolt.com'), if known.
+    domains: host -> the domain to judge "same domain" by, for hosts that
+    aren't under `domain` (--extra-hosts, v1.19); the rest use `domain`.
 
     Returns {"leads": [...], "stale": [...], "results": {host: {"status", "cname"}},
              "checked": count, "errors": {host: reason},
@@ -268,7 +271,9 @@ def check_hosts(hosts: list[str], workers: int = 16, domain: str | None = None) 
                      "collected_at": now_utc()}
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for host, info, err, err_status, lame in pool.map(lambda h: _safe_check(h, domain), hosts):
+        def check(h):
+            return _safe_check(h, (domains or {}).get(h, domain))
+        for host, info, err, err_status, lame in pool.map(check, hosts):
             if err:
                 errors[host] = err
                 results[host] = {"status": err_status, "cname": None}

@@ -112,6 +112,10 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
     live = {h: e for h, e in hosts.items() if e["ips"]}
     dead = [h for h, e in hosts.items() if not e["ips"]]
 
+    def name(h):
+        # --extra-hosts (v1.19): checked on their own, not found by discovery
+        return h + " [extra]" if hosts[h].get("extra") else h
+
     cols = shutil.get_terminal_size((110, 24)).columns
     ip_w = 18
     def prov_label(e):
@@ -121,7 +125,7 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
 
     prov_w = min(max([len(prov_label(e)) for e in live.values()] + [8]), 20)
     room = cols - len(indent) - ip_w - prov_w - 2 - 6 - 1  # gaps + CC column
-    host_w = max(20, min(max([len(h) for h in live] + [4]), room))
+    host_w = max(20, min(max([len(name(h)) for h in live] + [4]), room))
 
     def line(h, ip, prov, cc):
         return f"{_cell(h, host_w)}  {ip}  {prov}  {cc}"
@@ -134,7 +138,7 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
         provider = e["provider"]
         prov = _cell(prov_label(e), prov_w)
         prov = paint(prov, YELLOW, BOLD) if provider == "PRIVATE IP" else paint(prov, WHITE)
-        print(indent + line(host, paint(_cell(ip, ip_w), GREY), prov, e.get("country", "-")))
+        print(indent + line(name(host), paint(_cell(ip, ip_w), GREY), prov, e.get("country", "-")))
 
     if dead:
         print()
@@ -143,7 +147,7 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
         for h in shown:
             label = DNS_LABELS.get(hosts[h].get("dns"), "no IPv4 address")
             color = YELLOW if hosts[h].get("dns") == "ipv6_only" else GREY  # still live
-            print(indent + "  " + paint(h, color) + paint(f"  ({label})", GREY))
+            print(indent + "  " + paint(name(h), color) + paint(f"  ({label})", GREY))
         if len(shown) < len(dead):
             print(indent + "  " + paint(f"... and {len(dead) - len(shown)} more (full list with --json)", GREY))
 
