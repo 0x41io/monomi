@@ -699,6 +699,15 @@ def test_active_log_shows_the_last_request(monkeypatch, tmp_path):
                            "(2 requests in scans/active.log)")
 
 
+def test_active_log_says_the_rate_and_research_file_the_last_request_used(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    last = {"time": "t", "tool": "--fingerprint", "host": "dev", "url": "x",
+            "rate": 1.0, "research_sha256": "abcdef123456789"}
+    fake_log(monkeypatch, tmp_path, [json.dumps(last)])
+    _, r = doctor.check_active()
+    assert "dev, at 1/s, research header sha256 abcdef123456... (1 request" in r["detail"]
+
+
 def test_active_log_with_a_broken_last_line_doesnt_crash(monkeypatch, tmp_path):
     fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
     fake_log(monkeypatch, tmp_path, ['{"time": "t"}', "{half a li"])

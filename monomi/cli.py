@@ -20,8 +20,8 @@ from monomi.collectors import certspotter, crtsh, crtsh_db, otx, saved
 from monomi.common import VERSION, is_hostname, now_utc
 from monomi.importers import spiderfoot, subfinder
 from monomi import (activelog, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate,
-                    history, home, internetdb, mcp_setup, paths, report, scope, suggest,
-                    takeover, threatintel, ui)
+                    history, home, internetdb, mcp_setup, paths, rate, report, research, scope,
+                    suggest, takeover, threatintel, ui)
 from monomi.ui import fail, good, info, warn
 
 # Reports always go in the monomi folder, wherever the command is run from
@@ -54,6 +54,14 @@ def clean_domain(raw: str) -> str:
     return d
 
 
+def cli_rate(text: str) -> float:
+    """--rate N for argparse: a bad number is a usage error before anything runs."""
+    try:
+        return rate.parse(text)
+    except rate.RateError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """All of monomi's command-line options."""
     parser = argparse.ArgumentParser(description="0x41 / monomi - passive domain recon")
@@ -72,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ACTIVE checks only reach hosts this scope file allows: one rule per "
                              "line, example.com, *.example.com (subdomains), !host (never); every "
                              "other host is skipped and listed")
+    parser.add_argument("--rate", type=cli_rate, metavar="N",
+                        help="ACTIVE requests per second, in total (e.g. 1, or 0.5 for one every 2s); "
+                             f"default {rate.SCOPED_DEFAULT:g}/s with --scope, no limit without")
+    parser.add_argument("--research", metavar="FILE",
+                        help="ACTIVE requests also carry the headers in this file, one 'Name: value' "
+                             "per line (e.g. X-Intigriti: yourname), as some bug bounty programs require")
     parser.add_argument("--email", action="store_true", help="check SPF/DMARC/DKIM: can someone send email pretending to be this domain? (DNS lookups only)")
     parser.add_argument("--takeover", action="store_true", help="check for dangling CNAMEs / subdomain takeover leads (DNS lookups only)")
     parser.add_argument("--hosts", metavar="FILE", help="also check hostnames you already know (one per line), e.g. ones certificate logs miss")
@@ -524,19 +538,66 @@ def scope_hosts(tool: str, enrichment: dict, active_scope) -> tuple[dict, list[d
     return {**enrichment, "hosts": {h: enrichment["hosts"][h] for h in inside}}, outside
 
 
-def log_cli_request(tool: str, active_scope):
-    """on_request for the fetch layer: every CLI active request goes to scans/active.log too."""
+def log_cli_request(tool: str, active_scope, active=None):
+    """on_request for the fetch layer: every CLI active request goes to scans/active.log too,
+    with the --rate and --research file it went out under."""
+    active = active or ActiveRun()
     return lambda host, url, rule: activelog.request(
-        activelog.PATH, "cli", tool, host, url, rule, active_scope)
+        activelog.PATH, "cli", tool, host, url, rule, active_scope,
+        rate=active.limiter.rate, research=active.research)
 
 
-def run_fingerprint(results: dict, enrichment: dict, active_scope) -> None:
+class ActiveRun:
+    """How this run's active requests go out: one --rate limiter shared by every
+    active check (so the cap is a total for the whole run) and the --research file."""
+
+    def __init__(self, limiter=rate.UNLIMITED, research_file=None):
+        self.limiter = limiter
+        self.research = research_file
+
+    def record(self, out: dict) -> None:
+        """Put the settings in a check's results, so the saved scan says how it was sent."""
+        out["rate"] = self.limiter.rate
+        out["research_sha256"] = research.sha_of(self.research)
+
+
+def load_active_run(args, active_scope):
+    """--rate and --research as an ActiveRun, checked before anything is scanned
+    (a bad research file stops the run). Returns None to stop."""
+    research_file = None
+    if args.research:
+        try:
+            research_file = research.load(args.research)
+        except research.ResearchError as e:
+            fail(f"--research: {e}. Nothing was scanned.")
+            return None
+    if not (args.fingerprint or args.exposed_files):
+        if args.rate is not None or research_file:
+            info("--rate/--research without --fingerprint or --exposed-files: no active "
+                 "request is sent, so they change nothing.")
+        return ActiveRun(rate.UNLIMITED, research_file)
+    scoped = active_scope is not scope.UNSCOPED_CLI
+    chosen = rate.choose(args.rate, scoped)
+    if args.rate is None and scoped:
+        info(f"Active requests: {chosen:g}/s (the default with --scope; set --rate to change it)")
+    elif chosen is not None:
+        info(f"Active requests: {chosen:g}/s (--rate)")
+    if research_file:
+        info(f"Research header on active requests: {ui.safe(research_file.summary)} "
+             f"(sha256 {research_file.sha256[:12]}...)")
+    return ActiveRun(rate.Limiter(chosen), research_file)
+
+
+def run_fingerprint(results: dict, enrichment: dict, active_scope, active=None) -> None:
     """--fingerprint: one homepage request per live host, then show what tech it gives away (ACTIVE)."""
     print()
     info("Fingerprinting web servers (active: one homepage request per live host)...")
     allowed, out_of_scope = scope_hosts("--fingerprint", enrichment, active_scope)
+    active = active or ActiveRun()
     fp = fingerprint.fingerprint_all(allowed, scope=active_scope,
-                                     on_request=log_cli_request("--fingerprint", active_scope))
+                                     on_request=log_cli_request("--fingerprint", active_scope, active),
+                                     limiter=active.limiter, research=active.research)
+    active.record(fp)
     fp["out_of_scope"] = out_of_scope
     fp["collected_at"] = now_utc()
     results["fingerprint"] = fp
@@ -579,14 +640,17 @@ def run_fingerprint(results: dict, enrichment: dict, active_scope) -> None:
         good(f"All {pages} hosts that served a page have the checked security headers.")
 
 
-def run_exposed(results: dict, enrichment: dict, active_scope) -> None:
+def run_exposed(results: dict, enrichment: dict, active_scope, active=None) -> None:
     """--exposed-files: look for public API specs and JS source maps (ACTIVE)."""
     print()
     info("Checking for exposed API specs and source maps "
          "(active: a few requests per live host)...")
     allowed, out_of_scope = scope_hosts("--exposed-files", enrichment, active_scope)
+    active = active or ActiveRun()
     ex = exposed.check_all(allowed, scope=active_scope,
-                           on_request=log_cli_request("--exposed-files", active_scope))
+                           on_request=log_cli_request("--exposed-files", active_scope, active),
+                           limiter=active.limiter, research=active.research)
+    active.record(ex)
     ex["out_of_scope"] = out_of_scope
     results["exposed_files"] = ex
     if ex["skipped"]:
@@ -1155,6 +1219,9 @@ def main() -> int:
     active_scope = load_cli_scope(args.scope)
     if active_scope is None:
         return 1
+    active = load_active_run(args, active_scope)
+    if active is None:
+        return 1
 
     if args.ports and not args.enrich:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
@@ -1215,9 +1282,9 @@ def main() -> int:
         if args.ports:
             run_ports(results, data, args.cves)
         if args.fingerprint:
-            run_fingerprint(results, data, active_scope)
+            run_fingerprint(results, data, active_scope, active)
         if args.exposed_files:
-            run_exposed(results, data, active_scope)
+            run_exposed(results, data, active_scope, active)
     else:
         for sub in all_subs:
             print(f"    {sub}")

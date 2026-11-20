@@ -411,3 +411,98 @@ def test_takeover_without_wildcards_adds_no_note(monkeypatch, capsys):
     cli.run_takeover(results)
     assert "wildcard" not in capsys.readouterr().out
     assert "under_wildcard" not in results["takeover"]
+
+
+# ---------- --rate and --research on the CLI (v1.19) ----------
+
+
+def research_file(tmp_path, text="X-Intigriti: x41ok\n"):
+    p = tmp_path / "research.txt"
+    p.write_text(text)
+    return str(p)
+
+
+def args_for(*argv):
+    return cli.build_parser().parse_args(["example.test", *argv])
+
+
+def test_bad_rate_is_a_usage_error(capsys):
+    with pytest.raises(SystemExit):
+        args_for("--rate", "0")
+    assert "--rate must be more than 0" in capsys.readouterr().err
+
+
+def test_scoped_run_defaults_to_1_per_second(tmp_path, capsys):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    run = cli.load_active_run(args_for("--fingerprint", "--scope", "x"), s)
+    assert run.limiter.rate == 1.0
+    assert "1/s (the default with --scope" in capsys.readouterr().out
+
+
+def test_unscoped_run_has_no_limit_unless_asked(capsys):
+    assert cli.load_active_run(args_for("--fingerprint"), cli.scope.UNSCOPED_CLI).limiter.rate is None
+    assert cli.load_active_run(args_for("--fingerprint", "--rate", "5"),
+                               cli.scope.UNSCOPED_CLI).limiter.rate == 5.0
+
+
+def test_given_rate_wins_over_the_scoped_default(tmp_path, capsys):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    run = cli.load_active_run(args_for("--fingerprint", "--scope", "x", "--rate", "0.5"), s)
+    assert run.limiter.rate == 0.5
+
+
+def test_bad_research_file_stops_before_scanning(monkeypatch, tmp_path, capsys):
+    def boom(*a, **k):
+        raise AssertionError("scanning started with an unusable --research file")
+    monkeypatch.setattr(cli, "collect_ct", boom)
+    monkeypatch.setattr(cli.sys, "argv", ["monomi.py", "example.test", "--fingerprint",
+                                          "--research", research_file(tmp_path, "not a header\n")])
+    assert cli.main() == 1
+    assert "--research: line 1" in capsys.readouterr().out
+
+
+def test_rate_and_research_without_active_checks_say_they_change_nothing(tmp_path, capsys):
+    cli.load_active_run(args_for("--rate", "1", "--research", research_file(tmp_path)),
+                        cli.scope.UNSCOPED_CLI)
+    assert "they change nothing" in capsys.readouterr().out
+
+
+def test_research_header_and_rate_reach_requests_and_the_log(monkeypatch, tmp_path, capsys, active_log):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    headers = []
+
+    class R:
+        status_code, headers = 200, {"Server": "nginx"}
+
+        def close(self):
+            pass
+
+    def get(url, **kwargs):
+        headers.append(kwargs["headers"])
+        return R()
+    monkeypatch.setattr(cli.fingerprint.requests, "get", get)
+    args = args_for("--fingerprint", "--scope", "x", "--rate", "1000",
+                    "--research", research_file(tmp_path))
+    run = cli.load_active_run(args, s)
+    results = {}
+    cli.run_fingerprint(results, ENRICHED, s, run)
+    assert len(headers) == 2 and all(h["X-Intigriti"] == "x41ok" for h in headers)
+    log = [json.loads(x) for x in active_log.read_text().splitlines()]
+    sent = [x for x in log if x["event"] == "request"]
+    assert len(sent) == 2
+    assert all(x["rate"] == 1000 and x["research_sha256"] == run.research.sha256 for x in sent)
+    assert results["fingerprint"]["rate"] == 1000
+    assert results["fingerprint"]["research_sha256"] == run.research.sha256
+
+
+def test_one_limiter_is_shared_by_both_active_checks(monkeypatch, tmp_path, active_log):
+    seen = []
+    monkeypatch.setattr(cli.fingerprint, "fingerprint_all", lambda e, **k: seen.append(k["limiter"]) or
+                        {"hosts": {}, "checked": 0, "requests": 0, "errors": {}, "skipped": 0})
+    monkeypatch.setattr(cli.exposed, "check_all", lambda e, **k: seen.append(k["limiter"]) or
+                        {"hosts": {}, "requested": [], "checked": 0, "requests": 0, "skipped": 0})
+    run = cli.load_active_run(args_for("--fingerprint", "--exposed-files", "--rate", "2"),
+                              cli.scope.UNSCOPED_CLI)
+    cli.run_fingerprint({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
+    cli.run_exposed({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
+    assert seen[0] is seen[1] is run.limiter

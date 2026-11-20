@@ -17,7 +17,8 @@ def test_request_line_has_rule_hash_and_via(tmp_path):
     assert {k: v for k, v in line.items() if k != "time"} == {
         "event": "request", "via": "mcp", "tool": "fingerprint_hosts",
         "host": "www.example.test", "url": "https://www.example.test/",
-        "scope_rule": "*.example.test", "scope_sha256": s.sha256}
+        "scope_rule": "*.example.test", "scope_sha256": s.sha256,
+        "rate": None, "research_sha256": None}
 
 
 def test_refusal_line(tmp_path):

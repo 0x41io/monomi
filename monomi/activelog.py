@@ -6,12 +6,16 @@ write here, so one file answers "what did Monomi send, to whom, under
 which scope, and what did it refuse?".
 
     {"time", "event": "request", "via": "mcp"|"cli", "tool", "host", "url",
-     "scope_rule": "*.example.com", "scope_sha256": "<the approved file's hash>"}
+     "scope_rule": "*.example.com", "scope_sha256": "<the approved file's hash>",
+     "rate": 1.0, "research_sha256": "<the research file's hash>"}
     {"time", "event": "refused", "via", "tool", "host" (or null), "reason",
      "scope_sha256"}
 
-scope_rule/scope_sha256 are null on a CLI run without --scope. Lines from
-before v1.12 have no "event" and count as requests.
+scope_rule/scope_sha256 are null on a CLI run without --scope. rate is the
+--rate cap the request went out under (null = no limit) and research_sha256
+the --research file's hash (null = none); both from v1.19, so older lines
+don't have them. Lines from before v1.12 have no "event" and count as
+requests.
 """
 
 import json
@@ -33,15 +37,21 @@ def write(path: str, entry: dict) -> None:
         f.write(line + "\n")
 
 
+def research_sha(research) -> str | None:
+    """The --research file's hash (None when no file is loaded)."""
+    return getattr(research, "sha256", None) or None
+
+
 def sha_of(scope) -> str | None:
     """The approved hash of a Scope (None for UNSCOPED_CLI or no scope)."""
     return getattr(scope, "sha256", None) or None
 
 
-def request(path, via, tool, host, url, scope_rule, scope) -> None:
-    """One active request, logged just before it's sent."""
+def request(path, via, tool, host, url, scope_rule, scope, *, rate=None, research=None) -> None:
+    """One active request, logged just before it's sent (after its --rate slot)."""
     write(path, {"event": "request", "via": via, "tool": tool, "host": host, "url": url,
-                 "scope_rule": scope_rule, "scope_sha256": sha_of(scope)})
+                 "scope_rule": scope_rule, "scope_sha256": sha_of(scope),
+                 "rate": rate, "research_sha256": research_sha(research)})
 
 
 def refused(path, via, tool, reason, host=None, scope=None) -> None:

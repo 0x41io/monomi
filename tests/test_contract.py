@@ -358,7 +358,7 @@ API = {
     scope.check_pinned: "(path: str | None, sha256: str | None) -> tuple[monomi.scope.Scope | None, str | None]",
     scope.check_url: "(scope, url: str) -> str | None",
     # active log (same file format as Monomi's active.log)
-    activelog.request: "(path, via, tool, host, url, scope_rule, scope) -> None",
+    activelog.request: "(path, via, tool, host, url, scope_rule, scope, *, rate=None, research=None) -> None",
     activelog.refused: "(path, via, tool, reason, host=None, scope=None) -> None",
     # DNS helper
     dnscheck.host_status: "(host: str) -> tuple[str, list[str]]",

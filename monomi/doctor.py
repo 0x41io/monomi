@@ -666,6 +666,17 @@ def last_active_request(log=None):
     return requests_, last, refusals
 
 
+def sent_under(entry):
+    """', at 1/s, research header sha256 abc123def456...' for a v1.19+ log line
+    that went out under a --rate or a --research file; '' otherwise."""
+    parts = []
+    if entry.get("rate"):
+        parts.append(f"at {entry['rate']:g}/s")
+    if entry.get("research_sha256"):
+        parts.append(f"research header sha256 {entry['research_sha256'][:12]}...")
+    return ", " + ", ".join(parts) if parts else ""
+
+
 def check_active():
     """Are ACTIVE MCP tools turned on, and when did one last send a request?
 
@@ -699,7 +710,7 @@ def check_active():
     if last:
         out.append(result(MCP, "active_log", OK,
                           f"last active request {last.get('time')}: {last.get('tool')} -> "
-                          f"{last.get('host')} ({plural(count, 'request')}{refused} "
+                          f"{last.get('host')}{sent_under(last)} ({plural(count, 'request')}{refused} "
                           "in scans/active.log)"))
     elif refusals:
         out.append(result(MCP, "active_log", OK,
