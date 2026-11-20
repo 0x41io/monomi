@@ -386,3 +386,28 @@ def test_show_paths_groups_cdn_leads_and_keeps_others(capsys):
     assert "L1  LEAD  Side door title" in out
     assert "L2-L3  LEADS" in out
     assert "through 9.9.9.1" not in out          # the per-server titles are folded into the block
+
+
+def _takeover_report():
+    return {"leads": [], "stale": [], "errors": {}, "checked": 3, "ns_delegations": []}
+
+
+def test_takeover_says_names_under_a_wildcard_cant_be_checked(monkeypatch, capsys):
+    monkeypatch.setattr(cli.takeover, "check_hosts", lambda hosts, domain: _takeover_report())
+    results = {"target": "example.test", "subdomains": ["a.example.test"],
+               "enrichment": {"wildcard_only": {"x.wild.example.test": "wild.example.test",
+                                                "y.wild.example.test": "wild.example.test"}}}
+    cli.run_takeover(results)
+    out = capsys.readouterr().out
+    assert "2 name(s) resolve only through a wildcard (*.wild.example.test)" in out
+    assert "can't be checked for takeover by DNS alone" in out
+    assert results["takeover"]["under_wildcard"] == 2
+
+
+def test_takeover_without_wildcards_adds_no_note(monkeypatch, capsys):
+    monkeypatch.setattr(cli.takeover, "check_hosts", lambda hosts, domain: _takeover_report())
+    results = {"target": "example.test", "subdomains": ["a.example.test"],
+               "enrichment": {"wildcard_only": {}}}
+    cli.run_takeover(results)
+    assert "wildcard" not in capsys.readouterr().out
+    assert "under_wildcard" not in results["takeover"]

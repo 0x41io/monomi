@@ -691,6 +691,22 @@ def run_takeover(results: dict) -> None:
     if not report["leads"]:
         checked = report["checked"] - rest
         good(f"No takeover leads among {checked} hosts checked.")
+    show_wildcard_takeover_note(results)
+
+
+def show_wildcard_takeover_note(results: dict) -> None:
+    """Names set aside under a wildcard (v1.18) always resolve, so DNS can
+    never show one as dangling: say so, instead of letting them read as clean.
+    Only known with --enrich, which runs the wildcard check."""
+    under = results.get("enrichment", {}).get("wildcard_only", {})
+    if not under:
+        return
+    zones = sorted(set(under.values()))
+    shown = ", ".join("*." + ui.safe(z) for z in zones[:3])
+    more = f" and {len(zones) - 3} more" if len(zones) > 3 else ""
+    results["takeover"]["under_wildcard"] = len(under)
+    info(f"{len(under)} name(s) resolve only through a wildcard ({shown}{more}): "
+         "names under a wildcard can't be checked for takeover by DNS alone.")
 
 
 def show_import_findings(sf: dict) -> None:
