@@ -149,6 +149,49 @@ def edge_from_ip(ip) -> tuple[str, str] | None:
     return None
 
 
+# Addresses where the provider runs a shared service for many customers,
+# inside networks it also rents out as customers' own servers. The network
+# owner ("Google", "Microsoft/Azure") can't tell the two apart, so the
+# address decides (v1.22.1, from the Marionnaud field run: autodiscover and
+# ecom-data pointed here and made 8 of 9 around-the-CDN leads).
+#   Google's shared front end for custom domains: the four A records Google's
+#   "Configure A records" help page gives (exact IPs only: the rest of
+#   216.239.32.0/19 is other Google services)
+#   Microsoft 365 Exchange Online: the IPv4 blocks Microsoft's "Microsoft 365
+#   URLs and IP address ranges" page lists for outlook.office365.com
+GOOGLE_FRONT_END = ["216.239.32.21/32", "216.239.34.21/32", "216.239.36.21/32", "216.239.38.21/32"]
+EXCHANGE_ONLINE = [
+    "13.107.6.152/31",
+    "13.107.18.10/31",
+    "13.107.128.0/22",
+    "23.103.160.0/20",
+    "40.96.0.0/13",
+    "40.104.0.0/15",
+    "52.96.0.0/14",
+    "131.253.33.215/32",
+    "132.245.0.0/16",
+    "150.171.32.0/22",
+    "204.79.197.215/32",
+]
+THIRD_PARTY_RANGES = ([(ipaddress.ip_network(c), "Google front end") for c in GOOGLE_FRONT_END]
+                      + [(ipaddress.ip_network(c), "Microsoft 365") for c in EXCHANGE_ONLINE])
+
+
+def third_party_from_ip(ip) -> tuple[str, str] | None:
+    """Which shared service's addresses an IP is in, if any.
+
+    '52.96.79.8' -> ('Microsoft 365', '52.96.0.0/14')
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    for net, vendor in THIRD_PARTY_RANGES:
+        if addr in net:
+            return vendor, str(net)
+    return None
+
+
 def edge_reason(provider: str | None, cpes: list[str], cnames=(), ip=None) -> str | None:
     """Why an IP counts as a shared edge server, or None if it doesn't."""
     if provider in SHARED_EDGE:

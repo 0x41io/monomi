@@ -592,6 +592,36 @@ def test_missing_line_says_none_found_only_when_shodan_was_asked():
     assert lead["missing"] == "no known CVE is matched to 198.51.100.7 in this scan, so the versions are unverified"
 
 
+def marionnaud_results():
+    """The Marionnaud shape: www behind the CDN, autodiscover on Microsoft 365,
+    a Google front end host, and one server of the target's own, each with a
+    web server seen on it."""
+    results = lab_results()
+    extra = {"autodiscover": (["52.96.79.8", "52.96.242.40"], "Microsoft/Azure"),
+             "ecom": (["216.239.32.21", "216.239.34.21"], "Google")}
+    for h, (ips, provider) in extra.items():
+        results["subdomains"].append(h)
+        results["enrichment"]["hosts"][h] = {"ips": ips, "provider": provider}
+        results["fingerprint"]["hosts"][h] = {
+            "collected_at": None, "status": 200, "header_issues": [],
+            "techs": [{"tech": "nginx", "version": "", "evidence": "Server header"}]}
+    return results
+
+
+def test_no_cdn_lead_through_microsoft_365_or_googles_front_end():
+    out, ev = run(marionnaud_results())
+    assert [p["title"] for p in cdn_lead(out)] == [
+        "Check whether www can be reached around Cloudflare through 198.51.100.7"]
+
+
+def test_without_the_address_lists_those_hosts_made_cdn_leads(monkeypatch):
+    # The removal test: the lists are what keeps the 4 noise leads out
+    from monomi import internetdb
+    monkeypatch.setattr(internetdb, "THIRD_PARTY_RANGES", [])
+    out, ev = run(marionnaud_results())
+    assert len(cdn_lead(out)) == 5
+
+
 def two_origin_results(origins=2):
     """lab_results() plus more servers of the target's own, each with a web
     server seen on it (the fingerprint), and www still behind the CDN."""

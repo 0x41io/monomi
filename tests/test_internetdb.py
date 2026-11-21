@@ -1,7 +1,7 @@
 """Tests for internetdb.py: shared edge detection."""
 
 from monomi import internetdb
-from monomi.internetdb import edge_from_cname, edge_from_cpes, edge_from_ip, edge_reason
+from monomi.internetdb import edge_from_cname, edge_from_cpes, edge_from_ip, edge_reason, third_party_from_ip
 
 def test_cdn_network_owner_is_edge():
     assert edge_reason("Cloudflare", []) == "network owner is Cloudflare"
@@ -130,3 +130,28 @@ def test_quiet_vercel_ip_is_still_edge(monkeypatch):
                   "ip_info": {"216.198.79.1": {"provider": "AWS"}}}
     result = internetdb.lookup(enrichment)
     assert result["nothing_seen"]["216.198.79.1"]["shared_edge"] is True
+
+
+# --- shared services found by address (v1.22.1, Marionnaud field run) ---
+
+def test_google_front_end_is_the_four_exact_ips_only():
+    for ip in ("216.239.32.21", "216.239.34.21", "216.239.36.21", "216.239.38.21"):
+        assert third_party_from_ip(ip) == ("Google front end", f"{ip}/32")
+    # the rest of Google's 216.239.32.0/19 is other services, never matched
+    assert third_party_from_ip("216.239.32.22") is None
+    assert third_party_from_ip("216.239.35.21") is None
+
+
+def test_exchange_online_blocks():
+    assert third_party_from_ip("52.96.79.8") == ("Microsoft 365", "52.96.0.0/14")
+    assert third_party_from_ip("52.99.255.255") == ("Microsoft 365", "52.96.0.0/14")
+    assert third_party_from_ip("40.96.1.1") == ("Microsoft 365", "40.96.0.0/13")
+    assert third_party_from_ip("132.245.10.20") == ("Microsoft 365", "132.245.0.0/16")
+    # next to the blocks, and other Microsoft space: a customer's Azure server could be there
+    assert third_party_from_ip("52.100.0.1") is None
+    assert third_party_from_ip("20.1.2.3") is None
+
+
+def test_third_party_from_ip_ignores_what_isnt_an_ipv4_in_a_block():
+    assert third_party_from_ip("not-an-ip") is None
+    assert third_party_from_ip("2001:db8::1") is None

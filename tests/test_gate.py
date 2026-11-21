@@ -391,6 +391,31 @@ def test_not_own_ips_names_what_each_ip_is():
                                          "198.51.100.3": "a shared front door (AWS Global Accelerator)"}
 
 
+def test_not_own_ips_knows_microsoft_365_and_google_by_address():
+    # The provider name alone ("Microsoft/Azure", "Google") also covers servers
+    # a customer runs itself, so the address decides (v1.22.1)
+    results = {"enrichment": {"hosts": {
+        "autodiscover": {"ips": ["52.96.79.8"], "provider": "Microsoft/Azure"},
+        "ecom": {"ips": ["216.239.32.21"], "provider": "Google"},
+        "vm": {"ips": ["20.1.2.3"], "provider": "Microsoft/Azure"},
+        "gce": {"ips": ["216.239.32.22"], "provider": "Google"}}}}
+    assert gate.not_own_ips(results) == {"52.96.79.8": "third-party hosting (Microsoft 365)",
+                                         "216.239.32.21": "third-party hosting (Google front end)"}
+
+
+def test_a_version_on_microsoft_365_is_set_aside_with_the_service_named():
+    results = lab_results()
+    results["subdomains"].append("autodiscover")
+    results["enrichment"]["hosts"]["autodiscover"] = {"ips": ["52.96.79.8"], "provider": "Microsoft/Azure"}
+    results["fingerprint"]["hosts"]["autodiscover"] = {
+        "collected_at": None, "status": 200, "header_issues": [],
+        "techs": [{"tech": "Microsoft-IIS", "version": "10.0", "evidence": "Server header"}]}
+    built, _ = run(results)
+    aside = next(p for p in built["set_aside"] if "52.96.79.8" in p["title"])
+    assert aside["gate"]["failed"][0]["check"] == 2
+    assert "third-party hosting (Microsoft 365)" in aside["why"]
+
+
 # --- out-of-scope hosts never feed a rule (v1.13.1, #19) ---
 
 def scoped_lab(scope_text):

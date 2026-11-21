@@ -31,7 +31,8 @@ which Monomi can't know, so the note only says to check them.
 """
 
 from monomi.categorize import _find_match
-from monomi.internetdb import SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_ip
+from monomi.internetdb import (SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_ip,
+                               third_party_from_ip)
 
 # Kinds of path bug bounty programs often list as out of scope (gate "notes")
 PROGRAM_NOTES = {
@@ -82,11 +83,15 @@ def edge_ips(results: dict) -> set[str]:
 
 def not_own_ips(results: dict) -> dict[str, str]:
     """IPs that aren't the target's own server -> what they are, in words:
-    a shared CDN edge, a third-party host (a store, a forum...) or a shared
-    front door (AWS Global Accelerator). Check 2 and the path rules use this."""
+    a shared CDN edge, a third-party host (a store, a forum, Microsoft 365,
+    Google's front end...) or a shared front door (AWS Global Accelerator). Check 2 and the path rules use this."""
     out = {ip: "a shared CDN edge IP" for ip in edge_ips(results)}
     enr = results.get("enrichment") or {}
     for h in enr.get("hosts", {}).values():
+        for ip in h.get("ips", []):
+            found = third_party_from_ip(ip)  # by address: the provider name can't tell (v1.22.1)
+            if found:
+                out.setdefault(ip, f"third-party hosting ({found[0]})")
         provider = h.get("provider")
         if provider in THIRD_PARTY_HOSTING:
             kind = f"third-party hosting ({provider})"
