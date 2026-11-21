@@ -13,8 +13,11 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
   deterministic code. The LLM only narrates. The same scan gives the same
   findings every run, on every model.
 - Passive by default. Nothing contacts a target unless the user asked for it
-  (`--fingerprint` and `--exposed-files` are the only active checks, gated by
-  `--allow-active` and an approved scope over MCP). Suggestions never run anything.
+  (`--fingerprint` and `--exposed-files` are the only active checks; over MCP
+  each one runs only after a person approves it at a real terminal:
+  `monomi.py approve ID --scope FILE`, typed yes, single use, see
+  `approvals.py`). No MCP tool may take a scope file, a research file, a yes
+  or anything but the approval id. Suggestions never run anything.
 - Whether something is an attack path, a lead or set aside is decided in one
   place: `gate.py`. Path rules build candidates and say what they rest on; they
   never decide the tier themselves. A new check goes into the gate's checklist

@@ -103,14 +103,19 @@ requests to the target's own servers.
 - **Run one only when the user asks for that check, on hosts they named or
   agreed to.** Not because it was suggested, and not as a step you add to a
   scan on your own.
-- They are off unless the person running Monomi turned them on
-  (`python monomi.py mcp setup --allow-active`) and approved a scope file
-  (`mcp setup --scope`), both at their own terminal. No tool can pass,
-  widen or change the scope.
+- Calling one sends nothing: it returns an `approval_id` and a
+  `next_step`. Give the user that exact command
+  (`python monomi.py approve ID --scope FILE`): they run it at their own
+  terminal, choose the scope file, see every request and type yes. Only
+  then call `active_run` with the `approval_id`. It runs once and expires
+  15 minutes after their yes. No tool can pass a scope, a research file or
+  a yes, and there is no way to approve from here.
+- Don't call `active_run` before the user says they approved, and never
+  call it twice for one id.
 - **A refusal is final.** Tell the user the reason from the error and stop.
   Don't retry with other hosts, don't try another tool to get the same
-  data, and don't edit or suggest editing the config or scope file to get
-  past it. Only the user decides that, at their own terminal.
+  data, and don't edit or suggest editing a scope file or an approval to
+  get past it. Only the user decides that, at their own terminal.
 - Hosts outside the scope come back in `out_of_scope` with no lookup and no
   request. Report them as skipped.
 - Every request and refusal is written to `scans/active.log`.

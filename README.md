@@ -10,7 +10,7 @@
 
 Most recon tools hand you a raw list of hostnames. Monomi collects a domain's public footprint and then has Claude explain it in plain English: how the infrastructure is organized, what deserves a closer look, how an attacker would most likely get in, and who should fix what first.
 
-> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups. Two optional checks are **active** — they contact the target's own servers: `--fingerprint` (one homepage request per host) and `--exposed-files` (a few requests per host to find public API specs and source maps). Both send an honest active User-Agent and only run when you ask for them, and `--scope FILE` limits them to the hosts you're allowed to test (over MCP a scope file is required). Only assess domains you own or have permission to review.
+> ⚠️ **Authorized use only.** By default Monomi is fully passive: it reads public Certificate Transparency logs and never sends traffic to the target. The optional `--enrich`, `--email` and `--takeover` steps add standard DNS lookups. Two optional checks are **active** — they contact the target's own servers: `--fingerprint` (one homepage request per host) and `--exposed-files` (a few requests per host to find public API specs and source maps). Both send an honest active User-Agent and only run when you ask for them, and `--scope FILE` limits them to the hosts you're allowed to test (over MCP each one needs your approval in a terminal, with a scope file). Only assess domains you own or have permission to review.
 ---
 
 ## Features
@@ -50,7 +50,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
 - **JSON export** for use in other tools
 - **Setup check (`python monomi.py doctor`):** checks Python, packages, the API key, DNS and every data source in about 10 seconds, and gives a one-line fix for anything that's wrong (see [Check your setup](#check-your-setup))
 - **One-command MCP setup (`python monomi.py mcp setup`):** adds Monomi to the Claude desktop app's config, or with `--client codex|opencode|hermes` to Codex CLI, OpenCode or Hermes Agent, changing only Monomi's entry, keeping the file's comments and layout, and backing up the old file first (see [MCP server mode](#mcp-server-mode))
-- **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) are off by default behind an `--allow-active` gate, only reach hosts in a scope file you approved, and write every request and refusal to an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
+- **MCP server mode:** run Monomi as an MCP server so AI agents can call its checks directly. Seven passive tools cover subdomain discovery with hostname categories, host enrichment, ports/CVEs, email spoofing, takeover checks, and suspicious-IP investigation; two active tools (`fingerprint_hosts`, `check_exposed_files`) send nothing until you approve each request in a terminal with your scope file (then `active_run` runs it once), and every request and refusal goes to an audit log. `find_subdomains` labels each hostname with a category (non-production, legacy, access, iot-ot, partner-portal, internal-tools and more), and `check_ports` starts with a summary: CDN edge vs origin IPs, CVEs and risky ports on origin IPs only, hostnames that don't resolve, and IPs Shodan has no data on. Findings carry their owners, and inputs that aren't hostnames (pasted links, URLs, wildcards) come back in `rejected` with the reason. Replies are short summaries by default, with the full result saved to a file, and tools pass hosts to each other as files instead of long hostname lists, so big scans don't fill the agent's context.
 
 ## Try it (field testers)
 
@@ -119,7 +119,7 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.19.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.20.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
 
 **Reading a saved scan (`--json`, since v1.15.0).** The file starts with `"monomi_version"`. Compare it as numbers with `monomi.common.scan_version(results)` (as text, `"1.15.0"` sorts before `"1.9.0"`); it's `None` for scans saved before v1.15.0, which don't have the fields below. In `"paths"`, every item in `paths`, `leads` and `set_aside` has:
 
@@ -180,7 +180,7 @@ It checks, in about 10 seconds:
 - **Claude API:** whether `ANTHROPIC_API_KEY` is set (only its first 7 characters are ever shown), whether the API accepts it (one free call that lists models, no tokens used), and which model `--ai` would use
 - **DNS:** system DNS and public DNS on port 53, and DNS-over-HTTPS (Cloudflare and Google). A VPN's DNS can drop lookups under load, and doctor says so when port 53 fails
 - **Sources:** crt.sh (website and database), Cert Spotter (how much of the free hourly quota is used, or when a cooldown ends), AlienVault OTX (and whether `OTX_API_KEY` is set), Shodan InternetDB, Amazon's IP range list and the Tor exit list
-- **MCP:** whether the Claude desktop app's config has Monomi in it and points at this copy of Monomi (read-only; `python monomi.py mcp setup` fixes it)
+- **MCP:** whether the Claude desktop app's config has Monomi in it and points at this copy of Monomi (read-only; `python monomi.py mcp setup` fixes it), the API key file the server loads, approvals waiting for your yes, the last active request, the rate, and any v1.19 flags still in a config
 
 ```
 Setup
@@ -348,13 +348,28 @@ A report includes:
 
 ## MCP server mode
 
-Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI. The checks are **passive by default**; the two active checks are off unless you turn them on (see **Active tools** below).
+Monomi can also run as an MCP server, so AI agents (like the Claude app) can call its checks directly. It's a second way in alongside the CLI. The checks are **passive by default**; the two active checks run only after you approve each one in a terminal (see **Active tools** below).
 
 Passive tools: `ping`, `find_subdomains` (with hostname categories), `enrich_hosts`, `check_ports`, `check_email_auth`, `check_takeover`, `investigate_ip` (suspicious IPs, up to 10 per call). Results with something to fix carry `owners`: the roles that would fix them.
 
-**Active tools (v1.11, off by default).** `fingerprint_hosts` and `check_exposed_files` contact the target's own servers, so they're gated: the MCP server refuses them unless it was started with `--allow-active`, and refuses before any lookup or request — so the gate holds even if the Claude app is set to always-allow the tool. Turn them on with `python monomi.py mcp setup --allow-active` (it makes you type `yes` at a real terminal, so an agent can't enable them for you), then fully restart the app. Every active request is written to `scans/active.log`, and `python monomi.py doctor` shows whether active tools are on and the last request sent. `check_exposed_files` never returns source code it finds, only that it's present.
+**Active tools: you approve each one (v1.20).** `fingerprint_hosts` and `check_exposed_files` contact the target's own servers, so an agent can only *ask*: calling one sends nothing and looks nothing up, and returns an `approval_id` with the exact command for you. You run it in a terminal:
 
-**Scope file (v1.12, required for active tools).** Active tools only ever contact hosts in a scope file you approved. With active tools on and no approved scope, every active check refuses. One rule per line, so a bug bounty program's scope list can be pasted in:
+```
+$ python monomi.py approve k7m2-x9pq --scope scope.txt --research research.txt
+fingerprint_hosts: 1 host(s) in scope, at most 2 GET request(s) each (2 at most in total)
+  staging.example.com
+      GET https://staging.example.com/
+      and http://staging.example.com/ once, only if HTTPS fails with a TLS error or is refused
+Not in scope, will get no request and no DNS lookup (1):
+  nope.example.net: no rule matches
+Scope: scope.txt (sha256 c926207465f3...)
+Research header: X-HackerOne-Researcher: you (sha256 b7f41dd083da...)
+Approve k7m2-x9pq? It can be used once, within 15 minutes. Type yes to approve: yes
+```
+
+Then the agent calls `active_run` with that id, and it runs once. What you approve is locked in: the in-scope hosts, the URLs (for `check_exposed_files`, the fixed spec paths and homepage plus the rule for the rest: up to 3 same-host scripts and their `.map` files, never another host, at most 13 requests per host), and the scope and research files' sha256. `active_run` refuses, and sends nothing, if the id wasn't approved, was already used, expired, or either file changed since. Only the word `yes` at a real terminal approves (there's no `--yes`). No MCP tool takes a scope file, a research file or a yes. Each approval is its own audit trail (`scans/approvals/<id>.json`: requested, approved, used, refused), and every request and refusal also goes to `scans/active.log`. Honest limit: an agent that has a shell on your machine can fake a terminal; the gate is against agents with MCP tools only. `check_exposed_files` never returns source code it finds, only that it's present.
+
+**Scope file.** One rule per line, so a bug bounty program's scope list can be pasted in:
 
 ```
 # comments and blank lines are ignored
@@ -363,36 +378,23 @@ example.com          # exactly this host
 !blog.example.com    # never in scope, even if a rule above matches: exclusions always win
 ```
 
-Approve it with `python monomi.py mcp setup --scope scope.txt`. Setup shows every rule and every rejected line, asks you to type `yes` at a real terminal (`--yes` never skips it, so an agent can't approve a scope for you), and saves the file's path and its sha256 in the Claude config. At startup the server reads the file once and refuses all active checks if it changed since you approved it, so editing the file means approving it again. `--no-scope` removes it. No MCP tool has a scope argument: an agent can't pass, widen or change the scope.
+**What a refusal looks like** (real outputs, v1.20):
 
-**What a refusal looks like.** These are real outputs from v1.12, with the scope file above:
-
-- **A host the scope doesn't allow** gets no DNS lookup and no request. It comes back in `out_of_scope` with the reason, and the other hosts in the call still run:
+- **An id that wasn't approved, or was already used**: nothing is sent, and the reason reaches the agent:
+  ```
+  approval 6cep-p263 was already used; each approval runs once. Nothing was sent.
+  ```
+- **The scope file was edited after you approved**: the approval can't be used; ask for a new one.
+- **Every refusal is logged** in `scans/active.log`, one JSON line each; requests are logged the same way with `"event": "request"`, the rule that allowed them and the scope's sha256:
   ```json
-  "out_of_scope": [
-    {"host": "blog.example.com", "reason": "excluded by !blog.example.com"},
-    {"host": "shop.example.net", "reason": "no rule matches"}
-  ]
+  {"time": "2026-11-21T04:15:23+00:00", "event": "request", "via": "mcp", "tool": "fingerprint_hosts", "host": "staging.41xlab.com", "url": "https://staging.41xlab.com/", "scope_rule": "*.41xlab.com", "scope_sha256": "c9262074...", "rate": 1.0, "research_sha256": "b7f41dd0..."}
   ```
-- **The scope file was edited after you approved it**: the whole call is refused and nothing is sent, until you approve the file again:
-  ```
-  fingerprint_hosts is an ACTIVE check and nothing was sent: the scope file changed since it
-  was approved, so active checks refuse until you approve it again: `python monomi.py mcp setup
-  --scope /path/to/scope.txt` (and type yes). Only the person running Monomi can approve a scope
-  (the scope can't be passed to a tool), then fully restart the Claude app.
-  ```
-  The server's startup line (on stderr) and `python monomi.py doctor` say the same thing before any tool is called.
-- **Every refusal is logged** in `scans/active.log`, one JSON line each, with the scope's sha256 at the time:
-  ```json
-  {"time": "2026-11-13T17:21:27+00:00", "event": "refused", "via": "mcp", "tool": "fingerprint_hosts", "host": "shop.example.net", "reason": "no rule matches", "scope_sha256": "b39e8ee5..."}
-  ```
-  A refusal of the whole call has `"host": null`. Requests that were sent are logged the same way with `"event": "request"` and the rule that allowed them.
 
-Out-of-scope hosts are dropped before any DNS lookup and come back in `out_of_scope` with the reason, and every URL is checked again right before it's fetched (homepage, HTTP fallback, scripts, source maps). `scans/active.log` records each request with the rule that allowed it and the scope's sha256, plus every refusal (out-of-scope hosts, active off, no or changed scope), and whether it came from the CLI or MCP. On the CLI, `--scope FILE` is optional (you're the one running it) but strict when given.
+Out-of-scope hosts are dropped before any DNS lookup and come back in `out_of_scope` with the reason, and every URL is checked again right before it's fetched (homepage, HTTP fallback, scripts, source maps). `scans/active.log` records each request with the rule that allowed it and the scope's sha256, plus every refusal (out-of-scope hosts, unapproved or used approvals, changed files), and whether it came from the CLI or MCP. On the CLI, `--scope FILE` is optional (you're the one running it) but strict when given.
 
-**Rate and research header (v1.19).** Programs often limit automated tools ("max 1 request per second") and ask for an identifying header (`X-Intigriti: <you>`, `X-HackerOne-Researcher: <you>`). `--rate N` caps every active request, in total across all threads (one limiter per run; `0.5` = one every 2 seconds); with `--scope` and no `--rate` it's 1/s, without `--scope` there's no limit unless you ask. `--research FILE` (one `Name: value` header per line, `#` comments) adds those headers to active requests only, never to passive lookups; `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` are refused, since the file may only say who sent a request. A bad file stops the run before anything is sent. Every `active.log` line has the `rate` and the file's `research_sha256`. Over MCP, approve them with `python monomi.py mcp setup --research FILE` (typed `yes`, sha256 pinned like the scope: an edited file makes every active tool refuse) and `--rate N` (default 1/s); each active call then checks only as many hosts as fit in about 40 seconds at that rate (at 1/s: 20 for `fingerprint_hosts`, 3 for `check_exposed_files`, the rest in batches), replies say how they were sent (`sent_as`), and `doctor` shows both settings. Akashi reads the same file format.
+**Rate and research header (v1.19).** Programs often limit automated tools ("max 1 request per second") and ask for an identifying header (`X-Intigriti: <you>`, `X-HackerOne-Researcher: <you>`). `--rate N` caps every active request, in total across all threads (one limiter per run; `0.5` = one every 2 seconds); with `--scope` and no `--rate` it's 1/s, without `--scope` there's no limit unless you ask. `--research FILE` (one `Name: value` header per line, `#` comments) adds those headers to active requests only, never to passive lookups; `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` are refused, since the file may only say who sent a request. A bad file stops the run before anything is sent. Every `active.log` line has the `rate` and the file's `research_sha256`. Over MCP the research file comes with each approval (`monomi.py approve ID --scope FILE --research FILE`, sha256 locked in like the scope), and the rate is a server setting: `python monomi.py mcp setup --rate N` (default 1/s). Each active request then checks only as many hosts as fit in about 40 seconds at that rate (at 1/s: 20 for `fingerprint_hosts`, 3 for `check_exposed_files`, the rest in batches), replies say how they were sent (`sent_as`), and `doctor` shows the rate. Akashi reads the same file format.
 
-Rejected lines (they don't count, and setup and doctor show why): a bare `*`, `*` anywhere but the start, single labels (`com`, `*.com`), shared suffixes many owners use (`co.uk`, `com.au`, `vercel.app`, `github.io`, `cloudfront.net`...; `example.co.uk` is fine), non-ASCII names, URLs, and IP addresses or ranges. Limits: scope is by hostname only (the IP a host resolves to isn't checked), and anything that can edit the Claude app's config file can change the approved hash, the same limit as `--allow-active`.
+Rejected lines (they don't count, and setup and doctor show why): a bare `*`, `*` anywhere but the start, single labels (`com`, `*.com`), shared suffixes many owners use (`co.uk`, `com.au`, `vercel.app`, `github.io`, `cloudfront.net`...; `example.co.uk` is fine), non-ASCII names, URLs, and IP addresses or ranges. Limit: scope is by hostname only (the IP a host resolves to isn't checked).
 
 Every call is built to fit the Claude app's 60-second tool limit: `find_subdomains` gives its sources 45 seconds in total, returns whatever finished, and lists skipped sources in `errors`.
 
@@ -430,7 +432,11 @@ It shows the change and asks before writing (`--yes` skips the question). Only t
 
 Then fully quit the Claude app, not just its window (Windows: right-click its tray icon > Quit; macOS: Cmd+Q), open it again, and ask Claude to run Monomi's `ping` tool. `python monomi.py doctor` also checks the entry. Run setup again after moving the Monomi folder or rebuilding the venv.
 
-**Other MCP clients (v1.13).** Add `--client` to set up another client, with the same rules (only Monomi's entry changes, a backup first, `--allow-active` and `--scope` still need a typed `yes`). `--print` shows the entry in that client's format without writing anything.
+**API keys over MCP (v1.20).** The Claude app doesn't read `~/.bashrc`, so the server loads `OTX_API_KEY` from the 0x41 suite's key file, `~/.config/0x41/keys.env` (the same file `0x41 mcp` uses). `python monomi.py mcp keys` writes it from your terminal's keys without showing them; it must be readable only by you (permissions 600), values are never printed, and other tools' keys in it are kept. `doctor` checks it.
+
+**Upgrading from v1.19.** `--allow-active`, `--scope` and `--research` are gone from `mcp setup` and the server config. The server ignores them (with a note), and `python monomi.py mcp setup` removes them from every config copy; `doctor` names any that are left.
+
+**Other MCP clients (v1.13).** Add `--client` to set up another client, with the same rules (only Monomi's entry changes, a backup first). `--print` shows the entry in that client's format without writing anything.
 
 | `--client` | Config file | Monomi's entry |
 |---|---|---|
@@ -481,7 +487,9 @@ monomi/                     # the repo
 │   ├── headers.py          # security headers check (reads the --fingerprint response)
 │   ├── exposed.py          # exposed API specs + JS source maps (--exposed-files, active)
 │   ├── categorize.py       # rule-based hostname categories
-│   ├── mcp_server.py       # MCP server mode (7 passive tools + 2 active, gated)
+│   ├── mcp_server.py       # MCP server mode (7 passive tools, 2 active that need approval, active_run)
+│   ├── approvals.py        # terminal approvals for active MCP checks (monomi.py approve)
+│   ├── keys.py             # API keys for the MCP server from ~/.config/0x41/keys.env (monomi.py mcp keys)
 │   ├── mcp_setup.py        # adds Monomi to an MCP client's config: Claude, Codex, OpenCode, Hermes (monomi.py mcp setup)
 │   ├── scope.py            # scope file for active checks: parse, match, hash pinning
 │   ├── activelog.py        # scans/active.log: every active request and refusal
@@ -605,9 +613,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 
 - [x] v1.19.0: bug bounty rules on Monomi's own active checks: `--rate N` (one limiter shared by every thread, 1/s by default with `--scope`) and `--research FILE` (identifying headers, sha256 in `active.log`; module shared with Akashi), both over MCP through `mcp setup` (research file pinned, host count per call fitted to the rate) and in `doctor`; `--extra-hosts FILE` checks a program's single hosts on other domains in the same run (no subdomain search for their domains, scope fail-closed, labeled `[extra]`, left out of change history); the takeover section says how many names under a wildcard DNS can't check. From an Intigriti field run
 
+- [x] v1.20.0: active MCP checks need a person's approval each time: `fingerprint_hosts` and `check_exposed_files` only ask (nothing sent, no lookup) and return an id; `monomi.py approve ID --scope FILE [--research FILE]` shows every host, URL, rule and the request cap and needs a typed yes at a real terminal; `active_run(id)` runs it once (15 minutes, single use across processes, scope and research sha256 re-checked, scope applied again before every request). `--allow-active` and the config-pinned scope/research are gone (setup strips them, the server ignores them, doctor names them). The MCP server loads `OTX_API_KEY` from the suite's `~/.config/0x41/keys.env` (`monomi.py mcp keys`), so OTX works over MCP. Approvals idea from Harry Siu and @deeponailabs (issue #27)
+
 **Next**
 - [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
-- [ ] Approvals bound to a target/run with an expiry, once the Claude app's support for MCP confirmations (elicitation) is checked
 - [ ] Rule-based checks before the AI step
 - [ ] Scheduled monitoring with alerts on new hostnames
 - [ ] IP / IP-range input (`--ip`)
