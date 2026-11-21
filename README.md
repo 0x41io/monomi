@@ -119,7 +119,7 @@ Monomi is one package, `monomi`, so other tools (like 0x41's Akashi) can import 
 from monomi import emailauth, evidence, takeover
 ```
 
-Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.20.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`.
+Install a released version straight from GitHub: `pip install "monomi @ git+https://github.com/0x41io/monomi@v1.21.0"`. It isn't on PyPI yet. The scan fields and functions other tools rely on are locked by `tests/test_contract.py`, and the approvals core the rest of the 0x41 suite builds on by `tests/test_approvalcore.py`.
 
 **Reading a saved scan (`--json`, since v1.15.0).** The file starts with `"monomi_version"`. Compare it as numbers with `monomi.common.scan_version(results)` (as text, `"1.15.0"` sorts before `"1.9.0"`); it's `None` for scans saved before v1.15.0, which don't have the fields below. In `"paths"`, every item in `paths`, `leads` and `set_aside` has:
 
@@ -488,6 +488,7 @@ monomi/                     # the repo
 │   ├── exposed.py          # exposed API specs + JS source maps (--exposed-files, active)
 │   ├── categorize.py       # rule-based hostname categories
 │   ├── mcp_server.py       # MCP server mode (7 passive tools, 2 active that need approval, active_run)
+│   ├── approvalcore.py     # approvals core shared by the 0x41 suite (records, typed yes, single-use claim)
 │   ├── approvals.py        # terminal approvals for active MCP checks (monomi.py approve)
 │   ├── keys.py             # API keys for the MCP server from ~/.config/0x41/keys.env (monomi.py mcp keys)
 │   ├── mcp_setup.py        # adds Monomi to an MCP client's config: Claude, Codex, OpenCode, Hermes (monomi.py mcp setup)
@@ -614,6 +615,8 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.19.0: bug bounty rules on Monomi's own active checks: `--rate N` (one limiter shared by every thread, 1/s by default with `--scope`) and `--research FILE` (identifying headers, sha256 in `active.log`; module shared with Akashi), both over MCP through `mcp setup` (research file pinned, host count per call fitted to the rate) and in `doctor`; `--extra-hosts FILE` checks a program's single hosts on other domains in the same run (no subdomain search for their domains, scope fail-closed, labeled `[extra]`, left out of change history); the takeover section says how many names under a wildcard DNS can't check. From an Intigriti field run
 
 - [x] v1.20.0: active MCP checks need a person's approval each time: `fingerprint_hosts` and `check_exposed_files` only ask (nothing sent, no lookup) and return an id; `monomi.py approve ID --scope FILE [--research FILE]` shows every host, URL, rule and the request cap and needs a typed yes at a real terminal; `active_run(id)` runs it once (15 minutes, single use across processes, scope and research sha256 re-checked, scope applied again before every request). `--allow-active` and the config-pinned scope/research are gone (setup strips them, the server ignores them, doctor names them). The MCP server loads `OTX_API_KEY` from the suite's `~/.config/0x41/keys.env` (`monomi.py mcp keys`), so OTX works over MCP. Approvals idea from Harry Siu and @deeponailabs (issue #27)
+
+- [x] v1.21.0: one approvals core for the whole 0x41 suite: the record keeping, typed yes and single-use claim (one `.used` file only one process can create) move into `monomi/approvalcore.py`, so every human-approval gate (Monomi's active checks, 0x41's active proofs, later ones) shares one tested copy. Nothing changes for Monomi users: same commands, same messages, every approval test unchanged. `scope.check_pinned` and `research.check_pinned` take an optional `fix=` command for their messages
 
 **Next**
 - [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS

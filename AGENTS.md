@@ -18,6 +18,10 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
   `monomi.py approve ID --scope FILE`, typed yes, single use, see
   `approvals.py`). No MCP tool may take a scope file, a research file, a yes
   or anything but the approval id. Suggestions never run anything.
+- `approvalcore.py` is the approvals core for the whole 0x41 suite (0x41
+  imports it). Every human-approval gate is built on it, never on a copy.
+  Its public names are locked by `tests/test_approvalcore.py`: change one
+  only together with 0x41.
 - Whether something is an attack path, a lead or set aside is decided in one
   place: `gate.py`. Path rules build candidates and say what they rest on; they
   never decide the tier themselves. A new check goes into the gate's checklist
