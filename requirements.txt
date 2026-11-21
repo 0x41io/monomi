@@ -1,8 +1,8 @@
 requests>=2.34.2
-anthropic>=0.40
+anthropic>=2.8.0
 rich>=15.0.0
-dnspython>=2.9.1
+dnspython>=2.9.2
 mcp>=2.3.0
-psycopg[binary]>=3.2
-tomlkit>=0.13
-ruamel.yaml>=0.18
+psycopg[binary]>=3.3.9
+tomlkit>=0.15.2
+ruamel.yaml>=0.19.1
