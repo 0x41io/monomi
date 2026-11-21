@@ -355,7 +355,7 @@ API = {
     # scope file + hash pinning (Akashi uses the same scope format and rules)
     scope.load: "(path: str) -> monomi.scope.Scope",
     scope.from_bytes: "(data: bytes, path: str | None = None) -> monomi.scope.Scope",
-    scope.check_pinned: "(path: str | None, sha256: str | None) -> tuple[monomi.scope.Scope | None, str | None]",
+    scope.check_pinned: "(path: str | None, sha256: str | None, fix: str | None = None) -> tuple[monomi.scope.Scope | None, str | None]",
     scope.check_url: "(scope, url: str) -> str | None",
     # active log (same file format as Monomi's active.log)
     activelog.request: "(path, via, tool, host, url, scope_rule, scope, *, rate=None, research=None) -> None",

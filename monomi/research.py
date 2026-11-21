@@ -78,17 +78,19 @@ def request_headers(research: Research | None = None) -> dict:
     return headers
 
 
-def check_pinned(path: str | None, sha256: str | None) -> tuple[Research | None, str | None]:
+def check_pinned(path: str | None, sha256: str | None, fix: str | None = None) -> tuple[Research | None, str | None]:
     """Load the approved research file and check it's exactly what was approved.
 
     Returns (research, None) when it can be used, (None, None) when none is
     set (that's fine: requests just carry the User-Agent), or (None, why not).
     Checked again when an approved active check runs (approvals.claim). A
     file edited after approval refuses: a program that requires the
-    header must never get requests without it, or with something else in it."""
+    header must never get requests without it, or with something else in it.
+    fix is the command that makes a new approval, for the messages (default:
+    Monomi's; 0x41 passes its own)."""
     if not path:
         return None, None
-    fix = f"a new approval with it: `python monomi.py approve ID --scope FILE --research {path}`"
+    fix = "a new approval with it: " + (fix or f"`python monomi.py approve ID --scope FILE --research {path}`")
     if not sha256:
         return None, f"the research file has no approved hash; it needs {fix}"
     try:

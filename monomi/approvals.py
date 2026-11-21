@@ -31,23 +31,21 @@ event in it (refusals too), so it's its own audit trail. "Used" is a
 second file, <rid>.used, created in one step that only one process can
 win (O_EXCL), so two MCP servers can't both run the same approval.
 
+Since v1.21 the record keeping, the typed yes and the single-use claim
+live in approvalcore.py, shared with the rest of the 0x41 suite. This
+module keeps what is Monomi's own: which tools are active, what each may
+send (TOOLS), the plan shown before the yes, and the pinned-file check.
+
 Honest limit: an agent with a shell on this machine can fake a terminal.
 The gate is against agents that only have MCP tools.
 """
 
-import json
 import os
-import re
-import secrets
 import sys
-from datetime import datetime, timedelta, timezone
 
 from monomi import exposed, home, research, scope
-
-REQUEST_TTL = timedelta(hours=1)       # a pending request nobody approved
-APPROVAL_TTL = timedelta(minutes=15)   # an approval nobody used
-ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # no 0/o, 1/l/i: easy to type
-RID = re.compile(r"[a-z2-9]{4}-[a-z2-9]{4}")
+from monomi.approvalcore import (APPROVAL_TTL, ALPHABET, RID, REQUEST_TTL,  # noqa: F401 (re-exported)
+                                 ApprovalError, Store, expired as _expired, now_utc as _now, typed_yes)
 
 # What each active tool may send per host: the URLs known in advance, the
 # rule for anything else, and the hard cap.
@@ -66,87 +64,25 @@ TOOLS = {
 }
 
 
-class ApprovalError(ValueError):
-    """Refused; the message says why. Nothing was sent."""
-
-
 def approvals_dir() -> str:
     return home.data_dir("scans", "approvals")
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+def _store() -> Store:
+    """Looked up on every call, so the folder can be moved (MONOMI_HOME, tests)."""
+    return Store(approvals_dir(), "Monomi", lambda rid: f"`python monomi.py approve {rid} --scope FILE`")
 
 
-def _iso(t: datetime) -> str:
-    return t.isoformat(timespec="seconds")
-
-
-def _path(rid: str) -> str:
-    if not RID.fullmatch(rid or ""):
-        raise ApprovalError(f"{rid!r} isn't an approval id (they look like k7m2-x9pq)")
-    return os.path.join(approvals_dir(), f"{rid}.json")
-
-
-def _used_path(rid: str) -> str:
-    return os.path.join(approvals_dir(), f"{rid}.used")
-
-
-def _load(rid: str) -> dict:
-    try:
-        with open(_path(rid), encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        raise ApprovalError(f"no approval {rid}")
-
-
-def _save(rec: dict) -> None:
-    """Write the record whole (temp file + replace), so a reader never sees half."""
-    path = _path(rec["rid"])
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(rec, f, indent=2)
-    os.replace(tmp, path)
-
-
-def _event(rec: dict, event: str, now: datetime, **extra) -> None:
-    rec["events"].append({"at": _iso(now), "event": event, **extra})
-
-
-def _refuse(rec: dict, reason: str, now: datetime) -> ApprovalError:
-    """Record the refusal in the approval's own file, then return the error."""
-    try:
-        _event(rec, "refused", now, reason=reason)
-        _save(rec)
-    except OSError:
-        pass  # the refusal stands even if it can't be written down
-    return ApprovalError(reason)
-
-
-def request(tool: str, hosts: list[str], now: datetime | None = None) -> dict:
+def request(tool: str, hosts: list[str], now=None) -> dict:
     """A pending approval for these hosts. Sends nothing, looks nothing up."""
     if tool not in TOOLS:
         raise ApprovalError(f"{tool} isn't an active tool")
     hosts = sorted({scope.normalize_host(h) or h for h in hosts})
     if not hosts:
         raise ApprovalError("no hostnames to approve")
-    now = now or _now()
-    os.makedirs(approvals_dir(), exist_ok=True)
-    while True:
-        rid = "".join(secrets.choice(ALPHABET) for _ in range(4)) + "-" + \
-              "".join(secrets.choice(ALPHABET) for _ in range(4))
-        if not os.path.exists(_path(rid)):
-            break
-    rec = {"rid": rid, "tool": tool, "state": "pending", "hosts": hosts,
-           "created": _iso(now), "expires": _iso(now + REQUEST_TTL), "events": []}
-    _event(rec, "requested", now, hosts=len(hosts))
-    _save(rec)
-    return {"approval_id": rid, "tool": tool, "hosts": hosts, "expires": rec["expires"],
+    rec = _store().create({"tool": tool, "hosts": hosts}, now, hosts=len(hosts))
+    return {"approval_id": rec["rid"], "tool": tool, "hosts": hosts, "expires": rec["expires"],
             "max_requests": len(hosts) * TOOLS[tool]["max_per_host"]}
-
-
-def _expired(rec: dict, now: datetime) -> bool:
-    return now >= datetime.fromisoformat(rec["expires"])
 
 
 def plan_lines(tool: str, inside: list[str], outside: list[dict]) -> list[str]:
@@ -165,18 +101,12 @@ def plan_lines(tool: str, inside: list[str], outside: list[dict]) -> list[str]:
 
 
 def approve(rid: str, scope_path: str, research_path: str | None = None, *, ask=input, out=print,
-            interactive=None, now: datetime | None = None) -> int:
+            interactive=None, now=None) -> int:
     """`monomi.py approve RID --scope FILE [--research FILE]`: show the
     plan, ask for a typed yes at a real terminal. 0 approved, 1 not."""
     now = now or _now()
-    interactive = interactive or (lambda: sys.stdin.isatty())
-    rec = _load(rid)
-    if rec["state"] != "pending":
-        raise ApprovalError(f"approval {rid} is {rec['state']}, not waiting for a yes")
-    if _expired(rec, now):
-        raise _refuse(rec, f"request {rid} expired at {rec['expires']}; ask the agent to call the tool again", now)
-    if not interactive():
-        raise _refuse(rec, "approving needs a person at a real terminal (stdin isn't one)", now)
+    store = _store()
+    rec = store.pending(rid, now, interactive, expired_hint="ask the agent to call the tool again")
     s = scope.load(scope_path)
     if s.problem():
         raise ApprovalError(f"scope file can't be used: {s.problem()}")
@@ -192,62 +122,49 @@ def approve(rid: str, scope_path: str, research_path: str | None = None, *, ask=
     out(f"Scope: {s.path} (sha256 {s.sha256[:12]}...)")
     out(f"Research header: {r.summary} (sha256 {r.sha256[:12]}...)" if r else "Research header: none")
     if not inside:
-        raise _refuse(rec, "none of the hosts is in scope, so there's nothing to approve", now)
-    try:
-        answer = ask(f"Approve {rid}? It can be used once, within {int(APPROVAL_TTL.total_seconds() // 60)} "
-                     "minutes. Type yes to approve: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer != "yes":
-        rec["state"] = "declined"
-        _event(rec, "declined", now)
-        _save(rec)
+        raise store.refuse(rec, "none of the hosts is in scope, so there's nothing to approve", now)
+    if not typed_yes(ask, f"Approve {rid}? It can be used once, within {int(APPROVAL_TTL.total_seconds() // 60)} "
+                          "minutes. Type yes to approve: "):
+        store.decline(rec, now)
         out("Not approved. Nothing will be sent.")
         return 1
-    rec.update({
-        "state": "approved", "approved_hosts": inside, "out_of_scope": outside,
+    rec = store.lock_in(rec, {
+        "approved_hosts": inside, "out_of_scope": outside,
         "scope": {"path": os.path.abspath(s.path), "sha256": s.sha256},
         "research": {"path": os.path.abspath(r.path), "sha256": r.sha256} if r else None,
         "max_per_host": TOOLS[rec["tool"]]["max_per_host"],
-        "approved_at": _iso(now), "expires": _iso(now + APPROVAL_TTL),
-    })
-    _event(rec, "approved", now, hosts=len(inside))
-    _save(rec)
+    }, now, hosts=len(inside))
     out(f"Approved {rid}: tell the agent to call active_run with this id (single use, until {rec['expires']}).")
     return 0
 
 
-def claim(rid: str, now: datetime | None = None) -> dict:
-    """Check everything again and mark the approval used, BEFORE anything
-    is sent. Returns {"tool", "hosts", "scope", "research", "max_per_host"}."""
-    now = now or _now()
-    rec = _load(rid)
-    if rec["state"] == "used" or os.path.exists(_used_path(rid)):
-        raise _refuse(rec, f"approval {rid} was already used; each approval runs once", now)
-    if rec["state"] != "approved":
-        raise _refuse(rec, f"approval {rid} is {rec['state']}: the person running Monomi has to approve it "
-                           f"first with `python monomi.py approve {rid} --scope FILE`", now)
-    if _expired(rec, now):
-        raise _refuse(rec, f"approval {rid} expired at {rec['expires']}; ask for a new one", now)
+def _pinned_files(rec: dict) -> tuple:
+    """(scope, research, problem): the approved files, checked to be exactly
+    what was approved."""
     s, problem = scope.check_pinned(rec["scope"]["path"], rec["scope"]["sha256"])
     if problem:
-        raise _refuse(rec, f"scope file: {problem}", now)
+        return None, None, f"scope file: {problem}"
     r = None
     if rec["research"]:
         r, problem = research.check_pinned(rec["research"]["path"], rec["research"]["sha256"])
         if problem:
-            raise _refuse(rec, f"research file: {problem}", now)
-    # One step only one process can win: two servers can't both use it.
-    try:
-        fd = os.open(_used_path(rid), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        raise _refuse(rec, f"approval {rid} was already used; each approval runs once", now)
-    os.close(fd)
-    rec["state"] = "used"
-    _event(rec, "used", now)
-    _save(rec)
-    return {"tool": rec["tool"], "hosts": rec["approved_hosts"], "scope": s, "research": r,
-            "max_per_host": rec["max_per_host"]}
+            return None, None, f"research file: {problem}"
+    return s, r, None
+
+
+def claim(rid: str, now=None) -> dict:
+    """Check everything again and mark the approval used, BEFORE anything
+    is sent. Returns {"tool", "hosts", "scope", "research", "max_per_host"}."""
+    files = {}
+
+    def check(rec):
+        s, r, problem = _pinned_files(rec)
+        files.update(scope=s, research=r)
+        return problem
+
+    rec = _store().claim(rid, now, check)
+    return {"tool": rec["tool"], "hosts": rec["approved_hosts"], "scope": files["scope"],
+            "research": files["research"], "max_per_host": rec["max_per_host"]}
 
 
 def main(argv=None) -> int:
