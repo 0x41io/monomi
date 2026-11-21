@@ -26,7 +26,7 @@ from datetime import datetime
 
 import requests
 
-from monomi import (activelog, aws_ranges, dnscheck, home, internetdb, mcp_setup, rate, research,
+from monomi import (activelog, aws_ranges, dnscheck, home, internetdb, keys, mcp_setup, rate, research,
                     scope, threatintel, ui)
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, pacing, saved
 from monomi.common import USER_AGENT
@@ -909,9 +909,35 @@ def check_clients():
     return out
 
 
+def check_key_file(path=None, environ=None):
+    """The suite key file the MCP server loads at startup (the Claude app
+    doesn't read ~/.bashrc). Names only, never values."""
+    path = path or keys.keys_path()
+    environ = os.environ if environ is None else environ
+    fix = "python monomi.py mcp keys"
+    in_terminal = [n for n in keys.USED if environ.get(n)]
+    if not os.path.lexists(path):
+        if in_terminal:
+            return result(MCP, "key file", WARN,
+                          f"{', '.join(in_terminal)} is set in this terminal but there's no key file, "
+                          "so the MCP server runs without it", fix)
+        return result(MCP, "key file", OK, f"no key file ({path}); the MCP server runs keyless")
+    problem = keys.private_problem(path)
+    if problem:
+        return result(MCP, "key file", FAIL, f"refused by the MCP server: {problem}", fix)
+    found, _ = keys.read(path)
+    used = [n for n in keys.USED if n in found]
+    missing = [n for n in in_terminal if n not in found]
+    if missing:
+        return result(MCP, "key file", WARN,
+                      f"{path} has {', '.join(used) or 'none of the keys Monomi uses'}; "
+                      f"{', '.join(missing)} is only in this terminal", fix)
+    return result(MCP, "key file", OK, f"{path}: {', '.join(used) or 'no keys Monomi uses'} (private)")
+
+
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list, check_mcp, check_active, check_scope, check_settings, check_clients]
+          check_tor_list, check_mcp, check_key_file, check_active, check_scope, check_settings, check_clients]
 
 
 def run_all(checks=None):

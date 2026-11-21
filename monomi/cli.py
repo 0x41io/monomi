@@ -1261,6 +1261,10 @@ def main() -> int:
     # "report FILE": export a saved --json scan again, without scanning
     if sys.argv[1:2] == ["report"]:
         return report.main(sys.argv[2:])
+    # "mcp keys": save this terminal's API keys for the MCP server (600 file)
+    if sys.argv[1:3] == ["mcp", "keys"]:
+        from monomi import keys
+        return keys.main(sys.argv[3:])
     # "mcp setup": add Monomi to the Claude app's MCP config
     if sys.argv[1:2] == ["mcp"]:
         return mcp_setup.main(sys.argv[2:])

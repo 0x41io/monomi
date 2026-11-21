@@ -997,6 +997,11 @@ def main(argv=None) -> None:
     # stderr, never stdout: stdout carries the MCP messages
     print(f"monomi MCP server: active tools {'ON' if ALLOW_ACTIVE else 'off'}; "
           f"{scope_status()}; {settings_status()}", file=sys.stderr)
+    # API keys from the suite's key file (~/.config/0x41/keys.env): the Claude
+    # app doesn't read ~/.bashrc. Names only, never values, and on stderr.
+    from monomi import keys
+    for line in keys.load():
+        print(f"monomi MCP server: {line}", file=sys.stderr)
     mcp.run()
 
 
