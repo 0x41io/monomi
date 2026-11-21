@@ -5,10 +5,12 @@ run Monomi's passive checks as tools.
 Run it with:  python mcp_server.py
 It talks over stdin/stdout, so it prints nothing and waits for an agent.
 
-Active tools (they send requests to the target's own servers) are off
-unless the server is started with --allow-active. Only the person who
-writes the Claude app's config can add that flag: an agent can't turn
-it on through any tool. Every active request is written to scans/active.log.
+Active tools (they send requests to the target's own servers) never run
+on an agent's say-so. Since v1.20 they only record what the agent asked
+for and return an approval id; the person running Monomi approves it at a
+real terminal (`python monomi.py approve ID --scope FILE`, typed yes), and
+active_run(id) then runs it once. No tool can supply a scope file, a
+research file or a yes. Every active request is written to scans/active.log.
 """
 import argparse
 import contextlib
@@ -25,7 +27,7 @@ from monomi.emailauth import check_email
 from monomi.takeover import check_hosts
 from monomi.enrich import enrich
 from monomi.evidence import OWNERS
-from monomi import (activelog, exposed, fingerprint, gate, home, internetdb, rate, research, scope,
+from monomi import (activelog, approvals, exposed, fingerprint, gate, home, internetdb, rate, research, scope,
                     threatintel)
 from monomi.importers import subfinder
 from mcp.server.mcpserver import MCPServer
@@ -103,7 +105,7 @@ def finish(tool: str, full: dict, summary: dict, detail: str) -> dict:
 
 TOOL_NAMES = ("ping", "find_subdomains", "check_email_auth", "check_takeover",
               "enrich_hosts", "check_ports", "investigate_ip", "fingerprint_hosts",
-              "check_exposed_files")
+              "check_exposed_files", "active_run")
 FOLLOWS_FROM = {  # tool -> the suggest.py flags its own results can back up
     "find_subdomains": ("--enrich", "--email"),
     "check_email_auth": (),
@@ -154,23 +156,22 @@ def attach_next_checks(tool: str, full: dict, summary: dict, results_for_suggest
 
 
 # --- Active tools ----------------------------------------------------------
-# Off unless the server was started with --allow-active (set in __main__).
-# The refusal happens in Monomi itself, so it holds even when the Claude
-# app is set to "Always allow" the tool.
+# Since v1.20 no switch turns them on. fingerprint_hosts and
+# check_exposed_files only record the request (approvals.request) and hand
+# back an id; the person approves it at a terminal, where the scope (and
+# research) file is chosen and hashed; active_run(id) checks it all again
+# (approvals.claim) and runs it once. The refusals happen in Monomi itself,
+# so they hold even when the Claude app is set to "Always allow" a tool.
 
-ALLOW_ACTIVE = False
-# The approved scope file, read once at startup (see main). Until then, and
-# whenever it's missing, edited after approval or empty, SCOPE_PROBLEM says
-# why and every active check refuses. Fail-closed by default.
-SCOPE = None
-SCOPE_PROBLEM = scope.NO_SCOPE
 ACTIVE_LOG = os.path.join(SCANS_DIR, "active.log")
-# --rate and --research (v1.19), set once at startup (see main). Active
-# tools always need a scope, so the default is the scoped one: 1/s. One
-# limiter for the whole server, so calls running side by side share it.
+# --rate (v1.19), set once at startup (see main): the server-wide safety
+# limit, not part of an approval. One limiter for the whole server, so calls
+# running side by side share it.
 LIMITER = rate.Limiter(rate.SCOPED_DEFAULT)
-RESEARCH = None          # the approved research file, or None for none
-SETTINGS_PROBLEM = None  # a research file or rate that can't be used: active tools refuse
+RATE_PROBLEM = None  # a --rate that can't be used: active tools refuse
+# What v1.19 configs still pass. Ignored with a note on stderr, so an old
+# config doesn't stop the server; `python monomi.py mcp setup` removes them.
+LEGACY_FLAGS = ("--allow-active", "--scope", "--scope-sha256", "--research", "--research-sha256")
 
 
 def hosts_per_call(tool: str, maximum: int, per_host: int) -> int:
@@ -188,56 +189,63 @@ def hosts_per_call(tool: str, maximum: int, per_host: int) -> int:
     return min(maximum, fits)
 
 
-def require_active(tool: str) -> None:
-    """Refuse an active tool unless the server was started with --allow-active
-    AND an approved scope file that still matches its approved hash."""
-    if not ALLOW_ACTIVE:
-        log_refusal(tool, "active checks are off")
+def check_rate(tool: str) -> None:
+    """Refuse an active tool when the server's --rate can't be used."""
+    if RATE_PROBLEM:
+        log_refusal(tool, RATE_PROBLEM)
         raise ToolError(
-            f"{tool} is an ACTIVE check (it sends requests to the target's own servers) "
-            "and active checks are turned off, so nothing was sent. Only the person "
-            "running Monomi can turn them on: run `python monomi.py mcp setup --allow-active`, "
-            "then fully restart the Claude app (the setting is read when the server starts).")
-    if SCOPE_PROBLEM:
-        log_refusal(tool, SCOPE_PROBLEM)
-        raise ToolError(
-            f"{tool} is an ACTIVE check and nothing was sent: {SCOPE_PROBLEM}. "
-            "Only the person running Monomi can approve a scope (the scope can't be "
-            "passed to a tool), then fully restart the Claude app.")
-    if SETTINGS_PROBLEM:
-        log_refusal(tool, SETTINGS_PROBLEM)
-        raise ToolError(
-            f"{tool} is an ACTIVE check and nothing was sent: {SETTINGS_PROBLEM}. "
+            f"{tool} is an ACTIVE check and nothing was sent: {RATE_PROBLEM}. "
             "Only the person running Monomi can fix this (with `python monomi.py mcp setup`), "
             "then fully restart the Claude app.")
 
 
-def log_request(tool: str, host: str, url: str, scope_rule: str | None) -> None:
+def log_request(tool: str, host: str, url: str, scope_rule: str | None, grant: dict) -> None:
     """One line in scans/active.log for every active request, before it's sent:
     the rule that allowed it and the approved scope's hash (see activelog.py)."""
-    activelog.request(ACTIVE_LOG, "mcp", tool, host, url, scope_rule, SCOPE,
-                      rate=LIMITER.rate, research=RESEARCH)
+    activelog.request(ACTIVE_LOG, "mcp", tool, host, url, scope_rule, grant["scope"],
+                      rate=LIMITER.rate, research=grant["research"])
 
 
-def sent_as() -> dict:
-    """How this server's active requests go out, for every active tool's reply."""
-    return {"rate_per_second": LIMITER.rate, "research_sha256": research.sha_of(RESEARCH),
-            "research_headers": sorted(RESEARCH.headers) if RESEARCH else []}
+def sent_as(research_file=None) -> dict:
+    """The rate and research header the requests went out with."""
+    return {"rate_per_second": LIMITER.rate, "research_sha256": research.sha_of(research_file),
+            "research_headers": sorted(research_file.headers) if research_file else []}
 
 
-def log_refusal(tool: str, reason: str, host: str | None = None) -> None:
+def log_refusal(tool: str, reason: str, host: str | None = None, scope_file=None) -> None:
     """One line in scans/active.log for everything refused: a whole call
     (host None) or one out-of-scope host."""
-    activelog.refused(ACTIVE_LOG, "mcp", tool, reason, host, SCOPE)
+    activelog.refused(ACTIVE_LOG, "mcp", tool, reason, host, scope_file)
 
 
-def scope_filter(tool: str, hosts: list[str]) -> tuple[list[str], list[dict]]:
+def scope_filter(tool: str, hosts: list[str], scope_file) -> tuple[list[str], list[dict]]:
     """Drop out-of-scope hosts BEFORE any DNS lookup, logging each one.
-    Returns (hosts to check, [{"host", "reason"}] that were refused)."""
-    inside, outside = scope.split(SCOPE, hosts)
+    Returns (hosts to check, [{"host", "reason"}] that were refused). The
+    approval already left out-of-scope hosts out; this is the second check."""
+    inside, outside = scope.split(scope_file, hosts)
     for o in outside:
-        log_refusal(tool, o["reason"], o["host"])
+        log_refusal(tool, o["reason"], o["host"], scope_file)
     return inside, outside
+
+
+def approval_request(tool: str, checked: list[str], skipped: int, rejected: list, batch) -> dict:
+    """What an active tool returns: nothing sent, an approval id, and what
+    the agent should tell the person. No DNS lookup, no request."""
+    base = {"nothing_sent": True, "hosts_skipped": skipped, "rejected": rejected, "batch": batch}
+    if not checked:
+        return {"approval_needed": False, **base,
+                "reason": "no valid hostnames in this call, so there's nothing to approve"}
+    req = approvals.request(tool, checked)
+    rid = req["approval_id"]
+    return {"approval_needed": True, **base, "approval_id": rid, "tool": tool,
+            "hosts": req["hosts"], "hosts_checked": len(req["hosts"]),
+            "max_requests": req["max_requests"], "request_expires": req["expires"],
+            "next_step": (
+                f"Nothing was sent. Ask the person running Monomi to approve it in a terminal: "
+                f"`python monomi.py approve {rid} --scope SCOPE_FILE` (they choose the scope file, "
+                f"see every request and type yes; hosts outside their scope are dropped). "
+                f"Then call active_run with approval_id \"{rid}\". It runs once, within "
+                f"{int(approvals.APPROVAL_TTL.total_seconds() // 60)} minutes of their yes.")}
 
 
 def first(names, cap: int = LIST_CAP) -> list:
@@ -715,64 +723,54 @@ def ports_brief(full: dict) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(
-    title="ACTIVE: fingerprint hosts",
-    readOnlyHint=False,     # it reaches out to the target, so not read-only...
-    destructiveHint=False,  # ...but a homepage GET changes nothing there
-    idempotentHint=True,
-    openWorldHint=True))
-def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary",
-                      hosts_file: str | None = None, start: int = 0,
-                      already_ran: list[str] | None = None) -> dict:
-    """ACTIVE: sends one normal homepage request (https://host/) to each
-    host with a public IP, the same request a browser makes. Unlike every
-    other Monomi tool, this contacts the target's own servers, so only use
-    it on targets you're allowed to test (in scope). It is off unless the
-    person running Monomi turned active checks on; if it's off, it refuses
-    and nothing is sent. Every request is written to scans/active.log.
-    Only hosts allowed by the scope file the person running Monomi approved
-    are contacted (the scope can't be passed in or changed by a tool); any
-    other host comes back in "out_of_scope" with the reason, and gets no
-    DNS lookup and no request.
-    From the response headers it reports the web software (Server,
-    X-Powered-By...), any exact version shown ("version leaks": match them
-    to CVEs, but a version alone is a lead, not proof of a flaw) and
-    missing or weak security headers (HSTS, CSP, X-Frame-Options,
-    X-Content-Type-Options, Referrer-Policy). Headers are only judged on
-    real pages (HTTP 2xx); redirects are listed in "not_judged".
-    If HTTPS fails with a TLS error or is refused (not on a timeout), it
-    tries http://host/ once, a second request that is logged too; that
-    host's result keeps the HTTPS failure in "https_error" and gets an
-    "HTTPS broken" issue instead of an HSTS one ("requests_sent" counts
-    every request).
-    Resolves the hostnames first; hosts without a public IP get no request
-    and are listed in "not_requested". Version leaks and header issues
-    have "owners": the roles that would fix them, never people.
-    Checks at most 30 hostnames per call. Inputs that aren't hostnames come back in "rejected" with the reason.
-    detail="summary" (default): counts, every version leak, header issues
-    grouped by header (up to 20 hosts each) and failed requests; the full
-    per-host result is saved to "full_results_file". detail="full": everything in the reply.
-    Pass the hosts as "hostnames", or as "hosts_file": a file in Monomi's
-    scans folder, like the "full_results_file" from find_subdomains (.json)
-    or a .txt list with one host per line. A big file goes in batches of
-    30: call again with "start" set to the reply's batch.next_start
-    until it is null.
-    Results include "next_checks": checks worth running next, from this
-    call's results (suggestions only, nothing runs). Pass the tools you
-    already called as "already_ran" (e.g. ["check_takeover"]) to leave
-    them out. "cli_only" suggestions need the Monomi CLI, not a tool.
+    title="ACTIVE (needs approval): fingerprint hosts",
+    readOnlyHint=True,      # this call only records the request: nothing is sent
+    destructiveHint=False,
+    idempotentHint=False,   # each call makes a new approval request
+    openWorldHint=False))
+def fingerprint_hosts(hostnames: list[str] | None = None, hosts_file: str | None = None,
+                      start: int = 0) -> dict:
+    """ACTIVE, needs a person's approval: asks to send one normal homepage
+    request (https://host/) to each host, the same request a browser makes.
+    This call sends NOTHING and looks nothing up: it returns an
+    "approval_id". The person running Monomi approves it in a terminal
+    (`python monomi.py approve ID --scope FILE`), where they choose the
+    scope file, see every request and type yes; hosts outside their scope
+    are dropped and get no DNS lookup and no request. Then call active_run
+    with the approval_id to run it once (it expires 15 minutes after their
+    yes). Tell the person the exact command from "next_step".
+    When it runs: hosts without a public IP get no request. If HTTPS fails
+    with a TLS error or is refused (not on a timeout), it tries http://host/
+    once, a second request that is logged too. It reports the web software
+    (Server, X-Powered-By...), any exact version shown ("version leaks":
+    match them to CVEs, but a version alone is a lead, not proof of a flaw)
+    and missing or weak security headers (HSTS, CSP, X-Frame-Options,
+    X-Content-Type-Options, Referrer-Policy) on real pages (HTTP 2xx), with
+    "owners": the roles that would fix them, never people. Every request is
+    written to scans/active.log.
+    At most 30 hostnames per approval. Inputs that aren't hostnames come
+    back in "rejected". Pass the hosts as "hostnames", or as "hosts_file": a
+    file in Monomi's scans folder, like the "full_results_file" from
+    find_subdomains (.json) or a .txt list with one host per line. A big file
+    goes in batches of 30: call again with "start" set to batch.next_start.
     """
-    ran = check_already_ran(already_ran)
-    require_active("fingerprint_hosts")  # before any lookup or request
+    check_rate("fingerprint_hosts")
     per_call = hosts_per_call("fingerprint_hosts", MAX_FP_HOSTS, FP_REQUESTS_PER_HOST)
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, per_call)
-    checked, out_of_scope = scope_filter("fingerprint_hosts", checked)  # before any lookup
+    return approval_request("fingerprint_hosts", checked, skipped, rejected, batch)
+
+
+def run_fingerprint(grant: dict, detail: str, ran: set) -> dict:
+    """fingerprint_hosts, once a person approved it (from active_run)."""
+    tool, scope_file, research_file = "fingerprint_hosts", grant["scope"], grant["research"]
+    checked, out_of_scope = scope_filter(tool, grant["hosts"], scope_file)  # before any lookup
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         fp = fingerprint.fingerprint_all(
-            enrichment, workers=FP_WORKERS, max_hosts=per_call, timeout=FP_TIMEOUT,
-            scope=SCOPE,  # checked again before every request
-            limiter=LIMITER, research=RESEARCH,
-            on_request=lambda host, url, rule: log_request("fingerprint_hosts", host, url, rule))
+            enrichment, workers=FP_WORKERS, max_hosts=len(checked) or 1, timeout=FP_TIMEOUT,
+            scope=scope_file,  # checked again before every request
+            limiter=LIMITER, research=research_file,
+            on_request=lambda host, url, rule: log_request(tool, host, url, rule, grant))
     for r in fp["hosts"].values():
         for t in r["techs"]:
             if t["version"]:
@@ -784,10 +782,10 @@ def fingerprint_hosts(hostnames: list[str] | None = None, detail: str = "summary
             else:
                 issue["owners"] = owners("web", "cdn")
     requested = set(fp["hosts"]) | set(fp["errors"])
-    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
-            "out_of_scope": out_of_scope,
-            "batch": batch, "requests_sent": fp["requests"], "active_log": ACTIVE_LOG,
-            "sent_as": sent_as(),
+    full = {"approval_id": grant["approval_id"], "hosts_checked": len(checked),
+            "hosts_skipped": 0, "rejected": [], "out_of_scope": out_of_scope,
+            "batch": None, "requests_sent": fp["requests"], "active_log": ACTIVE_LOG,
+            "sent_as": sent_as(research_file),
             "not_requested": sorted(set(checked) - requested),
             "hosts": fp["hosts"], "errors": fp["errors"]}
     summary = fingerprint_summary(full)
@@ -837,71 +835,65 @@ def fingerprint_summary(full: dict) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(
-    title="ACTIVE: check exposed files",
-    readOnlyHint=False,     # it reaches out to the target, so not read-only...
-    destructiveHint=False,  # ...but every request is a GET, nothing changes there
-    idempotentHint=True,
-    openWorldHint=True))
-def check_exposed_files(hostnames: list[str] | None = None, detail: str = "summary",
-                        hosts_file: str | None = None, start: int = 0,
-                        already_ran: list[str] | None = None) -> dict:
-    """ACTIVE: looks for developer files a host serves to anyone: an API
-    spec (OpenAPI/Swagger) or a JavaScript source map. Like fingerprint_hosts
-    it contacts the target's own servers, so only run it on targets you're
-    allowed to test (in scope). It is off unless active checks were turned
-    on; if off, it refuses and nothing is sent. Every request goes to
-    scans/active.log. Only hosts allowed by the approved scope file are
-    contacted (the scope can't be passed in or changed by a tool); any other
-    host comes back in "out_of_scope" with the reason, with no DNS lookup
-    and no request. Every URL is checked against the scope again before it's
-    fetched.
-    Per host it sends only GETs, a small fixed set: a short list of
-    well-known spec paths (/openapi.json, /swagger.json, /v3/api-docs...),
-    then the homepage, a few of its same-host scripts, and the .map files
-    those scripts name. At most 13 requests per host. It never POSTs, never
-    follows a spec to call the API, and never leaves the hosts you pass in.
-    A file is reported only when it really parses as what it claims to be,
-    so a site that returns a page for every path isn't mistaken for a spec.
-    For a spec it reports the URL, type/version, title, endpoint and method
-    counts, the first paths, any server URLs it lists (these can name
-    internal hosts) and whether it declares a login scheme. For a source
-    map it reports the map URL, how many source files it lists, the first
-    few names, and whether the original source CODE is embedded
-    (has_source_content) — the bigger leak. The code itself is never
-    returned or saved. Findings have "owners": the roles that would fix
-    them, never people.
-    Checks at most 10 hostnames per call. Inputs that aren't hostnames come
-    back in "rejected"; hosts with no public IP are in "not_requested".
-    detail="summary" (default): counts plus the specs and maps found; the
-    full per-host result is saved to "full_results_file". detail="full":
-    everything in the reply.
-    Pass the hosts as "hostnames", or "hosts_file" (a .json/.txt file in
-    Monomi's scans folder). A big file goes in batches of 10: call again
-    with "start" set to the reply's batch.next_start until it is null.
-    Results include "next_checks" (suggestions only, nothing runs); pass
-    "already_ran" to leave out checks you already did.
+    title="ACTIVE (needs approval): check exposed files",
+    readOnlyHint=True,      # this call only records the request: nothing is sent
+    destructiveHint=False,
+    idempotentHint=False,   # each call makes a new approval request
+    openWorldHint=False))
+def check_exposed_files(hostnames: list[str] | None = None, hosts_file: str | None = None,
+                        start: int = 0) -> dict:
+    """ACTIVE, needs a person's approval: asks to look for developer files a
+    host serves to anyone: an API spec (OpenAPI/Swagger) or a JavaScript
+    source map. This call sends NOTHING and looks nothing up: it returns an
+    "approval_id". The person running Monomi approves it in a terminal
+    (`python monomi.py approve ID --scope FILE`), where they choose the
+    scope file, see the requests and type yes; hosts outside their scope
+    are dropped and get no DNS lookup and no request. Then call active_run
+    with the approval_id to run it once (it expires 15 minutes after their
+    yes). Tell the person the exact command from "next_step".
+    When it runs, per host it sends only GETs: a short list of well-known
+    spec paths (/openapi.json, /swagger.json, /v3/api-docs...), the
+    homepage, a few of its same-host scripts and the .map files those
+    scripts name. At most 13 requests per host, never another host, every
+    URL checked against the approved scope first. It never POSTs and never
+    follows a spec to call the API. A file is reported only when it really
+    parses as what it claims to be. For a spec: URL, type/version, title,
+    endpoint and method counts, first paths, server URLs (these can name
+    internal hosts), whether it declares a login scheme. For a source map:
+    the map URL, how many source files it lists, the first few names, and
+    whether the original source CODE is embedded (has_source_content), the
+    bigger leak; the code itself is never returned or saved. Findings have
+    "owners": the roles that would fix them, never people.
+    At most 10 hostnames per approval. Pass "hostnames", or "hosts_file" (a
+    .json/.txt file in Monomi's scans folder); a big file goes in batches
+    of 10: call again with "start" set to batch.next_start.
     """
-    ran = check_already_ran(already_ran)
-    require_active("check_exposed_files")  # before any lookup or request
+    check_rate("check_exposed_files")
     per_call = hosts_per_call("check_exposed_files", MAX_EXP_HOSTS, exposed.MAX_REQUESTS)
     checked, skipped, rejected, batch = pick_hosts(hostnames, hosts_file, start, per_call)
-    checked, out_of_scope = scope_filter("check_exposed_files", checked)  # before any lookup
+    return approval_request("check_exposed_files", checked, skipped, rejected, batch)
+
+
+def run_exposed(grant: dict, detail: str, ran: set) -> dict:
+    """check_exposed_files, once a person approved it (from active_run)."""
+    tool, scope_file, research_file = "check_exposed_files", grant["scope"], grant["research"]
+    checked, out_of_scope = scope_filter(tool, grant["hosts"], scope_file)  # before any lookup
     with contextlib.redirect_stdout(sys.stderr):
         enrichment = enrich(checked)
         ex = exposed.check_all(
-            enrichment, workers=EXP_WORKERS, max_hosts=per_call, timeout=EXP_TIMEOUT,
-            scope=SCOPE,  # checked again before every request
-            limiter=LIMITER, research=RESEARCH,
-            on_request=lambda host, url, rule: log_request("check_exposed_files", host, url, rule))
+            enrichment, workers=EXP_WORKERS, max_hosts=len(checked) or 1, timeout=EXP_TIMEOUT,
+            scope=scope_file,  # checked again before every request
+            limiter=LIMITER, research=research_file,
+            on_request=lambda host, url, rule: log_request(tool, host, url, rule, grant))
     for finding in ex["hosts"].values():
         if finding["spec"]:
             finding["spec"]["owners"] = owners("web", "cdn")
         for m in finding["source_maps"]:
             m["owners"] = owners("web")
-    full = {"hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
-            "out_of_scope": out_of_scope,
-            "batch": batch, "requests_sent": ex["requests"], "active_log": ACTIVE_LOG,
-            "sent_as": sent_as(),
+    full = {"approval_id": grant["approval_id"], "hosts_checked": len(checked),
+            "hosts_skipped": 0, "rejected": [], "out_of_scope": out_of_scope,
+            "batch": None, "requests_sent": ex["requests"], "active_log": ACTIVE_LOG,
+            "sent_as": sent_as(research_file),
             "not_requested": sorted(set(checked) - set(ex["requested"])),
             "hosts": ex["hosts"]}
     summary = exposed_summary(full)
@@ -944,6 +936,41 @@ def exposed_summary(full: dict) -> dict:
     }
 
 
+RUNNERS = {"fingerprint_hosts": run_fingerprint, "check_exposed_files": run_exposed}
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    title="ACTIVE: run an approved check",
+    readOnlyHint=False,     # it reaches out to the target, so not read-only...
+    destructiveHint=False,  # ...but every request is a GET, nothing changes there
+    idempotentHint=False,   # an approval runs once
+    openWorldHint=True))
+def active_run(approval_id: str, detail: str = "summary", already_ran: list[str] | None = None) -> dict:
+    """ACTIVE: runs an active check (fingerprint_hosts or check_exposed_files)
+    that the person running Monomi approved in a terminal, once. Pass only
+    the approval_id that tool gave you; nothing else can be passed, and the
+    hosts, scope and research header are exactly what the person approved.
+    It refuses, and sends nothing, if the id wasn't approved yet, was
+    already used, has expired (15 minutes after the approval), or the
+    scope or research file changed since. Every request and refusal is
+    written to scans/active.log.
+    Returns what the approved tool finds (see fingerprint_hosts and
+    check_exposed_files). detail="summary" (default) or "full"; the full
+    result is saved to "full_results_file". Results include "next_checks"
+    (suggestions only, nothing runs); pass "already_ran" to leave out checks
+    you already did.
+    """
+    ran = check_already_ran(already_ran)
+    check_rate("active_run")
+    try:
+        grant = approvals.claim(approval_id)
+    except approvals.ApprovalError as e:
+        log_refusal("active_run", str(e))
+        raise ToolError(f"{e}. Nothing was sent.")
+    grant["approval_id"] = approval_id
+    return RUNNERS[grant["tool"]](grant, detail, ran)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def investigate_ip(ips: list[str]) -> dict:
     """Look into suspicious IP addresses (e.g. from logs or alerts): is each
@@ -976,27 +1003,24 @@ def investigate_ip(ips: list[str]) -> dict:
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Monomi MCP server (talks over stdin/stdout)")
-    parser.add_argument("--allow-active", action="store_true",
-                        help="allow ACTIVE tools (fingerprint_hosts, check_exposed_files), "
-                             "which send requests to targets")
-    parser.add_argument("--scope", metavar="FILE",
-                        help="the approved scope file: active tools only reach hosts it allows")
-    parser.add_argument("--scope-sha256", metavar="HEX",
-                        help="the file's sha256 when it was approved (set by mcp setup)")
-    parser.add_argument("--research", metavar="FILE",
-                        help="the approved research-header file: every active request carries it")
-    parser.add_argument("--research-sha256", metavar="HEX",
-                        help="the research file's sha256 when it was approved (set by mcp setup)")
     parser.add_argument("--rate", metavar="N",
                         help=f"active requests per second, in total (default {rate.SCOPED_DEFAULT:g})")
+    # v1.19 config flags: accepted and ignored, so an old config still starts
+    for flag in LEGACY_FLAGS:
+        if flag == "--allow-active":
+            parser.add_argument(flag, action="store_true", help=argparse.SUPPRESS)
+        else:
+            parser.add_argument(flag, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    global ALLOW_ACTIVE, SCOPE, SCOPE_PROBLEM
-    ALLOW_ACTIVE = args.allow_active
-    SCOPE, SCOPE_PROBLEM = scope.check_pinned(args.scope, args.scope_sha256)
-    load_settings(args.rate, args.research, args.research_sha256)
+    load_settings(args.rate)
     # stderr, never stdout: stdout carries the MCP messages
-    print(f"monomi MCP server: active tools {'ON' if ALLOW_ACTIVE else 'off'}; "
-          f"{scope_status()}; {settings_status()}", file=sys.stderr)
+    print(f"monomi MCP server: active checks need a terminal approval (monomi.py approve); "
+          f"{settings_status()}", file=sys.stderr)
+    old = [f for f in LEGACY_FLAGS if getattr(args, f.lstrip("-").replace("-", "_"))]
+    if old:
+        print(f"monomi MCP server: ignoring {', '.join(old)} (not used since v1.20: the scope and "
+              "research files come with each approval). Run `python monomi.py mcp setup` to "
+              "remove them from the config.", file=sys.stderr)
     # API keys from the suite's key file (~/.config/0x41/keys.env): the Claude
     # app doesn't read ~/.bashrc. Names only, never values, and on stderr.
     from monomi import keys
@@ -1005,38 +1029,23 @@ def main(argv=None) -> None:
     mcp.run()
 
 
-def load_settings(rate_text, research_path, research_sha256) -> None:
-    """--rate and the pinned research file, once at startup. Anything unusable
-    is kept in SETTINGS_PROBLEM and every active tool refuses (fail closed:
-    a program that requires the header must never get requests without it)."""
-    global LIMITER, RESEARCH, SETTINGS_PROBLEM
-    problems = []
+def load_settings(rate_text) -> None:
+    """--rate, once at startup. An unusable rate is kept in RATE_PROBLEM and
+    every active tool refuses (fail closed)."""
+    global LIMITER, RATE_PROBLEM
     try:
         LIMITER = rate.Limiter(rate.choose(rate.parse(rate_text) if rate_text else None, scoped=True))
+        RATE_PROBLEM = None
     except rate.RateError as e:
         LIMITER = rate.Limiter(rate.SCOPED_DEFAULT)
-        problems.append(str(e))
-    RESEARCH, problem = research.check_pinned(research_path, research_sha256)
-    if problem:
-        problems.append(problem)
-    SETTINGS_PROBLEM = "; ".join(problems) or None
+        RATE_PROBLEM = str(e)
 
 
 def settings_status() -> str:
-    """One line about the rate and research file for the startup message."""
-    if SETTINGS_PROBLEM:
-        return f"settings REFUSED: {SETTINGS_PROBLEM}"
-    header = (f"research {RESEARCH.path} sha256 {RESEARCH.sha256}" if RESEARCH
-              else "no research header")
-    return f"rate {LIMITER.describe()}; {header}"
-
-
-def scope_status() -> str:
-    """One line about the scope for the startup message (hash in full)."""
-    if SCOPE_PROBLEM:
-        return f"scope REFUSED: {SCOPE_PROBLEM}"
-    return (f"scope {SCOPE.path} sha256 {SCOPE.sha256} "
-            f"({len(SCOPE.inclusions)} in, {len(SCOPE.exclusions)} excluded)")
+    """One line about the rate for the startup message."""
+    if RATE_PROBLEM:
+        return f"rate REFUSED: {RATE_PROBLEM}"
+    return f"rate {LIMITER.describe()}"
 
 
 if __name__ == "__main__":

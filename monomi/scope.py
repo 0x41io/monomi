@@ -303,28 +303,28 @@ def split(scope, hosts) -> tuple[list[str], list[dict]]:
 
 
 NO_SCOPE = ("no scope file is approved, so active checks refuse every host. "
-            "The person running Monomi sets one with "
-            "`python monomi.py mcp setup --scope FILE` (and types yes)")
+            "The person running Monomi approves each active check with a scope file: "
+            "`python monomi.py approve ID --scope FILE` (and types yes)")
 
 
 def check_pinned(path: str | None, sha256: str | None) -> tuple[Scope | None, str | None]:
     """Load the approved scope file and check it's exactly what was approved.
 
     Returns (scope, None) when it can be used, or (scope or None, why not).
-    The MCP server calls this once at startup and doctor calls it to report,
-    so both always give the same answer."""
+    Checked again when an approved active check runs (approvals.claim), so
+    a file edited after the approval can't be used."""
     if not path:
         return None, NO_SCOPE
     if not sha256:
-        return None, ("the scope file has no approved hash; run "
-                      "`python monomi.py mcp setup --scope FILE` again")
+        return None, ("the scope file has no approved hash, so it needs a new approval: "
+                      "`python monomi.py approve ID --scope FILE`")
     s = load(path)
     if s.problem():
         return s, s.problem()
     if s.sha256 != sha256.lower():
-        return s, ("the scope file changed since it was approved, so active checks "
-                   "refuse until you approve it again: "
-                   f"`python monomi.py mcp setup --scope {path}` (and type yes)")
+        return s, ("the scope file changed since it was approved, so this approval can't be "
+                   "used; ask for a new one and approve it with the file as it is now: "
+                   f"`python monomi.py approve ID --scope {path}` (and type yes)")
     return s, None
 
 

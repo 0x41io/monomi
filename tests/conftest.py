@@ -73,9 +73,8 @@ def pytest_addoption(parser):
 @pytest.fixture(autouse=True)
 def mcp_no_rate_limit(monkeypatch):
     """The MCP server's active tools don't wait for --rate slots in tests (the
-    real default is 1/s), and start with no research file or settings problem.
-    Tests of the rate itself set mcp_server.LIMITER on their own."""
+    real default is 1/s), and start with no rate problem. Tests of the rate
+    itself set mcp_server.LIMITER on their own."""
     from monomi import mcp_server, rate
     monkeypatch.setattr(mcp_server, "LIMITER", rate.Limiter(None))
-    monkeypatch.setattr(mcp_server, "RESEARCH", None)
-    monkeypatch.setattr(mcp_server, "SETTINGS_PROBLEM", None)
+    monkeypatch.setattr(mcp_server, "RATE_PROBLEM", None)

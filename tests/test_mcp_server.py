@@ -26,15 +26,11 @@ class AllowAll(scope.Scope):
 
 @pytest.fixture(autouse=True)
 def results_dir(tmp_path, monkeypatch):
-    """Every test saves its full results in a temp folder, not the real scans/,
-    and starts with active tools off (as the real server does). An approved
-    scope is in place, so tests that turn active tools on reach the tool;
-    the scope tests below take it away again."""
+    """Every test saves its full results, the active log and its approvals
+    in a temp folder, never the real scans/."""
     monkeypatch.setattr(mcp_server, "RESULTS_DIR", str(tmp_path))
     monkeypatch.setattr(mcp_server, "ACTIVE_LOG", str(tmp_path / "active.log"))
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", False)
-    monkeypatch.setattr(mcp_server, "SCOPE", AllowAll())
-    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", None)
+    monkeypatch.setattr(mcp_server.approvals, "approvals_dir", lambda: str(tmp_path / "approvals"))
     return tmp_path
 
 
@@ -605,38 +601,62 @@ def read_log(results_dir):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def assert_only_a_refusal(results_dir):
-    [line] = read_log(results_dir)
-    assert line["event"] == "refused" and line["reason"] == "active checks are off"
-    assert line["via"] == "mcp" and line["host"] is None
+def run(monkeypatch, tool, hosts, detail="summary", already_ran=None, scope_file=None, research_file=None):
+    """The v1.20 flow without a terminal: the tool only asks (nothing sent),
+    the person's typed yes is stood in for (approvals.py has its own tests),
+    and active_run runs it once with the approved scope and research file."""
+    asked = getattr(mcp_server, tool)(hosts)
+    assert asked["nothing_sent"] and asked["approval_needed"]
+    grant = {"tool": tool, "hosts": asked["hosts"], "scope": scope_file or AllowAll(),
+             "research": research_file, "max_per_host": 2}
+    monkeypatch.setattr(mcp_server.approvals, "claim", lambda rid: dict(grant))
+    return mcp_server.active_run(asked["approval_id"], detail=detail, already_ran=already_ran)
 
 
-def test_fingerprint_refused_when_active_is_off(monkeypatch, results_dir):
-    sent = fake_web(monkeypatch)
-    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
-        mcp_server.fingerprint_hosts(HOSTS)
-    assert sent == []
-    assert_only_a_refusal(results_dir)  # v1.12: refusals are logged, requests none
-
-
-def test_fingerprint_refusal_reason_reaches_the_client(monkeypatch):
-    fake_web(monkeypatch)
-    with pytest.raises(mcp_server.ToolError, match="--allow-active"):
-        asyncio.run(mcp_server.mcp.call_tool("fingerprint_hosts", {"hostnames": ["app"]}))
-
-
-def test_fingerprint_refused_before_any_lookup(monkeypatch):
-    def boom(hosts):
-        raise AssertionError("DNS lookup ran while active tools were off")
+@pytest.mark.parametrize("tool", ["fingerprint_hosts", "check_exposed_files"])
+def test_an_active_tool_only_asks_sends_nothing_and_looks_nothing_up(monkeypatch, results_dir, tool):
+    def boom(*args, **kwargs):
+        raise AssertionError("DNS lookup ran before a person approved")
     monkeypatch.setattr(mcp_server, "enrich", boom)
-    with pytest.raises(mcp_server.ToolError):
-        mcp_server.fingerprint_hosts(["app"])
+    sent = fake_web(monkeypatch)
+    asked = getattr(mcp_server, tool)(["app", "WWW."])
+    assert asked["nothing_sent"] is True and asked["approval_needed"] is True
+    assert asked["hosts"] == ["app", "www"]
+    assert f"python monomi.py approve {asked['approval_id']} --scope" in asked["next_step"]
+    assert sent == [] and read_log(results_dir) == []   # nothing sent, so nothing logged
+    rec = json.loads((results_dir / "approvals" / f"{asked['approval_id']}.json").read_text())
+    assert rec["state"] == "pending" and rec["tool"] == tool
+
+
+def test_no_valid_hosts_means_nothing_to_approve(monkeypatch):
+    asked = mcp_server.fingerprint_hosts(["not a host!"])
+    assert asked["approval_needed"] is False and asked["nothing_sent"] is True
+    assert asked["rejected"] and "approval_id" not in asked
+
+
+def test_active_run_without_an_approval_refuses_logs_and_reaches_the_client(monkeypatch, results_dir):
+    sent = fake_web(monkeypatch)
+    rid = mcp_server.fingerprint_hosts(["app"])["approval_id"]
+    with pytest.raises(mcp_server.ToolError, match="approve it first.*Nothing was sent"):
+        mcp_server.active_run(rid)
+    with pytest.raises(Exception, match="approve it first"):
+        asyncio.run(mcp_server.mcp.call_tool("active_run", {"approval_id": rid}))
+    assert sent == []
+    [line, _] = read_log(results_dir)
+    assert line["event"] == "refused" and line["tool"] == "active_run" and "approve it first" in line["reason"]
+
+
+@pytest.mark.parametrize("rid", ["nope", "../../etc/passwd", "abcd-efgh"])
+def test_active_run_refuses_ids_that_are_not_approvals(monkeypatch, rid):
+    sent = fake_web(monkeypatch)
+    with pytest.raises(mcp_server.ToolError, match="Nothing was sent"):
+        mcp_server.active_run(rid)
+    assert sent == []
 
 
 def test_fingerprint_only_requests_public_hosts_and_logs_each(monkeypatch, results_dir):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     sent = fake_web(monkeypatch)
-    result = mcp_server.fingerprint_hosts(HOSTS)
+    result = run(monkeypatch, "fingerprint_hosts", HOSTS)
     assert sorted(sent) == ["https://app/", "https://down/", "https://www/"]
     assert result["requests_sent"] == 3
     assert result["not_requested"] == ["gone", "intranet"]
@@ -647,9 +667,8 @@ def test_fingerprint_only_requests_public_hosts_and_logs_each(monkeypatch, resul
 
 
 def test_fingerprint_summary_leaks_headers_redirects_errors(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_web(monkeypatch)
-    result = mcp_server.fingerprint_hosts(HOSTS)
+    result = run(monkeypatch, "fingerprint_hosts", HOSTS)
     assert result["version_leaks"] == [{
         "host": "app", "tech": "nginx/1.24.0", "version": "1.24.0",
         "evidence": "server: nginx/1.24.0", "owners": ["server / infrastructure admin"]}]
@@ -665,51 +684,56 @@ def test_fingerprint_summary_leaks_headers_redirects_errors(monkeypatch):
 
 
 def test_fingerprint_full_detail_has_owners_on_each_issue(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_web(monkeypatch)
-    result = mcp_server.fingerprint_hosts(HOSTS, detail="full")
+    result = run(monkeypatch, "fingerprint_hosts", HOSTS, detail="full")
     app = result["hosts"]["app"]
     assert all(i["owners"] == ["web app team", "CDN / proxy admin"] for i in app["header_issues"])
     assert app["techs"][0]["owners"] == ["server / infrastructure admin"]
 
 
 def test_fingerprint_caps_hosts_per_call(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_web(monkeypatch)
     many = [f"h{i:02d}" for i in range(45)]
-    result = mcp_server.fingerprint_hosts(many)
-    assert result["hosts_checked"] == 30 and result["batch"]["next_start"] == 30
+    asked = mcp_server.fingerprint_hosts(many)
+    assert asked["hosts_checked"] == 30 and asked["batch"]["next_start"] == 30
+    assert run(monkeypatch, "fingerprint_hosts", many)["hosts_checked"] == 30
 
 
 def test_fingerprint_never_suggests_itself(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_web(monkeypatch)
-    result = mcp_server.fingerprint_hosts(HOSTS)
+    result = run(monkeypatch, "fingerprint_hosts", HOSTS)
     assert "--fingerprint" not in flags(result)
     # app/www/down sit on the target's own IPs; having fingerprinted, the next
     # active step it points to is checking those live pages for exposed files
     assert flags(result) == ["--ports", "--exposed-files"]
-    result = mcp_server.fingerprint_hosts(
-        HOSTS, already_ran=["check_ports", "check_exposed_files"])
+    result = run(monkeypatch, "fingerprint_hosts", HOSTS, already_ran=["check_ports", "check_exposed_files"])
     assert flags(result) == []
 
 
-def test_fingerprint_tool_is_labeled_active():
+def test_active_tools_are_labeled_and_only_active_run_reaches_out():
     tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
-    fp = tools["fingerprint_hosts"].annotations
-    assert fp.read_only_hint is False and fp.destructive_hint is False and fp.open_world_hint is True
-    assert fp.title.startswith("ACTIVE")
-    assert tools["fingerprint_hosts"].description.lstrip().startswith("ACTIVE")
+    for name in ("fingerprint_hosts", "check_exposed_files"):
+        a = tools[name].annotations
+        assert a.title.startswith("ACTIVE (needs approval)")
+        assert a.read_only_hint is True and a.open_world_hint is False   # this call sends nothing
+        assert tools[name].description.lstrip().startswith("ACTIVE, needs a person's approval")
+    run_ = tools["active_run"].annotations
+    assert run_.read_only_hint is False and run_.destructive_hint is False and run_.open_world_hint is True
+    assert set(tools["active_run"].input_schema["properties"]) == {"approval_id", "detail", "already_ran"}
 
 
-def test_main_reads_allow_active(monkeypatch, capsys):
+def test_main_ignores_old_config_flags_with_a_note(monkeypatch, capsys, tmp_path):
+    # A v1.19 config still passes these: the server must start, use none of
+    # them, and say how to clean them up
     monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
-    mcp_server.main([])
-    assert mcp_server.ALLOW_ACTIVE is False
-    mcp_server.main(["--allow-active"])
-    assert mcp_server.ALLOW_ACTIVE is True
+    f = tmp_path / "scope.txt"
+    f.write_text("*.example.test\n")
+    mcp_server.main(["--allow-active", "--scope", str(f), "--scope-sha256", "ab" * 32,
+                     "--research", str(f), "--research-sha256", "cd" * 32])
     err = capsys.readouterr().err
-    assert "active tools off" in err and "active tools ON" in err
+    assert "ignoring --allow-active, --scope, --scope-sha256, --research, --research-sha256" in err
+    assert "mcp setup" in err and "need a terminal approval" in err
+    assert not hasattr(mcp_server, "ALLOW_ACTIVE") and not hasattr(mcp_server, "SCOPE")
 
 
 def fake_plain_http_host(monkeypatch):
@@ -727,9 +751,8 @@ def fake_plain_http_host(monkeypatch):
 
 
 def test_fingerprint_falls_back_to_http_and_logs_both(monkeypatch, results_dir):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     sent = fake_plain_http_host(monkeypatch)
-    result = mcp_server.fingerprint_hosts(["dev"], detail="full")
+    result = run(monkeypatch, "fingerprint_hosts", ["dev"], detail="full")
     assert sent == ["https://dev/", "http://dev/"]
     assert result["requests_sent"] == 2  # requests, not hosts: matches the log
     log = [json.loads(line) for line in (results_dir / "active.log").read_text().splitlines()]
@@ -740,9 +763,8 @@ def test_fingerprint_falls_back_to_http_and_logs_both(monkeypatch, results_dir):
 
 
 def test_broken_https_is_owned_by_server_and_cdn(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_plain_http_host(monkeypatch)
-    result = mcp_server.fingerprint_hosts(["dev"])
+    result = run(monkeypatch, "fingerprint_hosts", ["dev"])
     issues = result["header_issues"]
     assert "Strict-Transport-Security" not in issues
     assert issues["HTTPS"] == {"problems": {"broken": 1}, "host_count": 1, "hosts": ["dev"],
@@ -794,36 +816,13 @@ def fake_exposed_web(monkeypatch, pages):
 EXP_HOSTS = ["app", "intranet"]
 
 
-def test_exposed_refused_when_active_is_off(monkeypatch, results_dir):
-    sent = fake_exposed_web(monkeypatch, {})
-    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
-        mcp_server.check_exposed_files(EXP_HOSTS)
-    assert sent == []
-    assert_only_a_refusal(results_dir)  # v1.12: refusals are logged, requests none
-
-
-def test_exposed_refusal_reason_reaches_the_client(monkeypatch):
-    fake_exposed_web(monkeypatch, {})
-    with pytest.raises(mcp_server.ToolError, match="--allow-active"):
-        asyncio.run(mcp_server.mcp.call_tool("check_exposed_files", {"hostnames": ["app"]}))
-
-
-def test_exposed_refused_before_any_lookup(monkeypatch):
-    def boom(hosts):
-        raise AssertionError("DNS lookup ran while active tools were off")
-    monkeypatch.setattr(mcp_server, "enrich", boom)
-    with pytest.raises(mcp_server.ToolError):
-        mcp_server.check_exposed_files(["app"])
-
-
 def test_exposed_finds_spec_and_map_with_owners(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_exposed_web(monkeypatch, {
         "https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
         "https://app/": MapResp(body=b'<script src="/app.js"></script>'),
         "https://app/app.js": MapResp(headers={"sourcemap": "app.js.map"}, body=b"x=1"),
         "https://app/app.js.map": MapResp(body=EXPOSED_MAP)})
-    result = mcp_server.check_exposed_files(EXP_HOSTS, detail="full")
+    result = run(monkeypatch, "check_exposed_files", EXP_HOSTS, detail="full")
     assert result["hosts_checked"] == 2 and result["not_requested"] == ["intranet"]
     app = result["hosts"]["app"]
     assert app["spec"]["type"] == "OpenAPI" and app["spec"]["declares_auth"] is True
@@ -835,13 +834,12 @@ def test_exposed_finds_spec_and_map_with_owners(monkeypatch):
 
 
 def test_exposed_summary_counts_and_flags_source_code(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_exposed_web(monkeypatch, {
         "https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
         "https://app/": MapResp(body=b'<script src="/app.js"></script>'),
         "https://app/app.js": MapResp(headers={"sourcemap": "app.js.map"}, body=b"x=1"),
         "https://app/app.js.map": MapResp(body=EXPOSED_MAP)})
-    result = mcp_server.check_exposed_files(EXP_HOSTS)  # summary mode
+    result = run(monkeypatch, "check_exposed_files", EXP_HOSTS)  # summary mode
     assert result["specs_found"] == 1 and result["source_maps_found"] == 1
     assert result["maps_with_source_code"] == ["app"]
     assert result["specs"][0]["endpoints"] == 2
@@ -849,11 +847,10 @@ def test_exposed_summary_counts_and_flags_source_code(monkeypatch):
 
 
 def test_exposed_logs_each_request_and_counts_them(monkeypatch, results_dir):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     sent = fake_exposed_web(monkeypatch, {
         "https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
         "https://app/": MapResp(body=b"<html></html>")})
-    result = mcp_server.check_exposed_files(EXP_HOSTS)
+    result = run(monkeypatch, "check_exposed_files", EXP_HOSTS)
     log = [json.loads(line) for line in (results_dir / "active.log").read_text().splitlines()]
     assert result["requests_sent"] == len(log) == len(sent)
     assert {entry["tool"] for entry in log} == {"check_exposed_files"}
@@ -861,17 +858,15 @@ def test_exposed_logs_each_request_and_counts_them(monkeypatch, results_dir):
 
 
 def test_exposed_clean_host_is_no_finding(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_exposed_web(monkeypatch, {"https://app/": MapResp(body=b"<html></html>")})
-    result = mcp_server.check_exposed_files(EXP_HOSTS)
+    result = run(monkeypatch, "check_exposed_files", EXP_HOSTS)
     assert result["hosts_with_findings"] == 0 and result["specs_found"] == 0
 
 
 def test_exposed_suggests_next_active_and_passive_checks(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     fake_exposed_web(monkeypatch, {"https://app/openapi.json": MapResp(body=EXPOSED_OPENAPI),
                                    "https://app/": MapResp(body=b"<html></html>")})
-    result = mcp_server.check_exposed_files(EXP_HOSTS)
+    result = run(monkeypatch, "check_exposed_files", EXP_HOSTS)
     # app sits on a public IP of its own, so --ports follows; it never suggests
     # itself, and it doesn't point back at its active sibling --fingerprint
     assert flags(result) == ["--ports"]
@@ -879,74 +874,12 @@ def test_exposed_suggests_next_active_and_passive_checks(monkeypatch):
 
 # --- scope (v1.12) -----------------------------------------------------------
 
-def test_active_tools_refuse_without_a_usable_scope_even_when_on(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
-    monkeypatch.setattr(mcp_server, "SCOPE", None)
-    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", scope.NO_SCOPE)
-
-    def boom(*args, **kwargs):
-        raise AssertionError("DNS lookup ran without an approved scope")
-    monkeypatch.setattr(mcp_server, "enrich", boom)
-    for tool in (mcp_server.fingerprint_hosts, mcp_server.check_exposed_files):
-        with pytest.raises(mcp_server.ToolError, match="no scope file is approved"):
-            tool(["www.example.test"])
-
-
-def test_scope_refusal_reason_reaches_the_client(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
-    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", "the scope file changed since it was approved")
-    with pytest.raises(Exception, match="changed since it was approved"):
-        asyncio.run(mcp_server.mcp.call_tool("fingerprint_hosts",
-                                             {"hostnames": ["www.example.test"]}))
-
-
-def test_no_tool_takes_a_scope_argument():
-    # Invariant 4: the agent can never supply or change the scope
+def test_no_tool_takes_a_scope_research_file_or_a_yes():
+    # The agent can never supply the scope, the research header or the yes:
+    # they only come with a person's approval in a terminal
     for tool in asyncio.run(mcp_server.mcp.list_tools()):
-        params = tool.input_schema.get("properties", {})
-        assert not any("scope" in name.lower() for name in params), tool.name
-
-
-def test_server_starts_fail_closed():
-    # The module's own defaults, before main() runs, checked in a fresh Python
-    import subprocess
-    import sys
-    code = "from monomi import mcp_server, scope; print(mcp_server.SCOPE is None, mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE)"
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    assert out.stdout.split() == ["True", "True"], out.stderr
-
-
-def test_main_reads_and_pins_the_scope(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
-    f = tmp_path / "scope.txt"
-    f.write_bytes(b"example.test\n*.example.test\n!dev.example.test\n")
-    digest = scope.load(str(f)).sha256
-    mcp_server.main(["--allow-active", "--scope", str(f), "--scope-sha256", digest])
-    assert mcp_server.SCOPE_PROBLEM is None
-    assert mcp_server.SCOPE.match("www.example.test").allowed
-    err = capsys.readouterr().err
-    assert f"scope {f} sha256 {digest} (2 in, 1 excluded)" in err  # full hash at startup
-
-
-def test_main_refuses_a_scope_edited_after_approval(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
-    f = tmp_path / "scope.txt"
-    f.write_bytes(b"*.example.test\n")
-    digest = scope.load(str(f)).sha256
-    f.write_bytes(b"*.example.test\n*.other.test\n")
-    mcp_server.main(["--allow-active", "--scope", str(f), "--scope-sha256", digest])
-    assert "changed since it was approved" in mcp_server.SCOPE_PROBLEM
-    assert "scope REFUSED: the scope file changed" in capsys.readouterr().err
-    with pytest.raises(mcp_server.ToolError, match="changed since it was approved"):
-        mcp_server.require_active("fingerprint_hosts")
-
-
-def test_main_without_a_scope_says_so(monkeypatch, capsys):
-    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
-    mcp_server.main(["--allow-active"])
-    assert mcp_server.SCOPE_PROBLEM == scope.NO_SCOPE
-    assert "active tools ON; scope REFUSED: no scope file is approved" in capsys.readouterr().err
+        params = [name.lower() for name in tool.input_schema.get("properties", {})]
+        assert not any(w in name for name in params for w in ("scope", "research", "yes", "approve")), tool.name
 
 
 # --- per-host scope filter + audit log (v1.12) -------------------------------
@@ -955,13 +888,9 @@ LAB_SCOPE = b"example.test\n*.example.test\n!dev.example.test\n"
 
 
 @pytest.fixture
-def lab_scope(monkeypatch):
-    """A real approved scope (not AllowAll) with active tools on."""
-    s = scope.from_bytes(LAB_SCOPE, "scope.txt")
-    monkeypatch.setattr(mcp_server, "SCOPE", s)
-    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", None)
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
-    return s
+def lab_scope():
+    """A real scope (not AllowAll), as a person's approval would carry it."""
+    return scope.from_bytes(LAB_SCOPE, "scope.txt")
 
 
 def lab_web(monkeypatch, module):
@@ -990,7 +919,7 @@ ASKED = ["www.example.test", "dev.example.test", "evil.test", "example.test"]
 def test_out_of_scope_hosts_get_no_dns_lookup_and_no_request(
         monkeypatch, results_dir, lab_scope, tool, module):
     looked_up, sent = lab_web(monkeypatch, module)
-    result = getattr(mcp_server, tool)(ASKED, detail="full")
+    result = run(monkeypatch, tool, ASKED, detail="full", scope_file=lab_scope)
     assert looked_up == ["example.test", "www.example.test"]   # filtered BEFORE the lookup
     assert sent and all("dev.example.test" not in u and "evil.test" not in u for u in sent)
     assert result["out_of_scope"] == [
@@ -1003,7 +932,7 @@ def test_out_of_scope_hosts_get_no_dns_lookup_and_no_request(
     ("fingerprint_hosts", mcp_server.fingerprint), ("check_exposed_files", mcp_server.exposed)])
 def test_audit_log_has_rules_hashes_and_refusals(monkeypatch, results_dir, lab_scope, tool, module):
     _, sent = lab_web(monkeypatch, module)
-    result = getattr(mcp_server, tool)(ASKED)
+    result = run(monkeypatch, tool, ASKED, scope_file=lab_scope)
     log = read_log(results_dir)
     refused = [x for x in log if x["event"] == "refused"]
     requests_ = [x for x in log if x["event"] == "request"]
@@ -1018,26 +947,15 @@ def test_audit_log_has_rules_hashes_and_refusals(monkeypatch, results_dir, lab_s
 
 def test_summary_shows_out_of_scope(monkeypatch, results_dir, lab_scope):
     lab_web(monkeypatch, mcp_server.fingerprint)
-    result = mcp_server.fingerprint_hosts(ASKED)
+    result = run(monkeypatch, "fingerprint_hosts", ASKED, scope_file=lab_scope)
     assert result["out_of_scope_count"] == 2 and len(result["out_of_scope"]) == 2
 
 
 def test_all_hosts_out_of_scope_sends_nothing(monkeypatch, results_dir, lab_scope):
     looked_up, sent = lab_web(monkeypatch, mcp_server.fingerprint)
-    result = mcp_server.fingerprint_hosts(["evil.test", "dev.example.test"])
+    result = run(monkeypatch, "fingerprint_hosts", ["evil.test", "dev.example.test"], scope_file=lab_scope)
     assert looked_up == [] and sent == [] and result["requests_sent"] == 0
     assert result["out_of_scope_count"] == 2
-
-
-def test_scope_problem_refusal_is_logged_with_its_reason(monkeypatch, results_dir):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
-    monkeypatch.setattr(mcp_server, "SCOPE", None)
-    monkeypatch.setattr(mcp_server, "SCOPE_PROBLEM", scope.NO_SCOPE)
-    with pytest.raises(mcp_server.ToolError):
-        mcp_server.check_exposed_files(["www.example.test"])
-    [line] = read_log(results_dir)
-    assert line["event"] == "refused" and line["reason"] == scope.NO_SCOPE
-    assert line["tool"] == "check_exposed_files" and line["scope_sha256"] is None
 
 
 # --- The validation gate on takeover leads (v1.13): checks 4 and 6 ---
@@ -1086,37 +1004,24 @@ def test_breaking_the_takeover_gate_lets_an_unconfirmed_lead_through(monkeypatch
 
 # --- --rate and --research on the server (v1.19) ------------------------------
 
-def test_default_rate_is_1_per_second_and_no_research(monkeypatch, capsys):
+def test_default_rate_is_1_per_second(monkeypatch, capsys):
     monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
     mcp_server.main([])
-    assert mcp_server.LIMITER.rate == 1.0 and mcp_server.RESEARCH is None
-    assert mcp_server.SETTINGS_PROBLEM is None
-    assert "rate 1 request(s)/second; no research header" in capsys.readouterr().err
+    assert mcp_server.LIMITER.rate == 1.0 and mcp_server.RATE_PROBLEM is None
+    assert "rate 1 request(s)/second" in capsys.readouterr().err
 
 
-def test_a_research_file_edited_after_approval_refuses_active_tools(monkeypatch, tmp_path):
-    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
-    p = tmp_path / "research.txt"
-    p.write_text("X-Intigriti: x41ok\n")
-    mcp_server.main(["--research", str(p), "--research-sha256", "0" * 64])
-    assert "changed since it was approved" in mcp_server.SETTINGS_PROBLEM
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
-    sent = fake_web(monkeypatch)
-    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
-        mcp_server.fingerprint_hosts(["app"])
-    assert sent == []
-
-
-def test_a_bad_rate_refuses_active_tools(monkeypatch):
+def test_a_bad_rate_refuses_active_tools_before_asking(monkeypatch, results_dir):
     monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
     mcp_server.main(["--rate", "fast"])
-    assert "--rate needs a number" in mcp_server.SETTINGS_PROBLEM
+    assert "--rate needs a number" in mcp_server.RATE_PROBLEM
+    with pytest.raises(mcp_server.ToolError, match="nothing was sent"):
+        mcp_server.fingerprint_hosts(["app"])
+    assert not (results_dir / "approvals").exists()
 
 
 def test_research_header_and_rate_go_on_every_request_and_log_line(monkeypatch, results_dir):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     r = mcp_server.research.Research({"X-Intigriti": "x41ok"}, "ab" * 32, "research.txt")
-    monkeypatch.setattr(mcp_server, "RESEARCH", r)
     monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1000))
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {"app": {"ips": ["8.8.8.8"]}}})
     headers = []
@@ -1125,7 +1030,7 @@ def test_research_header_and_rate_go_on_every_request_and_log_line(monkeypatch, 
         headers.append(kwargs["headers"])
         return FAKE_SITES["https://app/"]
     monkeypatch.setattr(mcp_server.fingerprint.requests, "get", get)
-    result = mcp_server.fingerprint_hosts(["app"])
+    result = run(monkeypatch, "fingerprint_hosts", ["app"], research_file=r)
     assert headers and all(h["X-Intigriti"] == "x41ok" for h in headers)
     assert result["sent_as"] == {"rate_per_second": 1000, "research_sha256": "ab" * 32,
                                  "research_headers": ["X-Intigriti"]}
@@ -1141,7 +1046,6 @@ def test_hosts_per_call_fits_the_rate(monkeypatch, speed, fp_hosts, exp_hosts):
 
 
 def test_at_1_per_second_exposed_files_goes_in_batches_of_3(monkeypatch):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1))
     seen = {}
 
@@ -1150,13 +1054,14 @@ def test_at_1_per_second_exposed_files_goes_in_batches_of_3(monkeypatch):
         return {"hosts": {}, "requested": [], "checked": 0, "requests": 0, "skipped": 0}
     monkeypatch.setattr(mcp_server.exposed, "check_all", check_all)
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {}})
-    result = mcp_server.check_exposed_files([f"h{i}" for i in range(7)])
+    asked = mcp_server.check_exposed_files([f"h{i}" for i in range(7)])
+    assert asked["hosts_checked"] == 3 and asked["max_requests"] == 3 * mcp_server.exposed.MAX_REQUESTS
+    assert asked["batch"]["size"] == 3 and asked["batch"]["next_start"] == 3
+    run(monkeypatch, "check_exposed_files", [f"h{i}" for i in range(7)])
     assert seen["max_hosts"] == 3
-    assert result["batch"]["size"] == 3 and result["batch"]["next_start"] == 3
 
 
 def test_a_rate_too_slow_for_one_host_refuses_before_any_lookup(monkeypatch, results_dir):
-    monkeypatch.setattr(mcp_server, "ALLOW_ACTIVE", True)
     monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(0.1))
 
     def boom(hosts):

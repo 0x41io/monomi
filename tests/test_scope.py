@@ -243,7 +243,7 @@ def test_pinned_hash_is_compared_case_insensitively(tmp_path):
 def test_no_scope_file_is_refused():
     s, problem = scope.check_pinned(None, None)
     assert s is None and problem == scope.NO_SCOPE
-    assert "mcp setup --scope" in problem
+    assert "monomi.py approve ID --scope" in problem
 
 
 def test_scope_without_an_approved_hash_is_refused(tmp_path):

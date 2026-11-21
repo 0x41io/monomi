@@ -83,21 +83,21 @@ def check_pinned(path: str | None, sha256: str | None) -> tuple[Research | None,
 
     Returns (research, None) when it can be used, (None, None) when none is
     set (that's fine: requests just carry the User-Agent), or (None, why not).
-    The MCP server calls this at startup and doctor to report, so both always
-    agree. A file edited after approval refuses: a program that requires the
+    Checked again when an approved active check runs (approvals.claim). A
+    file edited after approval refuses: a program that requires the
     header must never get requests without it, or with something else in it."""
     if not path:
         return None, None
-    fix = f"`python monomi.py mcp setup --research {path}` (and type yes)"
+    fix = f"a new approval with it: `python monomi.py approve ID --scope FILE --research {path}`"
     if not sha256:
-        return None, f"the research file has no approved hash; run {fix} again"
+        return None, f"the research file has no approved hash; it needs {fix}"
     try:
         r = load(path)
     except ResearchError as e:
         return None, f"the research file can't be used ({e}); fix it, then run {fix}"
     if r.sha256 != sha256.lower():
-        return None, ("the research file changed since it was approved, so active checks "
-                      f"refuse until you approve it again: {fix}")
+        return None, ("the research file changed since it was approved, so this approval "
+                      f"can't be used; it needs {fix}")
     return r, None
 
 

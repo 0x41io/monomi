@@ -605,88 +605,59 @@ def test_mcp_check_writes_nothing(monkeypatch, tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.json"]
 
 
-# ---------- active tools ----------
+# ---------- active checks (v1.20: a terminal approval for each) ----------
 
-ACTIVE = {**ENTRY, "args": ENTRY["args"] + ["--allow-active"]}
+# A v1.19 entry with old flags, in the order v1.19 wrote them
+ACTIVE = {**ENTRY, "args": ENTRY["args"] + ["--scope", "/lab/scope.txt", "--scope-sha256", "ab" * 32,
+                                            "--allow-active"]}
 
 
 def fake_log(monkeypatch, tmp_path, lines=None):
+    """The active log, and an empty approvals folder, both in tmp_path."""
     log = tmp_path / "active.log"
     if lines is not None:
         log.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     monkeypatch.setattr(doctor.mcp_setup, "ACTIVE_LOG", str(log))
+    monkeypatch.setattr(doctor.approvals, "approvals_dir", lambda: str(tmp_path / "approvals"))
+    return tmp_path / "approvals"
 
 
-def test_mcp_entry_with_active_flag_still_points_at_this_monomi(monkeypatch, tmp_path):
+def test_clean_config_says_active_checks_need_an_approval(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    assert r["status"] == OK and "only after you approve each one in a terminal" in r["detail"]
+
+
+def test_old_flags_in_a_config_are_a_warning_naming_each_file(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
+                                     "data.json": config_with(ENTRY),
+                                     "bad.json": "{not json"})
+    fake_log(monkeypatch, tmp_path)
+    [r] = doctor.check_active()
+    first, *files = r["detail"].split("\n")
+    assert r["status"] == WARN and "not used since v1.20" in first and "ignores them" in first
+    assert len(files) == 1 and files[0].strip() == (
+        f"--scope, --scope-sha256, --allow-active in {tmp_path / 'standard.json'}")
+    assert r["fix"] == "python monomi.py mcp setup, to remove them"
+
+
+def test_old_flags_still_point_at_this_monomi(monkeypatch, tmp_path):
+    # They're reported by check_active, so check_mcp mustn't call the entry "different"
     fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
     [r] = doctor.check_mcp()
     assert (r["status"], r["detail"]) == (OK, "Claude app config points at this Monomi")
 
 
-def test_active_off_is_ok(monkeypatch, tmp_path):
+def test_waiting_approvals_are_counted_and_expired_ones_are_not(monkeypatch, tmp_path):
     fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
     fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    assert r["status"] == OK and "off" in r["detail"]
-
-
-def test_active_on_is_a_loud_warning(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
-    fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    assert r["status"] == WARN and "ACTIVE tools are ON" in r["detail"]
-    assert "--no-active" in r["fix"]
-
-
-def test_copies_that_disagree_say_the_setting_is_unclear(monkeypatch, tmp_path):
-    # 2026-11-10: ON in one copy, off in the one the app read; doctor said "ON"
-    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
-                                     "data.json": config_with(ENTRY)})
-    fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    assert r["status"] == WARN
-    assert "ACTIVE tools are ON" not in r["detail"]  # never a confident "ON"
-    first, on, off = r["detail"].split("\n")
-    assert "disagree" in first and "unclear" in first
-    assert on.strip().startswith("ON:") and on.endswith("standard.json")
-    assert off.strip().startswith("off:") and off.endswith("data.json")
-    assert "--allow-active" in r["fix"] and "--no-active" in r["fix"]
-
-
-def test_active_on_lists_each_file_on_its_own_line(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
-                                     "data.json": config_with(ACTIVE)})
-    fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    first, *paths = r["detail"].split("\n")
-    assert first.endswith("(after a Claude app restart)")  # no paths squeezed in here
-    assert [p.split()[0] for p in paths] == ["in", "in"]
-    assert paths[0].endswith("standard.json") and paths[1].endswith("data.json")
-
-
-def test_one_config_file_gets_no_path_line(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
-    fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    assert "\n" not in r["detail"]
-
-
-def test_active_on_in_every_copy_lists_them(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
-                                     "data.json": config_with(ACTIVE)})
-    fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    assert r["status"] == WARN and "ACTIVE tools are ON" in r["detail"]
-    assert "standard.json" in r["detail"] and "data.json" in r["detail"]
-
-
-def test_broken_copy_isnt_counted_as_off(monkeypatch, tmp_path):
-    # check_mcp reports the broken file; check_active shouldn't call it "off"
-    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(ACTIVE),
-                                     "bad.json": "{not json"})
-    fake_log(monkeypatch, tmp_path)
-    [r] = doctor.check_active()
-    assert "ACTIVE tools are ON" in r["detail"] and "bad.json" not in r["detail"]
+    now = doctor.approvals._now()
+    doctor.approvals.request("fingerprint_hosts", ["a.test"], now=now)
+    doctor.approvals.request("fingerprint_hosts", ["b.test"], now=now)
+    doctor.approvals.request("fingerprint_hosts", ["c.test"], now=now - doctor.approvals.REQUEST_TTL)
+    _, r = doctor.check_active()
+    assert r["name"] == "approvals" and r["detail"].startswith("2 approval requests waiting for your yes")
 
 
 def test_active_log_shows_the_last_request(monkeypatch, tmp_path):
@@ -720,84 +691,6 @@ def test_active_check_with_no_config_found(monkeypatch, tmp_path):
     fake_log(monkeypatch, tmp_path)
     [r] = doctor.check_active()
     assert r["status"] == OK
-
-
-# ---------- scope (v1.12) ----------
-
-def approved(tmp_path, text="*.example.test\n!dev.example.test\n"):
-    """A scope file plus the config entry that approves it (path + its sha256)."""
-    import hashlib
-    s = tmp_path / "scope.txt"
-    s.write_bytes(text.encode())
-    entry = doctor.mcp_setup.with_scope(ENTRY, str(s), hashlib.sha256(text.encode()).hexdigest())
-    return s, entry
-
-
-def test_scope_args_dont_make_the_entry_different(monkeypatch, tmp_path):
-    _, entry = approved(tmp_path)
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(doctor.mcp_setup.with_active(entry, True))})
-    [r] = doctor.check_mcp()
-    assert r["status"] == OK
-
-
-def test_no_scope_with_active_off_is_ok(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ENTRY)})
-    [r] = doctor.check_scope()
-    assert r["status"] == OK and "no scope file approved" in r["detail"]
-
-
-def test_active_on_with_no_scope_is_a_warning(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(ACTIVE)})
-    [r] = doctor.check_scope()
-    assert r["status"] == WARN and "every active check refuses" in r["detail"]
-    assert "--scope FILE" in r["fix"]
-
-
-def test_approved_scope_shows_counts_and_hash(monkeypatch, tmp_path):
-    s, entry = approved(tmp_path)
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
-    [r] = doctor.check_scope()
-    assert r["status"] == OK
-    assert r["detail"].startswith(f"scope file {s}: 1 rule in scope, 1 exclusion, sha256 ")
-    assert r["detail"].endswith("matches the approval")
-
-
-def test_scope_edited_after_approval_is_a_warning(monkeypatch, tmp_path):
-    s, entry = approved(tmp_path)
-    s.write_bytes(b"*.example.test\n*.other.test\n")
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
-    [r] = doctor.check_scope()
-    assert r["status"] == WARN and "changed since it was approved" in r["detail"]
-
-
-def test_missing_scope_file_is_a_warning(monkeypatch, tmp_path):
-    s, entry = approved(tmp_path)
-    s.unlink()
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
-    [r] = doctor.check_scope()
-    assert r["status"] == WARN and "missing" in r["detail"]
-
-
-def test_rejected_lines_are_listed(monkeypatch, tmp_path):
-    _, entry = approved(tmp_path, "*.example.test\n*\n")
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(entry)})
-    [r] = doctor.check_scope()
-    first, line = r["detail"].split("\n")
-    assert r["status"] == OK and first.endswith("matches the approval")
-    assert line.strip().startswith("rejected line 2: *") and "a bare '*'" in line
-
-
-def test_copies_with_different_scopes_disagree(monkeypatch, tmp_path):
-    _, entry = approved(tmp_path)
-    fake_mcp(monkeypatch, tmp_path, {"standard.json": config_with(entry),
-                                     "data.json": config_with(ENTRY)})
-    [r] = doctor.check_scope()
-    assert r["status"] == WARN and "disagree" in r["detail"]
-    assert "none in" in r["detail"] and "standard.json" in r["detail"]
-
-
-def test_doctor_runs_the_scope_check():
-    assert doctor.check_scope in doctor.CHECKS
 
 
 def test_active_log_counts_refusals_separately(monkeypatch, tmp_path):
@@ -861,7 +754,16 @@ def test_each_client_points_at_this_monomi(monkeypatch, tmp_path):
     results = by_name(doctor.check_clients())
     assert set(results) == {"codex", "opencode", "hermes"}  # no "not found" line
     for r in results.values():
-        assert r["status"] == OK and "points at this Monomi, active tools off" in r["detail"]
+        assert r["status"] == OK and "points at this Monomi, active checks need your approval" in r["detail"]
+
+
+def test_client_with_old_flags_still_points_here_but_warns(monkeypatch, tmp_path):
+    old = ('[mcp_servers.monomi]\ncommand = "py"\n'
+           'args = ["server", "--scope", "s.txt", "--scope-sha256", "ab", "--allow-active"]\n')
+    fake_clients(monkeypatch, tmp_path, codex=old)
+    r = by_name(doctor.check_clients())["codex"]
+    assert r["status"] == WARN and "points at this Monomi, still has flags not used since v1.20" in r["detail"]
+    assert r["fix"] == "python monomi.py mcp setup --client codex, to remove them"
 
 
 def test_client_without_monomi_says_how_to_add_it_without_warning(monkeypatch, tmp_path):
@@ -888,23 +790,6 @@ def test_broken_client_config_is_a_warning_not_a_crash(monkeypatch, tmp_path):
     assert r["status"] == WARN and "can't be read" in r["detail"]
 
 
-def test_client_active_flags_dont_make_it_different_but_warn(monkeypatch, tmp_path):
-    scope = tmp_path / "scope.txt"
-    scope.write_text("lab.test\n", encoding="utf-8")
-    sha = doctor.scope.load(str(scope)).sha256
-    # The scope path goes in a TOML literal string ('...'): on Windows it has
-    # backslashes, which a "..." TOML string would read as escape codes
-    on = f'[mcp_servers.monomi]\ncommand = "py"\nargs = ["server", "--scope", \'{scope}\', "--scope-sha256", "{sha}", "--allow-active"]\n'
-    fake_clients(monkeypatch, tmp_path, codex=on)
-    r = by_name(doctor.check_clients())["codex"]
-    assert r["status"] == WARN and "points at this Monomi, ACTIVE tools ON (scope" in r["detail"]
-    assert r["fix"] == "python monomi.py mcp setup --client codex --no-active, to turn them off"
-
-    scope.write_text("lab.test\nother.test\n", encoding="utf-8")  # edited after approval
-    r = by_name(doctor.check_clients())["codex"]
-    assert "changed since it was approved" in r["detail"]
-
-
 def test_client_check_writes_nothing(monkeypatch, tmp_path):
     fake_clients(monkeypatch, tmp_path, codex='model = "x"\n', hermes="a: 1\n")
     before = sorted(p.name for p in tmp_path.rglob("*"))
@@ -916,43 +801,33 @@ def test_doctor_runs_the_clients_check():
     assert doctor.check_clients in doctor.CHECKS
 
 
-# ---------- rate and research file for MCP (v1.19) ----------
+# ---------- rate for MCP (v1.19) ----------
 
-def with_settings(rate_value=None, research=(None, None)):
-    return doctor.mcp_setup.build_entry(True, None, None, base=dict(ENTRY), research=research,
-                                        rate_value=rate_value)
-
-
-def test_settings_default_rate_and_no_research(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings())})
-    rate_line, research_line = doctor.check_settings()
-    assert rate_line["detail"] == "active requests: 1/s (the default), in total"
-    assert "no research header" in research_line["detail"] and research_line["status"] == doctor.OK
+def test_rate_default_and_set(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(doctor.mcp_setup.build_entry(dict(ENTRY)))})
+    [r] = doctor.check_settings()
+    assert r["detail"] == "active requests: 1/s (the default), in total"
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(doctor.mcp_setup.build_entry(dict(ENTRY), "2"))})
+    assert "2/s" in doctor.check_settings()[0]["detail"]
 
 
-def test_settings_show_the_approved_research_file(monkeypatch, tmp_path):
-    import hashlib
-    p = tmp_path / "research.txt"
-    p.write_text("X-Intigriti: x41ok\n")
-    sha = hashlib.sha256(p.read_bytes()).hexdigest()
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings("2", (str(p), sha)))})
-    rate_line, research_line = doctor.check_settings()
-    assert "2/s" in rate_line["detail"]
-    assert "sends X-Intigriti: x41ok" in research_line["detail"] and "matches" in research_line["detail"]
+def test_a_bad_rate_warns_that_active_checks_refuse(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with({**ENTRY, "args": ENTRY["args"] + ["--rate", "fast"]})})
+    [r] = doctor.check_settings()
+    assert r["status"] == WARN and "active checks refuse" in r["detail"]
 
 
-def test_settings_warn_on_an_edited_research_file(monkeypatch, tmp_path):
-    p = tmp_path / "research.txt"
-    p.write_text("X-Intigriti: x41ok\n")
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings(None, (str(p), "0" * 64)))})
-    _, research_line = doctor.check_settings()
-    assert research_line["status"] == doctor.WARN and "changed since it was approved" in research_line["detail"]
+def test_copies_with_different_rates_disagree(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(doctor.mcp_setup.build_entry(dict(ENTRY), "2")),
+                                     "b.json": config_with(dict(ENTRY))})
+    [r] = doctor.check_settings()
+    assert r["status"] == WARN and "disagree" in r["detail"]
 
 
-def test_settings_dont_make_the_entry_different(monkeypatch, tmp_path):
-    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(with_settings("2", ("/r.txt", "ab" * 32)))})
+def test_rate_doesnt_make_the_entry_different(monkeypatch, tmp_path):
+    fake_mcp(monkeypatch, tmp_path, {"a.json": config_with(doctor.mcp_setup.build_entry(dict(ENTRY), "2"))})
     [r] = doctor.check_mcp()
-    assert r["status"] == doctor.OK
+    assert r["status"] == OK
 
 
 def test_doctor_runs_the_settings_check():

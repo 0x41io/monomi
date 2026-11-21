@@ -26,8 +26,8 @@ from datetime import datetime
 
 import requests
 
-from monomi import (activelog, aws_ranges, dnscheck, home, internetdb, keys, mcp_setup, rate, research,
-                    scope, threatintel, ui)
+from monomi import (activelog, approvals, aws_ranges, dnscheck, home, internetdb, keys, mcp_setup, rate,
+                    threatintel, ui)
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, pacing, saved
 from monomi.common import USER_AGENT
 
@@ -568,8 +568,8 @@ MCP_STATES = ["unreadable", "broken", "different", "missing", "ok"]
 
 def mcp_state(path, entry):
     """How one config file stands: one of MCP_STATES.
-    Whether active tools are on (check_active) and the scope (check_scope)
-    are their own checks, so those flags don't make the entry "different"."""
+    The rate (check_settings) and old v1.19 flags (check_active) are their
+    own checks, so they don't make the entry "different"."""
     try:
         config = mcp_setup.load_config(path)
     except mcp_setup.SetupError:
@@ -577,7 +577,7 @@ def mcp_state(path, entry):
     except OSError:
         return "unreadable"
     old = config.get("mcpServers", {}).get(mcp_setup.NAME)
-    # built the way mcp setup builds it, with old's settings (scope, research, rate, active)
+    # built the way mcp setup builds it, with old's rate and any v1.19 flags left in place
     entry = mcp_setup.same_settings(entry, old)
     status, _ = mcp_setup.change(config, entry)
     return {"new": "missing", "unchanged": "ok", "changing": "different"}[status]
@@ -622,19 +622,36 @@ def check_mcp():
                    f"Monomi isn't set up in the Claude app{where}", SETUP_FIX)]
 
 
-def active_configs(found):
-    """(config files with active tools ON, readable ones with them off)."""
-    on, off = [], []
+def legacy_configs(found):
+    """{config file: [v1.19 flags in it]} for readable files whose entry still has them."""
+    out = {}
     for path in found:
         try:
             config = mcp_setup.load_config(path)
         except (mcp_setup.SetupError, OSError):
             continue  # check_mcp already reports broken or unreadable files
-        if mcp_setup.is_active(config.get("mcpServers", {}).get(mcp_setup.NAME)):
-            on.append(path)
-        else:
-            off.append(path)
-    return on, off
+        flags = mcp_setup.legacy_flags(config.get("mcpServers", {}).get(mcp_setup.NAME))
+        if flags:
+            out[path] = flags
+    return out
+
+
+def pending_approvals(folder=None, now=None):
+    """How many approval requests are waiting for a person's yes, not expired."""
+    folder = folder or approvals.approvals_dir()
+    now = now or approvals._now()
+    waiting = 0
+    for name in (os.listdir(folder) if os.path.isdir(folder) else []):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                rec = json.load(f)
+            if rec.get("state") == "pending" and not approvals._expired(rec, now):
+                waiting += 1
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return waiting
 
 
 def config_lines(label, paths):
@@ -677,33 +694,28 @@ def sent_under(entry):
 
 
 def check_active():
-    """Are ACTIVE MCP tools turned on, and when did one last send a request?
-
-    On is a warning on purpose: it should never go unnoticed. Read-only.
-    """
+    """How active checks are gated (since v1.20: a terminal approval for each
+    one), any v1.19 flags still in a config, waiting approvals, and when one
+    last sent a request. Read-only."""
     try:
         found, _ = mcp_setup.config_paths()
     except mcp_setup.SetupError:
         found = []
     out = []
-    on, off = active_configs(found)
-    if on and off:
-        # The app reads only one copy, so we can't tell which setting it uses
-        files = config_lines("ON: ", on) + config_lines("off:", off)
+    old = legacy_configs(found)
+    if old:
+        files = "".join(f"\n      {', '.join(flags)} in {path}" for path, flags in old.items())
         out.append(result(MCP, "active", WARN,
-                          "ACTIVE tools: the config files disagree, and the Claude app reads "
-                          f"only one of them, so the setting is unclear{files}",
-                          "python monomi.py mcp setup --allow-active or --no-active, "
-                          "to make them match"))
-    elif on:
-        where = config_lines("in", on) if len(found) > 1 else ""
-        out.append(result(MCP, "active", WARN,
-                          "ACTIVE tools are ON: fingerprint_hosts and check_exposed_files can "
-                          "send requests to hosts in the approved scope "
-                          f"(after a Claude app restart){where}",
-                          "python monomi.py mcp setup --no-active, to turn them off"))
+                          "the Claude app config still has flags not used since v1.20 (the server "
+                          f"ignores them){files}", f"{SETUP_FIX}, to remove them"))
     else:
-        out.append(result(MCP, "active", OK, "ACTIVE tools are off (fingerprint_hosts and check_exposed_files refuse)"))
+        out.append(result(MCP, "active", OK,
+                          "active checks run only after you approve each one in a terminal "
+                          "(python monomi.py approve ID --scope FILE)"))
+    waiting = pending_approvals()
+    if waiting:
+        out.append(result(MCP, "approvals", OK,
+                          f"{plural(waiting, 'approval request')} waiting for your yes (scans/approvals/)"))
     count, last, refusals = last_active_request()
     refused = f", {plural(refusals, 'refusal')}" if refusals else ""
     if last:
@@ -718,74 +730,15 @@ def check_active():
     return out
 
 
-def scope_pairs(found):
-    """{config file: (scope path, approved sha256)} for readable files with a Monomi entry."""
-    pairs = {}
-    for path in found:
-        try:
-            config = mcp_setup.load_config(path)
-        except (mcp_setup.SetupError, OSError):
-            continue  # check_mcp already reports broken or unreadable files
-        entry = config.get("mcpServers", {}).get(mcp_setup.NAME)
-        if entry is not None:
-            pairs[path] = mcp_setup.scope_args(entry)
-    return pairs
-
-
-def rejected_lines(s):
-    """The scope file's rejected lines, one per line under a result's detail."""
-    if not s or not s.rejected:
-        return ""
-    return "".join(f"\n      rejected line {r['line']}: {ui.safe(r['text'])} ({r['reason']})"
-                   for r in s.rejected)
-
-
-def check_scope():
-    """Which scope file is approved for ACTIVE tools, and does it still match?
-
-    Uses scope.check_pinned, the same check the MCP server makes at startup,
-    so doctor and the server always agree. Read-only."""
-    fix = "python monomi.py mcp setup --scope FILE (and type yes)"
-    try:
-        found, _ = mcp_setup.config_paths()
-    except mcp_setup.SetupError:
-        found = []
-    pairs = scope_pairs(found)
-    on, _ = active_configs(found)
-    if len(set(pairs.values())) > 1:
-        files = "".join(f"\n      {mcp_setup.describe_scope(*pair)} in {path}"
-                        for path, pair in pairs.items())
-        return [result(MCP, "scope", WARN,
-                       "scope: the config files disagree, and the Claude app reads only "
-                       f"one of them{files}", f"{fix}, to make them match")]
-    path, sha256 = next(iter(pairs.values()), (None, None))
-    if not path:
-        if on:
-            return [result(MCP, "scope", WARN,
-                           "ACTIVE tools are ON but no scope file is approved, so every "
-                           "active check refuses", fix)]
-        return [result(MCP, "scope", OK,
-                       "no scope file approved (needed before active tools can run)")]
-    s, problem = scope.check_pinned(path, sha256)
-    if problem:
-        return [result(MCP, "scope", WARN, f"scope file {path}: {problem}{rejected_lines(s)}",
-                       fix)]
-    return [result(MCP, "scope", OK,
-                   f"scope file {path}: {plural(len(s.inclusions), 'rule')} in scope, "
-                   f"{plural(len(s.exclusions), 'exclusion')}, sha256 {s.sha256[:12]}... "
-                   f"matches the approval{rejected_lines(s)}")]
-
-
 def check_settings():
-    """The rate and research file the MCP server's active tools will use (v1.19).
-
-    Uses research.check_pinned and rate.parse, what the server runs at
-    startup, so doctor and the server always agree. Read-only."""
+    """The rate the MCP server's active checks will use (v1.19): the
+    server-wide limit, set with mcp setup. Uses rate.parse, what the server
+    runs at startup, so doctor and the server always agree. Read-only."""
     try:
         found, _ = mcp_setup.config_paths()
     except mcp_setup.SetupError:
         found = []
-    entries = {}
+    rates = {}
     for path in found:
         try:
             config = mcp_setup.load_config(path)
@@ -793,38 +746,22 @@ def check_settings():
             continue  # check_mcp already reports broken or unreadable files
         entry = config.get("mcpServers", {}).get(mcp_setup.NAME)
         if entry is not None:
-            entries[path] = (mcp_setup.rate_arg(entry), mcp_setup.research_args(entry))
-    if not entries:
+            rates[path] = mcp_setup.rate_arg(entry)
+    if not rates:
         return []
-    fix = "python monomi.py mcp setup --rate N / --research FILE"
-    if len(set(entries.values())) > 1:
-        files = "".join(f"\n      {mcp_setup.describe_rate(r)}, research "
-                        f"{mcp_setup.describe_scope(*pair)} in {path}"
-                        for path, (r, pair) in entries.items())
-        return [result(MCP, "settings", WARN,
-                       "rate/research: the config files disagree, and the Claude app reads "
-                       f"only one of them{files}", f"{fix}, to make them match")]
-    rate_text, (path, sha256) = next(iter(entries.values()))
-    out = []
+    fix = "python monomi.py mcp setup --rate N"
+    if len(set(rates.values())) > 1:
+        files = "".join(f"\n      {mcp_setup.describe_rate(r)} in {path}" for path, r in rates.items())
+        return [result(MCP, "rate", WARN,
+                       "rate: the config files disagree, and the Claude app reads only one of "
+                       f"them{files}", f"{fix}, to make them match")]
+    rate_text = next(iter(rates.values()))
     try:
         if rate_text:
             rate.parse(rate_text)
-        out.append(result(MCP, "rate", OK,
-                          f"active requests: {mcp_setup.describe_rate(rate_text)}, in total"))
+        return [result(MCP, "rate", OK, f"active requests: {mcp_setup.describe_rate(rate_text)}, in total")]
     except rate.RateError as e:
-        out.append(result(MCP, "rate", WARN, f"{e}, so active tools refuse", fix))
-    r, problem = research.check_pinned(path, sha256)
-    if problem:
-        out.append(result(MCP, "research", WARN, f"research file {path}: {problem}",
-                          f"python monomi.py mcp setup --research {path} (and type yes)"))
-    elif r:
-        out.append(result(MCP, "research", OK,
-                          f"research file {path}: sends {ui.safe(r.summary)}, "
-                          f"sha256 {r.sha256[:12]}... matches the approval"))
-    else:
-        out.append(result(MCP, "research", OK,
-                          "no research header (active requests carry only Monomi's User-Agent)"))
-    return out
+        return [result(MCP, "rate", WARN, f"{e}, so active checks refuse", fix)]
 
 
 # ---------- Running and showing the checks ----------
@@ -834,8 +771,8 @@ def check_settings():
 def client_state(client, path):
     """(state, Monomi's entry or None) for one client config file. States:
     ok, different, missing, comments (OpenCode JSONC: can't look inside),
-    broken, unreadable. Like mcp_state, the active and scope flags don't make
-    the entry "different": they're reported on their own."""
+    broken, unreadable. Like mcp_state, the rate and old v1.19 flags don't
+    make the entry "different": they're reported on their own."""
     try:
         doc = client.load(path)
     except mcp_setup.HasComments:
@@ -851,18 +788,12 @@ def client_state(client, path):
     return ("ok" if old == want else "different"), old
 
 
-def client_active(label, entry):
-    """The active-tools part of a client's line: (status, words)."""
-    if not mcp_setup.is_active(entry):
-        return OK, "active tools off"
-    path, sha256 = mcp_setup.scope_args(entry)
-    if not path:
-        return WARN, "ACTIVE tools ON but no scope file is approved, so every active check refuses"
-    _, problem = scope.check_pinned(path, sha256)
-    if problem:
-        return WARN, f"ACTIVE tools ON, scope file {path}: {problem}"
-    return WARN, (f"ACTIVE tools ON (scope {mcp_setup.describe_scope(path, sha256)}): "
-                  f"agents in {label} can send requests to hosts in that scope")
+def client_active(entry):
+    """The active-checks part of a client's line: (status, words)."""
+    flags = mcp_setup.legacy_flags(entry)
+    if flags:
+        return WARN, f"still has flags not used since v1.20 ({', '.join(flags)}; ignored)"
+    return OK, "active checks need your approval in a terminal"
 
 
 def check_clients():
@@ -874,7 +805,7 @@ def check_clients():
     out, absent = [], []
     for key, client in mcp_setup.CLIENTS.items():
         if key == "claude":
-            continue  # check_mcp, check_active and check_scope cover the Claude app
+            continue  # check_mcp and check_active cover the Claude app
         fix = f"{SETUP_FIX} --client {key}"
         found, _ = client.paths()
         if not found:
@@ -882,10 +813,10 @@ def check_clients():
         for path in found:
             state, entry = client_state(client, path)
             if state == "ok":
-                status, words = client_active(client.label, entry)
+                status, words = client_active(entry)
                 out.append(result(MCP, key, status,
                                   f"{client.label} config points at this Monomi, {words} ({path})",
-                                  f"{fix} --no-active, to turn them off" if status == WARN else None))
+                                  f"{fix}, to remove them" if status == WARN else None))
             elif state == "missing":
                 out.append(result(MCP, key, OK,
                                   f"{client.label} is set up on this machine, Monomi isn't in it "
@@ -942,7 +873,7 @@ def key_file_result(path=None, environ=None):
 
 CHECKS = [check_python, check_packages, check_folders, check_api_key,
           check_dns, check_ct_sources, check_shodan, check_aws_ranges,
-          check_tor_list, check_mcp, check_key_file, check_active, check_scope, check_settings, check_clients]
+          check_tor_list, check_mcp, check_key_file, check_active, check_settings, check_clients]
 
 
 def run_all(checks=None):
