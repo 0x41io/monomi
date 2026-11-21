@@ -280,6 +280,18 @@ def test_side_door_wording_follows_the_category():
     assert door["steps"][2]["text"].startswith("Login and remote-access pages are where attackers try")
 
 
+def test_side_door_wording_for_a_management_console():
+    results = lab_results()
+    results["subdomains"] = ["lab", "mdm", "www"]
+    results["sources"]["certlog"]["subdomains"] = results["subdomains"]
+    hosts = results["enrichment"]["hosts"]
+    hosts["mdm"] = hosts.pop("staging")
+    out, ev = run(results)
+    door = side_doors(out)[0]
+    assert door["steps"][0]["text"] == "mdm is live and named like a device or infrastructure console"
+    assert door["steps"][2]["text"].startswith("Management consoles control many machines")
+
+
 def test_vercel_ip_is_never_a_side_door():
     # The Yuga Labs case: Vercel's IP labeled AWS, and no --ports run to
     # mark it shared_edge. Two hosts on it are two Vercel sites, not one server.

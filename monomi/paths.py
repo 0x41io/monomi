@@ -60,6 +60,8 @@ SIDE_DOOR_WORDS = {
                "Old sites are often left unpatched"),
     "access": ("a login or remote-access host", "login or remote-access hosts",
                "Login and remote-access pages are where attackers try guessed or stolen passwords"),
+    "management": ("a device or infrastructure console", "device or infrastructure consoles",
+                   "Management consoles control many machines at once and are often left with default logins"),
     "internal-tools": ("an internal tool", "internal tools",
                        "Internal tools are often left with weak or default logins"),
     "iot-ot": ("a device or control system", "devices or control systems",

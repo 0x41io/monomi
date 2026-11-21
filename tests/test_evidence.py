@@ -164,6 +164,17 @@ def test_risky_name_needs_a_live_host():
     assert "risky_name" not in kinds_of(build_evidence(results))
 
 
+def test_live_management_console_gets_a_risky_name_fact():
+    # v1.22: a management console (cp-unifi) is a soft way in, like admin or dev
+    results = owner_results()
+    results["subdomains"].append("cp-unifi")
+    results["enrichment"]["hosts"]["cp-unifi"] = {"ips": ["198.51.100.9"], "provider": "OVH"}
+    evidence = build_evidence(results)
+    assert kinds_of(evidence)["risky_name"] == ["cp-unifi"]
+    fact = next(e["fact"] for e in evidence if e["kind"] == "risky_name")
+    assert "'management' category" in fact
+
+
 def test_email_verdict_kind_names_the_verdict():
     results = owner_results()
     results["target"] = "example"

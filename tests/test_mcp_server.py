@@ -316,6 +316,17 @@ def test_subdomains_summary_counts_categories():
     assert s["risky_categories"] == {"non-production": {"count": 1, "hosts": ["dev"]}}
 
 
+def test_subdomains_summary_lists_management_right_after_access():
+    full = {"domain": "lab", "hostname_count": 3, "wildcards": [], "sources": {},
+            "errors": {}, "hostnames": ["cp-unifi", "extranet", "www"],
+            "categories": {"cp-unifi": {"category": "management"},
+                           "extranet": {"category": "access"},
+                           "www": {"category": "content"}}}
+    s = mcp_server.subdomains_summary(full)
+    assert list(s["risky_categories"]) == ["access", "management"]
+    assert s["risky_categories"]["management"] == {"count": 1, "hosts": ["cp-unifi"]}
+
+
 # --- hosts_file + batches (v1.9) ---
 
 def scans_dir(monkeypatch, tmp_path):

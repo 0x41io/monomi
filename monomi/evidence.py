@@ -46,7 +46,7 @@ OWNERS = {
 
 # Hostname categories (from categorize.py) that make a live host worth a
 # fact of its own: attack paths treat these as softer ways in
-RISKY_CATEGORIES = ("non-production", "legacy", "access", "internal-tools", "iot-ot")
+RISKY_CATEGORIES = ("non-production", "legacy", "access", "management", "internal-tools", "iot-ot")
 
 
 def build_evidence(results: dict) -> list[dict]:
