@@ -42,6 +42,20 @@ DOMAIN = "example.com"
     ("vendor-portal", "partner-portal"),
     ("brandregistry", "partner-portal"),
     ("partnership", "uncategorized"),
+    # Management consoles and extranet/intranet (v1.22, from the Marionnaud field run)
+    ("cp-unifi", "management"),
+    ("mdm", "management"),
+    ("mdm2", "management"),
+    ("vcenter-eu", "management"),
+    ("ilo", "management"),
+    ("ilo4", "management"),
+    ("pilot", "uncategorized"),
+    ("milo", "uncategorized"),
+    ("ilona", "uncategorized"),
+    ("unified", "uncategorized"),
+    ("extranet", "access"),
+    ("intranet", "access"),
+    ("extranets", "uncategorized"),
 ])
 def test_label_categories(label, expected):
     result = categorize(f"{label}.{DOMAIN}", DOMAIN)
@@ -73,3 +87,26 @@ def test_categorize_all_one_entry_per_hostname():
     result = categorize_all(hosts, DOMAIN)
     assert set(result) == set(hosts)
     assert result["gslink.example.com"]["category"] == "uncategorized"
+
+
+def test_management_reason_names_the_matched_part():
+    result = categorize("cp-unifi.example.com", DOMAIN)
+    assert result == {"category": "management",
+                      "reason": "part 'unifi' of label 'cp-unifi' matched rule word 'unifi'"}
+
+
+def test_management_ranks_right_after_access():
+    # A name that is both a login and a console counts as access; anything
+    # riskier (non-production) still wins over management.
+    assert categorize("admin-unifi.example.com", DOMAIN)["category"] == "access"
+    assert categorize("extranet-citrix.example.com", DOMAIN)["category"] == "access"
+    assert categorize("mdm-dev.example.com", DOMAIN)["category"] == "non-production"
+    # ...and management wins over the categories after it
+    assert categorize("api.mdm.example.com", DOMAIN)["category"] == "management"
+    assert categorize("ilo-jenkins.example.com", DOMAIN)["category"] == "management"
+
+
+def test_management_order_in_rules():
+    from monomi.categorize import RULES
+    names = [name for name, _ in RULES]
+    assert names.index("management") == names.index("access") + 1

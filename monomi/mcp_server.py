@@ -362,8 +362,8 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
     Usually under a minute. If crt.sh is too slow, results come from
     Cert Spotter alone and "errors" says crt.sh timed out.
     Each hostname also gets a rule-based category (non-production, legacy,
-    access, iot-ot, partner-portal, internal-tools, app-api, email, marketing, content, apex,
-    uncategorized) with the reason
+    access, management, iot-ot, partner-portal, internal-tools, app-api, email, marketing,
+    content, apex, uncategorized) with the reason
     it matched: facts from naming patterns, not confirmed by contacting hosts.
     detail="summary" (default): counts per category plus up to 20 example
     hosts per risky category; the full list is saved to "full_results_file".

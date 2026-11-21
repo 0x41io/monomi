@@ -16,7 +16,13 @@ RULES = [
                 "sensor", "sensors", "iot"]),
     ("partner-portal", ["seller", "sellers", "vendor", "vendors", "carrier", "carriers",
                         "partner", "partners", "affiliate", "affiliates", "brandregistry"]),
-    ("access", ["admin", "vpn", "sso", "login", "auth", "portal", "remote"]),
+    ("access", ["admin", "vpn", "sso", "login", "auth", "portal", "remote",
+                "extranet", "intranet"]),
+    # Device and infrastructure management consoles (v1.22, from the
+    # Marionnaud field run: cp-unifi, mdm). Right after access: a host named
+    # like a login AND a console counts as access.
+    ("management", ["mdm", "intune", "airwatch", "unifi", "fortigate", "pfsense", "vcenter",
+                    "esxi", "idrac", "ilo", "ipmi", "proxmox", "portainer", "rancher", "citrix"]),
     ("internal-tools", ["kibana", "grafana", "opensearch", "elasticsearch", "jenkins",
                         "gitlab", "puppet", "puppetboard", "gradle", "sonarqube", "tableau",
                         "prometheus", "argocd", "jira", "confluence", "wiki"]),
@@ -25,6 +31,7 @@ RULES = [
     ("marketing", ["go", "info", "links", "click", "url", "email", "events", "lp"]),
     ("content", ["www", "docs", "blog", "support", "help", "status", "cdn", "static", "design"]),
 ]
+
 
 def _label_matches(label, word):
     """True if a label is the word, or the word followed by a number or hyphen.
@@ -37,6 +44,7 @@ def _label_matches(label, word):
         rest = label[len(word):]
         return rest[0].isdigit() or rest[0] == "-"
     return False
+
 
 def _find_match(label, word):
     """Return the part of the label that matched the word, or None.
