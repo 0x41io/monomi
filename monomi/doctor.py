@@ -911,7 +911,12 @@ def check_clients():
 
 def check_key_file(path=None, environ=None):
     """The suite key file the MCP server loads at startup (the Claude app
-    doesn't read ~/.bashrc). Names only, never values."""
+    doesn't read ~/.bashrc). Names only, never values. A list, like every
+    check: run_all() joins them."""
+    return [key_file_result(path, environ)]
+
+
+def key_file_result(path=None, environ=None):
     path = path or keys.keys_path()
     environ = os.environ if environ is None else environ
     fix = "python monomi.py mcp keys"

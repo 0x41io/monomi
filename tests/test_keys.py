@@ -168,23 +168,35 @@ def test_the_server_loads_keys_at_start_and_prints_only_names(keyfile, monkeypat
 # --- doctor -----------------------------------------------------------------------
 
 def test_doctor_no_file_and_no_key_is_ok(tmp_path):
-    r = doctor.check_key_file(str(tmp_path / "none.env"), {})
+    r = doctor.key_file_result(str(tmp_path / "none.env"), {})
     assert r["status"] == doctor.OK
 
 
 def test_doctor_key_only_in_terminal_warns(tmp_path):
-    r = doctor.check_key_file(str(tmp_path / "none.env"), {"OTX_API_KEY": OTX})
+    r = doctor.key_file_result(str(tmp_path / "none.env"), {"OTX_API_KEY": OTX})
     assert r["status"] == doctor.WARN and "mcp keys" in r["fix"]
     assert OTX not in r["detail"]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Unix permissions")
 def test_doctor_refused_file_fails(keyfile):
-    r = doctor.check_key_file(keyfile(f"OTX_API_KEY={OTX}\n", 0o644), {})
+    r = doctor.key_file_result(keyfile(f"OTX_API_KEY={OTX}\n", 0o644), {})
     assert r["status"] == doctor.FAIL and "refused" in r["detail"]
 
 
 def test_doctor_good_file_is_ok_names_only(keyfile):
-    r = doctor.check_key_file(keyfile(f"OTX_API_KEY={OTX}\nNVD_API_KEY={NVD}\n"), {"OTX_API_KEY": OTX})
+    r = doctor.key_file_result(keyfile(f"OTX_API_KEY={OTX}\nNVD_API_KEY={NVD}\n"), {"OTX_API_KEY": OTX})
     assert r["status"] == doctor.OK and "OTX_API_KEY" in r["detail"]
     assert OTX not in r["detail"] and NVD not in r["detail"]
+
+
+def test_doctor_runs_the_key_file_check_like_every_other(keyfile, monkeypatch, capsys):
+    # The 1.20 lab check crashed doctor: the check returned one result, not a
+    # list. Go through run_all() and show(), the way `monomi.py doctor` does.
+    path = keyfile(f"OTX_API_KEY={OTX}\n")
+    monkeypatch.setattr(keys, "keys_path", lambda: path)
+    results = doctor.run_all([doctor.check_key_file])
+    assert [r["name"] for r in results] == ["key file"]
+    doctor.show(results)
+    out = capsys.readouterr().out
+    assert "OTX_API_KEY (private)" in out and OTX not in out
