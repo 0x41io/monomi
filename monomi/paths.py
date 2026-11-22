@@ -487,49 +487,96 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
             if ip in hosts_of:
                 web.setdefault(ip, []).append(e)
     if fronted and web:
-        vendors = {gate.edge_vendor(enr["hosts"][h]) for h in fronted} - {None}
-        cdn_name = vendors.pop() if len(vendors) == 1 else None  # None: hosts behind more than one CDN
-        cdn = cdn_name or "the CDN"
-        who = _names(fronted)
-        one = len(fronted) == 1
         resolves = {e["host"]: e for e in kinds.get("resolves", [])}
-        # Cite the hosts the text names (up to 3), not every host in a big scan
-        front_facts = [resolves[h] for h in fronted[:3] if h in resolves]
-        # One lead per origin server: each one is checked on its own (is THIS
-        # server behind the CDN?), so a big organization gets a lead per server,
-        # not one lead covering every server. The usual lead cap applies.
+
+        def rented(hosts):
+            """A host pointing at a load balancer or VM the target rents (v1.23)."""
+            return any(cloud_infra_from_cname([enr["hosts"].get(h, {}).get("canonical") or ""])
+                       for h in hosts)
+
+        # Every origin candidate, with the hosts pointing straight at it. Hosts
+        # whose name points outside the target's domain don't show it's the
+        # target's server (v1.23): an IP named only through them is set aside below
+        own, outside = [], {}
         for ip in sorted(web):
-            # Hosts on this IP whose name points outside the target's domain don't
-            # show it's the target's server; if they're all there is, the gate
-            # sets the lead aside with the CNAMEs named (check 2)
-            direct = [h for h in hosts_of[ip] if h not in foreign] or hosts_of[ip]
-            outside = {}
-            if all(h in foreign for h in direct):
-                via = "; ".join(f"{h} -> {foreign[h]}" for h in direct[:3])
-                outside = {ip: f"a server named only through CNAMEs outside {target} ({via}), "
-                               "likely a vendor's platform"}
-            one_direct = len(direct) == 1
-            straight = _names(direct)
+            direct = [h for h in hosts_of[ip] if h not in foreign]
+            if direct:
+                own.append({"ip": ip, "hosts": direct})
+            else:
+                via = "; ".join(f"{h} -> {foreign[h]}" for h in hosts_of[ip][:3])
+                outside[ip] = (f"a server named only through CNAMEs outside {target} ({via}), "
+                               "likely a vendor's platform")
+        # Ranked like leads (v1.23): a rented load balancer or VM first (the
+        # classic origin), then by its hosts' category, then IP as numbers
+        own.sort(key=lambda o: (0 if rented(o["hosts"]) else 1,
+                                min(CATEGORY_TIER.get(categorize(h, target)["category"], LAST_TIER)
+                                    for h in o["hosts"]),
+                                _ip_order(o["ip"])))
+
+        # One lead per CDN, listing every origin candidate (v1.24). The question
+        # is "can these hosts be reached around the CDN?", and any one of the
+        # origins could be the answer: one lead per origin (v1.10 to v1.23) made
+        # one question into as many leads as the target has servers (11 on
+        # Exoscale), crowding everything else out of the lead cap.
+        by_cdn = {}
+        for h in fronted:
+            by_cdn.setdefault(gate.edge_vendor(enr["hosts"][h]), []).append(h)
+        for cdn_name, group in sorted(by_cdn.items(), key=lambda kv: (kv[0] is None, kv[0] or "")):
+            cdn = cdn_name or "the CDN"
+            who, one = _names(group), len(group) == 1
+            # Cite the hosts the text names (up to 3), not every host in a big scan
+            front_facts = [resolves[h] for h in group[:3] if h in resolves]
+            fronted_by = {"fronted": group, "cdn": cdn_name}
+            if outside:
+                # Vendor-named servers: listed set aside, with the CNAMEs (check 2)
+                ips = sorted(outside, key=_ip_order)
+                candidates.append(_path(
+                    f"Check whether {who} can be reached around {cdn} through "
+                    + (ips[0] if len(ips) == 1 else f"{len(ips)} vendor-named servers"), "Low",
+                    [_step(f"{who} {'is' if one else 'are'} behind {cdn}", front_facts, "Observed")],
+                    f"Attacks {cdn} would have blocked reach the server", [],
+                    no_door="every server here is named only through another domain's CNAME",
+                    ips=ips, not_own=outside, rule="around_cdn",
+                    targets=_targets([], ips, origins=[{"ip": ip, "hosts": []} for ip in ips],
+                                     **fronted_by)))
+            if not own:
+                continue
+            ips = [o["ip"] for o in own]
+            direct = list(dict.fromkeys(h for o in own for h in o["hosts"]))
             direct_facts = [resolves[h] for h in direct[:3] if h in resolves]
-            web_facts = web[ip][:1]
+            web_facts = [f for o in own[:3] for f in web[o["ip"]][:1]]
+            if len(own) == 1:
+                straight, where = _names(own[0]["hosts"]), ips[0]
+                seen = (f"{straight} {'points' if len(own[0]['hosts']) == 1 else 'point'} straight "
+                        f"at {where}, with no CDN in front, and a web server answers there")
+                maybe = f"If {where} is also the server behind {who}"
+                title_via = where
+            else:
+                where = _names(ips)
+                seen = (f"{len(ips)} servers of the target's own answer web requests with no CDN in "
+                        f"front ({where}), named by {_names(direct)}")
+                maybe = f"If any of them is also the server behind {who}"
+                title_via = f"any of {len(ips)} origin servers"
             steps = [
                 _step(f"{who} {'is' if one else 'are'} behind {cdn}, which filters traffic before it "
                       "reaches the real server", front_facts, "Observed"),
-                _step(f"{straight} {'points' if one_direct else 'point'} straight at {ip}, with no CDN "
-                      "in front, and a web server answers there", direct_facts + web_facts, "Observed"),
-                _step(f"If {ip} is also the server behind {who}, an attacker can send requests to it "
-                      f"directly and skip {cdn}'s protection", front_facts + direct_facts, "Inference"),
+                _step(seen, direct_facts + web_facts, "Observed"),
+                _step(f"{maybe}, an attacker can send requests to it directly and skip {cdn}'s "
+                      "protection", front_facts + direct_facts, "Inference"),
             ]
+            # One action per origin: each one has to stop answering direct traffic
+            actions = [_action([resolves[h] for h in o["hosts"][:3] if h in resolves] or web[o["ip"]][:1],
+                               f"Only accept web traffic on {o['ip']} from {cdn}, or put its hosts "
+                               f"behind {cdn} too", [OWNERS["server"], OWNERS["cdn"]])
+                       for o in own]
             candidates.append(_path(
-                f"Check whether {who} can be reached around {cdn} through {ip}", "Low", steps,
-                f"Attacks {cdn} would have blocked reach the server",
-                [_action(direct_facts or web_facts,
-                         f"Only accept web traffic on {ip} from {cdn}, or put its hosts behind {cdn} too",
-                         [OWNERS["server"], OWNERS["cdn"]])],
-                no_door=(f"nothing shows that {ip} is the server behind {who} "
-                         "(a CDN hides its origin from outside)"),
-                hosts=direct, ips=[ip], not_own=outside, rule="around_cdn",
-                targets=_targets(direct, [ip], fronted=fronted, cdn=cdn_name)))
+                f"Check whether {who} can be reached around {cdn} through {title_via}", "Low", steps,
+                f"Attacks {cdn} would have blocked reach the server", actions,
+                no_door=(f"nothing shows that {ips[0]} is the server behind {who}" if len(own) == 1 else
+                         f"nothing shows that any of the {len(own)} servers is the one behind {who}")
+                + " (a CDN hides its origin from outside)",
+                hosts=direct, ips=ips, rule="around_cdn",
+                targets=_targets(direct, ips, origins=own, **fronted_by)))
 
     paths, leads, set_aside = gate.review(candidates, results, evidence, scope)
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))

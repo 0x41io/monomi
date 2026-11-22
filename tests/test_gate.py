@@ -465,10 +465,11 @@ def test_an_excluded_host_never_holds_up_a_go_around_the_cdn_lead():
     """The bounty-run case: an excluded forum pointing straight at its own server
     was the evidence for "go around the CDN". Excluded, it isn't any more."""
     results, s = scoped_lab("lab.test\n*.lab.test\n!community.lab.test\n")
-    assert any("192.0.2.20" in t and "around Cloudflare" in t for t in leads_of(results))
+    unscoped = build(results)
+    assert any("192.0.2.20" in p["targets"]["ips"] and p["rule"] == "around_cdn" for p in unscoped["leads"])
     built = build(results, s)
     for p in built["leads"] + built["paths"]:
-        assert "community.lab.test" not in json.dumps(p) and "192.0.2.20" not in p["title"]
+        assert "community.lab.test" not in json.dumps(p) and "192.0.2.20" not in p["targets"]["ips"]
 
 
 def test_a_side_door_made_only_of_excluded_hosts_is_set_aside_not_hidden():

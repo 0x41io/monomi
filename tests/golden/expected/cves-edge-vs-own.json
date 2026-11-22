@@ -151,6 +151,14 @@
           "ips": [
             "203.0.113.10"
           ],
+          "origins": [
+            {
+              "ip": "203.0.113.10",
+              "hosts": [
+                "cves.test"
+              ]
+            }
+          ],
           "fronted": [
             "www.cves.test"
           ],

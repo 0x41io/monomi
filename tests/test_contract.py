@@ -14,6 +14,10 @@ built it, one of RULES) and "targets" (what it's about: always "hosts" and
 "rule" and builds its requests from "targets", never from the text. It may
 only rely on a targets key listed here for that rule. "fronted" on an
 around_cdn lead is every host behind the CDN: Akashi caps how many it tries.
+Since v1.24 an around_cdn lead is one per CDN, not one per origin:
+"origins" is every origin candidate, ranked ([{"ip", "hosts"}], the hosts
+pointing straight at that IP), and "ips" / "hosts" are the same IPs and
+hosts in that order. Akashi tries the origins in that order.
 Saved scans start with "monomi_version" (X.Y.Z, compared as numbers with
 common.parse_version); Akashi refuses scans older than 1.15.0.
 
@@ -68,7 +72,7 @@ RULE_KEYS = {
     "known_cves": {"cves", "versions"},
     "version_check": {"versions"},
     "side_door": {"shared_with"},
-    "around_cdn": {"fronted", "cdn"},
+    "around_cdn": {"fronted", "cdn", "origins"},
     "dangling_ns": {"cut", "ns_ips", "provider", "grade"},
 }
 
@@ -102,8 +106,8 @@ def test_paths_and_leads_keep_their_shape(name):
 
 def test_cut_leads_are_counted_and_named():
     # v1.23: 0x41 reads both to say which hosts' leads were left out
-    from test_paths import many_origin_results, run as run_scan
-    built, _ = run_scan(many_origin_results())
+    from test_paths import many_server_results, run as run_scan
+    built, _ = run_scan(many_server_results())
     assert isinstance(built["more_leads"], int) and built["more_leads"] > 0
     assert built["more_leads_hosts"] and all(isinstance(h, str) for h in built["more_leads_hosts"])
 
@@ -201,13 +205,17 @@ EXPECTED_TARGETS = {
     ("41xlab", "L1"): ("side_door", {"hosts": ["dev.41xlab.com", "staging.41xlab.com"],
                                      "ips": ["64.227.89.72"], "shared_with": ["41xlab.com"]}),
     ("41xlab", "L2"): ("around_cdn", {"hosts": ["41xlab.com", "dev.41xlab.com", "staging.41xlab.com"],
-                                      "ips": ["64.227.89.72"], "fronted": ["www.41xlab.com"], "cdn": "Cloudflare"}),
+                                      "ips": ["64.227.89.72"], "fronted": ["www.41xlab.com"], "cdn": "Cloudflare",
+                                      "origins": [{"ip": "64.227.89.72", "hosts": [
+                                          "41xlab.com", "dev.41xlab.com", "staging.41xlab.com"]}]}),
     ("cves-edge-vs-own", "P1"): ("known_cves", {"hosts": ["cves.test"], "ips": ["203.0.113.10"],
                                                 "cves": ["CVE-2099-0001", "CVE-2099-0002"], "versions": []}),
-    ("two-origins", "L1"): ("around_cdn", {"hosts": ["app.origins.test", "origins.test"], "ips": ["203.0.113.10"],
-                                           "fronted": ["www.origins.test"], "cdn": "Cloudflare"}),
-    ("two-origins", "L2"): ("around_cdn", {"hosts": ["api.origins.test"], "ips": ["203.0.113.20"],
-                                           "fronted": ["www.origins.test"], "cdn": "Cloudflare"}),
+    # v1.24: one lead per CDN, every origin candidate in it (was L1 and L2)
+    ("two-origins", "L1"): ("around_cdn", {
+        "hosts": ["app.origins.test", "origins.test", "api.origins.test"],
+        "ips": ["203.0.113.10", "203.0.113.20"], "fronted": ["www.origins.test"], "cdn": "Cloudflare",
+        "origins": [{"ip": "203.0.113.10", "hosts": ["app.origins.test", "origins.test"]},
+                    {"ip": "203.0.113.20", "hosts": ["api.origins.test"]}]}),
     ("exposed-service", "P2"): ("exposed_service", {"hosts": ["db"], "ips": ["198.51.100.20"],
                                                     "services": ["5432/PostgreSQL"]}),
     ("version-only", "L2"): ("version_check", {"hosts": ["lab"], "ips": ["198.51.100.7"],

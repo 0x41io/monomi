@@ -560,6 +560,16 @@
           "ips": [
             "64.227.89.72"
           ],
+          "origins": [
+            {
+              "ip": "64.227.89.72",
+              "hosts": [
+                "41xlab.com",
+                "dev.41xlab.com",
+                "staging.41xlab.com"
+              ]
+            }
+          ],
           "fronted": [
             "www.41xlab.com"
           ],
