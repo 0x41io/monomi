@@ -9,9 +9,12 @@ an attacker (or a bug-bounty hunter) a shortcut, so programs often want to
 know when they're public.
 
 Only runs with --exposed-files. For each host it sends a small, fixed set
-of GET requests (see MAX_REQUESTS): a short list of well-known spec paths,
-the homepage, a few of its same-host scripts, and the .map files those
-scripts point to. It never POSTs, never follows a spec to call the API,
+of GET requests (see MAX_REQUESTS): the homepage, a short list of
+well-known spec paths, a few of the homepage's same-host scripts, and the
+.map files those scripts point to. The homepage goes first and decides the
+scheme (v1.24): HTTPS, or plain HTTP once when HTTPS fails with a TLS error
+or is refused (the same rule as --fingerprint), and the spec paths follow
+over whichever answered. A host that answers neither gets nothing more. It never POSTs, never follows a spec to call the API,
 and never leaves the hosts it was given. A file counts as a finding only
 when it actually parses as what it claims to be, so soft-404 pages (a 200
 HTML page for any path) are not mistaken for specs. Source code found in a
@@ -27,6 +30,7 @@ import requests
 
 from monomi import rate as ratemod
 from monomi.common import now_utc
+from monomi.fingerprint import _retry_on_http
 from monomi.research import request_headers
 from monomi.scope import OutOfScope, check_url
 
@@ -43,8 +47,8 @@ MAX_SCRIPTS = 3                    # same-host scripts checked per host
 MAX_MAPS = 3                       # .map files fetched per host
 MAX_HOSTS = 10                     # hosts per call (active: stays small)
 
-# Worst case per host: 6 spec paths + homepage + 3 scripts + 3 maps.
-MAX_REQUESTS = len(SPEC_PATHS) + 1 + MAX_SCRIPTS + MAX_MAPS
+# Worst case per host: homepage over HTTPS, then HTTP + 6 spec paths + 3 scripts + 3 maps.
+MAX_REQUESTS = 2 + len(SPEC_PATHS) + MAX_SCRIPTS + MAX_MAPS
 
 # <script src="..."> — captures the URL inside single or double quotes.
 SCRIPT_SRC_RE = re.compile(r"""<script[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.I)
@@ -214,14 +218,36 @@ def _map_urls(js_result, host):
     return unique
 
 
-def _find_spec(host, fetch):
+def _homepage(host, fetch):
+    """The homepage, which decides the scheme for everything after it (v1.24).
+    Returns (result or None, scheme or None, the HTTPS failure's name or None).
+
+    HTTPS first. When it fails in a way plain HTTP might not (a TLS error, or
+    nothing listening on 443: fingerprint._retry_on_http, the same rule as
+    --fingerprint), http:// once. Never after a timeout (a second wait could
+    push an MCP call past its limit) or when the scope refused the URL."""
+    try:
+        return fetch(f"https://{host}/", want_body=True, cap=MAX_HTML_BYTES), "https", None
+    except OutOfScope:
+        return None, None, None
+    except requests.RequestException as e:
+        https_error = type(e).__name__
+        if not _retry_on_http(e):
+            return None, None, https_error
+    try:
+        return fetch(f"http://{host}/", want_body=True, cap=MAX_HTML_BYTES), "http", https_error
+    except requests.RequestException:
+        return None, None, https_error
+
+
+def _find_spec(host, fetch, scheme="https"):
     """Try the spec paths in order; return (finding, requests_sent).
     Stops at the first path that really parses as a spec."""
     sent = 0
     for path in SPEC_PATHS:
         sent += 1
         try:
-            result = fetch(f"https://{host}{path}", want_body=True, cap=MAX_SPEC_BYTES)
+            result = fetch(f"{scheme}://{host}{path}", want_body=True, cap=MAX_SPEC_BYTES)
         except requests.RequestException:
             continue
         spec = read_openapi(_json_body(result))
@@ -231,14 +257,10 @@ def _find_spec(host, fetch):
     return None, sent
 
 
-def _find_source_maps(host, fetch):
-    """Homepage -> same-host scripts -> their .map files.
-    Returns (list of map findings, requests_sent)."""
-    sent = 1
-    try:
-        home = fetch(f"https://{host}/", want_body=True, cap=MAX_HTML_BYTES)
-    except requests.RequestException:
-        return [], sent
+def _find_source_maps(host, fetch, home):
+    """Homepage (already fetched, see _homepage) -> same-host scripts -> their
+    .map files. Returns (list of map findings, requests_sent)."""
+    sent = 0
     html = (home["body"] or b"").decode("utf-8", "replace")
     scripts = _same_host_scripts(html, home["url"], host)[:MAX_SCRIPTS]
 
@@ -294,7 +316,9 @@ def check_host(host, timeout=8, on_request=None, *, scope,
     coverage, if given (a dict), is filled with what was checked (v1.23), so
     a clean result can say what "nothing found" covers: {"spec_paths":
     {"tried", "answered"}, "homepage": its status, "no answer" or "out of
-    scope", "scripts_and_maps": the scripts and .map files requested, "requests"}."""
+    scope", "scheme": "https", "http" or None (nothing answered), "https_error":
+    why HTTPS failed when it fell back to HTTP (or None), "scripts_and_maps":
+    the scripts and .map files requested, "requests"}."""
     sent_count = [0]
 
     def sent_now(h, url, rule):
@@ -306,16 +330,20 @@ def check_host(host, timeout=8, on_request=None, *, scope,
         return _fetch(url, timeout, sent_now, host, want_body=want_body, cap=cap,
                       scope=scope, limiter=limiter, research=research)
 
-    spec_outcomes, page_outcomes = [], []
-    spec, _ = _find_spec(host, _answer(fetch, spec_outcomes))
-    maps, _ = _find_source_maps(host, _answer(fetch, page_outcomes))
+    home_outcomes, spec_outcomes, page_outcomes = [], [], []
+    home, scheme, https_error = _homepage(host, _answer(fetch, home_outcomes))
+    spec, maps = None, []
+    if home is not None:  # nothing more for a host that answered neither scheme
+        spec, _ = _find_spec(host, _answer(fetch, spec_outcomes), scheme)
+        maps, _ = _find_source_maps(host, _answer(fetch, page_outcomes), home)
     sent = sent_count[0]
     if coverage is not None:
         coverage.update({
             "spec_paths": {"tried": len(spec_outcomes),
                            "answered": sum(isinstance(o, int) for o in spec_outcomes)},
-            "homepage": page_outcomes[0] if page_outcomes else "not requested",
-            "scripts_and_maps": max(0, len(page_outcomes) - 1),
+            "homepage": home_outcomes[-1] if home_outcomes else "not requested",
+            "scheme": scheme, "https_error": https_error,
+            "scripts_and_maps": len(page_outcomes),
             "requests": sent})
     if not spec and not maps:
         return None, sent

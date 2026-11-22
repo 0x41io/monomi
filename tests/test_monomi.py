@@ -224,6 +224,21 @@ def test_run_exposed_clean_says_what_each_host_was_checked_for(monkeypatch, caps
     assert "a  checked: 6/6 spec paths answered, homepage 200, 2 script(s) and map(s)" in out
 
 
+def test_run_exposed_says_which_scheme_each_host_answered_on(monkeypatch, capsys):
+    # v1.24: a host checked over plain HTTP, and one that answered neither
+    cov = {"dev": {"spec_paths": {"tried": 6, "answered": 6}, "homepage": 200, "scheme": "http",
+                   "https_error": "SSLError", "scripts_and_maps": 0, "requests": 8},
+           "down": {"spec_paths": {"tried": 0, "answered": 0}, "homepage": "no answer", "scheme": None,
+                    "https_error": "ConnectionError", "scripts_and_maps": 0, "requests": 2}}
+    empty = {"hosts": {}, "requested": ["dev", "down"], "checked": 2, "requests": 10, "skipped": 0,
+             "coverage": cov}
+    monkeypatch.setattr(cli.exposed, "check_all", lambda enrichment, **kwargs: empty)
+    cli.run_exposed({}, {"hosts": {}}, cli.scope.UNSCOPED_CLI)
+    out = capsys.readouterr().out
+    assert "dev  checked over plain HTTP (HTTPS failed: SSLError): 6/6 spec paths answered" in out
+    assert "down  checked: homepage no answer over HTTPS or plain HTTP, so nothing else was sent" in out
+
+
 # ---------- --scope on the CLI (v1.12) ----------
 
 

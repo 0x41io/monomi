@@ -93,7 +93,9 @@ def test_exposed_files_plan_shows_fixed_urls_rule_and_cap(scope_file):
     approvals.approve(rid, scope_file, ask=lambda q: "no", out=shown.append, interactive=lambda: True, now=T0)
     text = "\n".join(shown)
     assert f"GET https://www.{D}/openapi.json" in text and f"GET https://www.{D}/" in text
-    assert "never another host" in text and "at most 13" in text
+    assert "never another host" in text and "at most 14" in text
+    # v1.24: the plain-HTTP fallback is shown before the yes, like --fingerprint's
+    assert f"http://www.{D}/ once, only if HTTPS fails with a TLS error or is refused" in text
 
 
 @pytest.mark.parametrize("answer", ["y", "YES please", "", "no"])

@@ -746,7 +746,12 @@ def run_exposed(results: dict, enrichment: dict, active_scope, active=None) -> N
         if host in ex["hosts"] or not c:
             continue
         sp = c["spec_paths"]
-        print(f"    {ui.safe(host)}  checked: {sp['answered']}/{sp['tried']} spec paths answered, "
+        if c.get("scheme") is None and "scheme" in c:
+            print(f"    {ui.safe(host)}  checked: homepage {c['homepage']} over HTTPS"
+                  + (" or plain HTTP" if c.get("https_error") else "") + ", so nothing else was sent")
+            continue
+        over = f" over plain HTTP (HTTPS failed: {c['https_error']})" if c.get("scheme") == "http" else ""
+        print(f"    {ui.safe(host)}  checked{over}: {sp['answered']}/{sp['tried']} spec paths answered, "
               f"homepage {c['homepage']}, {c['scripts_and_maps']} script(s) and map(s)")
 
 

@@ -211,15 +211,58 @@ def test_every_request_is_logged_and_counted(monkeypatch):
         "lab", scope=UNSCOPED_CLI, on_request=lambda host, url, rule: logged.append((host, url)))
     assert n == len(sent) == len(logged)          # count matches the log exactly
     assert all(host == "lab" for host, _ in logged)
-    assert logged[0] == ("lab", "https://lab/openapi.json")
+    # The homepage goes first: it decides the scheme for the spec paths (v1.24)
+    assert logged[:2] == [("lab", "https://lab/"), ("lab", "https://lab/openapi.json")]
 
 
-def test_connection_errors_dont_crash_the_host(monkeypatch):
-    pages = {"https://lab/openapi.json": requests.ConnectionError("refused"),
-             "https://lab/": requests.Timeout("slow")}
+def test_a_homepage_timeout_stops_the_host(monkeypatch):
+    # v1.24: no HTTP retry after a timeout (a second wait could push an MCP
+    # call past its limit), and no spec paths sent to a host that didn't answer
+    sent = fake_site(monkeypatch, {"https://lab/": requests.Timeout("slow")})
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
+    assert finding is None and n == 1 and sent == ["https://lab/"]
+
+
+def test_connection_errors_on_spec_paths_dont_crash_the_host(monkeypatch):
+    pages = {"https://lab/": Resp(body=b"<html></html>"),
+             "https://lab/openapi.json": requests.ConnectionError("reset")}
     fake_site(monkeypatch, pages)
     finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI)
-    assert finding is None and n == len(exposed.SPEC_PATHS) + 1
+    assert finding is None and n == 1 + len(exposed.SPEC_PATHS)
+
+
+def test_https_refused_falls_back_to_plain_http_once(monkeypatch):
+    # The 41xlab dev host (v1.24): HTTP only. Before, all 7 requests failed
+    # over HTTPS and the host was reported as "no answer"
+    spec = json.dumps(OPENAPI).encode()
+    sent = fake_site(monkeypatch, {"https://dev/": requests.exceptions.SSLError("wrong cert"),
+                                   "http://dev/": Resp(body=b"<html></html>"),
+                                   "http://dev/openapi.json": Resp(body=spec)})
+    coverage = {}
+    finding, n = exposed.check_host("dev", scope=UNSCOPED_CLI, coverage=coverage)
+    assert sent[:3] == ["https://dev/", "http://dev/", "http://dev/openapi.json"]
+    assert not any(u.startswith("https://dev/openapi") for u in sent)   # spec paths over HTTP only
+    assert finding["spec"]["url"] == "http://dev/openapi.json"
+    assert coverage["scheme"] == "http" and coverage["https_error"] == "SSLError"
+
+
+def test_a_host_that_answers_neither_scheme_gets_two_requests(monkeypatch):
+    sent = fake_site(monkeypatch, {"https://down/": requests.ConnectionError("refused"),
+                                   "http://down/": requests.ConnectionError("refused")})
+    coverage = {}
+    finding, n = exposed.check_host("down", scope=UNSCOPED_CLI, coverage=coverage)
+    assert finding is None and n == 2 and sent == ["https://down/", "http://down/"]
+    assert coverage["scheme"] is None and coverage["homepage"] == "no answer"
+    assert coverage["spec_paths"] == {"tried": 0, "answered": 0}
+
+
+def test_without_the_fallback_an_http_only_host_answers_nothing(monkeypatch):
+    # The removal test: never retry, and the HTTP-only host is checked for nothing
+    monkeypatch.setattr(exposed, "_retry_on_http", lambda e: False)
+    sent = fake_site(monkeypatch, {"https://dev/": requests.exceptions.SSLError("wrong cert"),
+                                   "http://dev/": Resp(body=b"<html></html>")})
+    finding, n = exposed.check_host("dev", scope=UNSCOPED_CLI)
+    assert sent == ["https://dev/"] and finding is None
 
 
 # ---------- check_all: public hosts only, requests counted ----------
@@ -361,18 +404,7 @@ def test_coverage_says_what_a_clean_host_was_checked_for(monkeypatch):
     finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI, coverage=coverage)
     assert finding is None
     assert coverage == {"spec_paths": {"tried": 6, "answered": 6}, "homepage": 200,
-                        "scripts_and_maps": 1, "requests": n}
-
-
-def test_coverage_tells_no_answer_apart_from_not_found(monkeypatch):
-    # A host that answers nothing is not "clean": the coverage shows it
-    pages = {u: requests.ConnectionError("refused") for u in
-             [f"https://down{p}" for p in exposed.SPEC_PATHS] + ["https://down/"]}
-    fake_site(monkeypatch, pages)
-    coverage = {}
-    exposed.check_host("down", scope=UNSCOPED_CLI, coverage=coverage)
-    assert coverage["spec_paths"] == {"tried": 6, "answered": 0}
-    assert coverage["homepage"] == "no answer" and coverage["scripts_and_maps"] == 0
+                        "scheme": "https", "https_error": None, "scripts_and_maps": 1, "requests": n}
 
 
 def test_check_all_returns_coverage_for_every_host_contacted(monkeypatch):

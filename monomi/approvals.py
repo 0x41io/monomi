@@ -21,7 +21,8 @@ yes; claim() takes only the id.
 
 What can be listed in advance depends on the tool. fingerprint_hosts sends
 fixed URLs (https://host/, and http://host/ only if HTTPS fails). For
-check_exposed_files the spec paths and homepage are fixed, but the scripts
+check_exposed_files the homepage and spec paths are fixed (over http:// only
+if the HTTPS homepage fails the same way, v1.24), but the scripts
 and .map files come from the homepage itself, so the approval locks the
 rule ("same host only") and a hard cap instead of URLs; every URL is
 still checked against the scope and the approved hosts before it's sent.
@@ -56,8 +57,10 @@ TOOLS = {
         "max_per_host": 2,
     },
     "check_exposed_files": {
-        "fixed": lambda h: [f"https://{h}{p}" for p in exposed.SPEC_PATHS] + [f"https://{h}/"],
-        "more": (f"up to {exposed.MAX_SCRIPTS} scripts the homepage loads from {{host}} itself, and up to "
+        "fixed": lambda h: [f"https://{h}/"] + [f"https://{h}{p}" for p in exposed.SPEC_PATHS],
+        "more": ("http://{host}/ once, only if HTTPS fails with a TLS error or is refused, and then the "
+                 "spec paths over http:// instead; "
+                 f"up to {exposed.MAX_SCRIPTS} scripts the homepage loads from {{host}} itself, and up to "
                  f"{exposed.MAX_MAPS} .map files they name on {{host}}: never another host"),
         "max_per_host": exposed.MAX_REQUESTS,
     },

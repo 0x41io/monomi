@@ -1053,14 +1053,16 @@ def test_research_header_and_rate_go_on_every_request_and_log_line(monkeypatch, 
     assert line["rate"] == 1000 and line["research_sha256"] == "ab" * 32
 
 
-@pytest.mark.parametrize("speed, fp_hosts, exp_hosts", [(None, 30, 10), (1, 20, 3), (10, 30, 10)])
+# exposed files at 1/s: 2 hosts per call since v1.24 (14 requests a host, was 13)
+@pytest.mark.parametrize("speed, fp_hosts, exp_hosts", [(None, 30, 10), (1, 20, 2), (10, 30, 10)])
 def test_hosts_per_call_fits_the_rate(monkeypatch, speed, fp_hosts, exp_hosts):
     monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(speed))
     assert mcp_server.hosts_per_call("t", mcp_server.MAX_FP_HOSTS, mcp_server.FP_REQUESTS_PER_HOST) == fp_hosts
     assert mcp_server.hosts_per_call("t", mcp_server.MAX_EXP_HOSTS, mcp_server.exposed.MAX_REQUESTS) == exp_hosts
 
 
-def test_at_1_per_second_exposed_files_goes_in_batches_of_3(monkeypatch):
+def test_at_1_per_second_exposed_files_goes_in_batches_of_2(monkeypatch):
+    # 2 since v1.24: up to 14 requests a host (the plain-HTTP homepage), was 13
     monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1))
     seen = {}
 
@@ -1070,10 +1072,10 @@ def test_at_1_per_second_exposed_files_goes_in_batches_of_3(monkeypatch):
     monkeypatch.setattr(mcp_server.exposed, "check_all", check_all)
     monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {}})
     asked = mcp_server.check_exposed_files([f"h{i}" for i in range(7)])
-    assert asked["hosts_checked"] == 3 and asked["max_requests"] == 3 * mcp_server.exposed.MAX_REQUESTS
-    assert asked["batch"]["size"] == 3 and asked["batch"]["next_start"] == 3
+    assert asked["hosts_checked"] == 2 and asked["max_requests"] == 2 * mcp_server.exposed.MAX_REQUESTS
+    assert asked["batch"]["size"] == 2 and asked["batch"]["next_start"] == 2
     run(monkeypatch, "check_exposed_files", [f"h{i}" for i in range(7)])
-    assert seen["max_hosts"] == 3
+    assert seen["max_hosts"] == 2
 
 
 def test_a_rate_too_slow_for_one_host_refuses_before_any_lookup(monkeypatch, results_dir):
