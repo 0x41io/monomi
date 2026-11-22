@@ -40,7 +40,7 @@ SHARED_EDGE = {"Cloudflare", "Fastly", "Akamai", "Imperva", "AWS CloudFront", "V
 # a help desk, a forum). The site may be the target's, but the server isn't:
 # what it shows belongs to the vendor. Names as enrich.py's KNOWN_PROVIDERS gives them.
 THIRD_PARTY_HOSTING = {"GitHub", "Salesforce", "Shopify", "Squarespace", "WordPress.com",
-                       "Netlify", "HubSpot", "Zendesk", "Discourse (CDCK)"}
+                       "Netlify", "HubSpot", "Zendesk", "Discourse (CDCK)", "Zoho"}
 
 # A shared front door that forwards to servers behind it, but isn't a CDN
 SHARED_FRONT_DOOR = {"AWS Global Accelerator"}
@@ -85,6 +85,10 @@ EDGE_CNAMES = [
     (".cdn.cloudflare.net", "Cloudflare"),
     (".incapdns.net", "Imperva"),
     (".azurefd.net", "Azure Front Door"),
+    # Front Door's CNAME chain ends on these, not on azurefd.net (v1.23, the
+    # Superdrug dev portal: ...azurefd.net -> mr-a02.tm-azurefd.net)
+    (".tm-azurefd.net", "Azure Front Door"),
+    (".t-msedge.net", "Azure Front Door"),
     (".azureedge.net", "Azure CDN"),
     (".vercel.app", "Vercel"),
 ]
@@ -173,8 +177,12 @@ EXCHANGE_ONLINE = [
     "150.171.32.0/22",
     "204.79.197.215/32",
 ]
+#   Shopify's storefront block: its help pages give 23.227.38.65, and stores
+#   are moved between addresses in this block (.32, .36, .65...) (v1.23)
+SHOPIFY_STOREFRONT = ["23.227.38.0/24"]
 THIRD_PARTY_RANGES = ([(ipaddress.ip_network(c), "Google front end") for c in GOOGLE_FRONT_END]
-                      + [(ipaddress.ip_network(c), "Microsoft 365") for c in EXCHANGE_ONLINE])
+                      + [(ipaddress.ip_network(c), "Microsoft 365") for c in EXCHANGE_ONLINE]
+                      + [(ipaddress.ip_network(c), "Shopify") for c in SHOPIFY_STOREFRONT])
 
 
 def third_party_from_ip(ip) -> tuple[str, str] | None:
@@ -189,6 +197,85 @@ def third_party_from_ip(ip) -> tuple[str, str] | None:
     for net, vendor in THIRD_PARTY_RANGES:
         if addr in net:
             return vendor, str(net)
+    return None
+
+
+# CNAME endings that mean "a shared service hosts this name for many
+# customers": the server isn't the target's own, even though the network
+# owner ("Microsoft/Azure") also rents out servers that are (v1.23, from the
+# Superdrug run: appt and appt-uat sat on Static Web Apps, gp11022025-api on
+# an App Service front end). Each entry: (ending, vendor).
+THIRD_PARTY_CNAMES = [
+    (".azurestaticapps.net", "Azure Static Web Apps"),
+    (".azurewebsites.net", "Azure App Service"),
+    (".myshopify.com", "Shopify"),
+    # Hosted careers sites, help desks, status pages and email platforms: the
+    # around-the-CDN noise in every v1.22 field run. A vendor found in a field
+    # run that isn't listed shows up set aside with its CNAME named, so it can be added
+    (".myworkdayjobs.com", "Workday"),
+    (".greenhouse.io", "Greenhouse"),
+    (".lever.co", "Lever"),
+    (".smartrecruiters.com", "SmartRecruiters"),
+    (".icims.com", "iCIMS"),
+    (".taleo.net", "Oracle Taleo"),
+    (".zendesk.com", "Zendesk"),
+    (".freshdesk.com", "Freshdesk"),
+    (".statuspage.io", "Atlassian Statuspage"),
+    (".hs-sites.com", "HubSpot"),
+    (".mktoweb.com", "Marketo"),
+    (".sendgrid.net", "SendGrid"),
+    (".mailgun.org", "Mailgun"),
+]
+
+# App Service names end on a shared front end ("scale unit") such as
+# waws-prod-ln1-175-3cf9.uksouth.cloudapp.azure.com. Only waws-prod names:
+# any other cloudapp.azure.com name is a customer's own VM or load balancer.
+THIRD_PARTY_CNAME_PATTERNS = [
+    (re.compile(r"(^|\.)waws-prod-[a-z0-9-]+\.[a-z0-9-]+\.cloudapp\.azure\.com$"), "Azure App Service"),
+]
+
+
+# CNAME endings that are cloud infrastructure the target rents for itself: a
+# load balancer, a VM. A host pointing here is outside the target's domain by
+# name but runs on the target's own server, the classic origin behind a CDN,
+# so rule F keeps it as a lead and ranks it first (v1.23). Patterns, since the
+# region sits in the middle of the name.
+CLOUD_INFRA_CNAMES = [
+    (re.compile(r"\.elb\.amazonaws\.com$"), "AWS load balancer"),
+    (re.compile(r"\.elb\.[a-z0-9-]+\.amazonaws\.com$"), "AWS load balancer"),
+    (re.compile(r"\.compute(-1)?\.amazonaws\.com$"), "AWS EC2"),
+    (re.compile(r"\.cloudapp\.azure\.com$"), "Azure VM or load balancer"),
+    (re.compile(r"\.cloudapp\.net$"), "Azure VM or load balancer"),
+    (re.compile(r"\.googleusercontent\.com$"), "Google Cloud VM"),
+]
+
+
+def cloud_infra_from_cname(names) -> tuple[str, str] | None:
+    """Which rented cloud server a CNAME points to, if any. App Service's
+    shared front ends match third_party_from_cname first: callers check that one before this.
+
+    'web-1a2b.eu-west-1.elb.amazonaws.com' -> ('AWS load balancer', 'web-1a2b.eu-west-1.elb.amazonaws.com')
+    """
+    for name in sorted(n.lower().rstrip(".") for n in names if n):
+        for pattern, kind in CLOUD_INFRA_CNAMES:
+            if pattern.search(name):
+                return kind, name
+    return None
+
+
+def third_party_from_cname(names) -> tuple[str, str] | None:
+    """Which shared hosting service a hostname's CNAME points to, if any.
+
+    'x.azurestaticapps.net' -> ('Azure Static Web Apps', 'x.azurestaticapps.net')
+    Endings start with a dot, so 'evilazurestaticapps.net' doesn't count.
+    """
+    for name in sorted(n.lower().rstrip(".") for n in names if n):  # sorted: same answer every run
+        for ending, vendor in THIRD_PARTY_CNAMES:
+            if name.endswith(ending):
+                return vendor, name
+        for pattern, vendor in THIRD_PARTY_CNAME_PATTERNS:
+            if pattern.search(name):
+                return vendor, name
     return None
 
 

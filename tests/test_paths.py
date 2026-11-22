@@ -87,7 +87,8 @@ def test_clean_target_has_no_paths():
     results["email"]["verdict"]["verdict"] = "protected"
     out, _ = run(results)
     assert out == {"paths": [], "leads": [], "set_aside": [], "fix_first": None,
-                   "more": 0, "more_leads": 0, "more_set_aside": 0, "out_of_scope_hosts": []}
+                   "more": 0, "more_leads": 0, "more_leads_hosts": [], "more_set_aside": 0,
+                   "out_of_scope_hosts": []}
 
 
 def test_cdn_ip_is_never_a_side_door():
@@ -639,14 +640,15 @@ def two_origin_results(origins=2):
 def test_cdn_leads_are_one_per_origin_server():
     out, ev = run(two_origin_results())
     leads = cdn_lead(out)
-    assert [lead["targets"]["ips"] for lead in leads] == [["198.51.100.101"], ["198.51.100.7"]]
+    # IPs as numbers since v1.23: .7 before .101
+    assert [lead["targets"]["ips"] for lead in leads] == [["198.51.100.7"], ["198.51.100.101"]]
     for lead in leads:
         (ip,) = lead["targets"]["ips"]
         assert lead["title"].endswith(f"through {ip}")
         assert lead["targets"]["fronted"] == ["www"] and lead["targets"]["cdn"] == "Cloudflare"
         assert [a["what"].split(" from ")[0] for a in lead["actions"]] == [f"Only accept web traffic on {ip}"]
     # Each lead names only the hosts pointing straight at its own server
-    assert [lead["targets"]["hosts"] for lead in leads] == [["app1"], ["lab", "staging"]]
+    assert [lead["targets"]["hosts"] for lead in leads] == [["lab", "staging"], ["app1"]]
 
 
 def test_many_origin_servers_use_the_usual_lead_cap():
@@ -701,3 +703,121 @@ def test_no_delegations_no_dangling_lead():
     results = lab_results()
     out = build_paths(results, build_evidence(results))
     assert dangling_items(out) == []
+
+
+def vendor_results():
+    """lab_results() plus, like the v1.22 field runs: a careers site on a known
+    vendor, a photo partner on a vendor no list knows, and an origin on the
+    target's own AWS load balancer. Each answers web requests (a fingerprint)."""
+    results = lab_results()
+    extra = {
+        "careers": ("198.51.100.21", "lab.wd3.myworkdayjobs.com"),
+        "photos": ("198.51.100.22", "lab.photo-partner.invalid"),
+        "origin": ("198.51.100.23", "web-1a2b.eu-west-1.elb.amazonaws.com"),
+    }
+    for h, (ip, cname) in extra.items():
+        results["subdomains"].append(h)
+        results["enrichment"]["hosts"][h] = {"ips": [ip], "provider": "AWS", "canonical": cname}
+        results["fingerprint"]["hosts"][h] = {
+            "collected_at": None, "status": 200, "header_issues": [],
+            "techs": [{"tech": "nginx", "version": None, "evidence": "Server header"}]}
+    return results
+
+
+def test_cdn_leads_skip_vendor_platforms_and_keep_rented_cloud():
+    out, ev = run(vendor_results())
+    titles = [p["title"] for p in cdn_lead(out)]
+    assert "Check whether www can be reached around Cloudflare through 198.51.100.23" in titles
+    assert not any("198.51.100.21" in t or "198.51.100.22" in t for t in titles)
+
+
+def test_an_unknown_vendor_is_set_aside_with_its_cname_named():
+    out, ev = run(vendor_results())
+    aside = [p for p in out["set_aside"] if p["rule"] == "around_cdn"]
+    assert [p["targets"]["ips"] for p in aside] == [["198.51.100.22"]]
+    assert aside[0]["gate"]["failed"][0]["check"] == 2
+    assert "photos -> lab.photo-partner.invalid" in aside[0]["why"]
+    # A known vendor is third-party hosting, like Microsoft 365: no candidate at all
+    assert not any("198.51.100.21" in p["title"] for p in out["set_aside"] + out["leads"])
+
+
+def test_without_the_cnames_vendor_sites_were_cdn_leads():
+    # The removal test: without the CNAMEs (how every scan looked before
+    # v1.23), the careers and photo sites are around-the-CDN leads again
+    results = vendor_results()
+    for h in ("careers", "photos", "origin"):
+        del results["enrichment"]["hosts"][h]["canonical"]
+    out, ev = run(results)
+    ips = {p["targets"]["ips"][0] for p in cdn_lead(out)}
+    assert {"198.51.100.21", "198.51.100.22", "198.51.100.23"} <= ips
+
+
+def test_without_the_cloud_list_the_load_balancer_is_set_aside(monkeypatch):
+    # The cloud list is what keeps a rented load balancer a lead
+    from monomi import internetdb
+    monkeypatch.setattr(internetdb, "CLOUD_INFRA_CNAMES", [])
+    out, ev = run(vendor_results())
+    assert not any("198.51.100.23" in p["title"] for p in cdn_lead(out))
+    assert any(p["targets"]["ips"] == ["198.51.100.23"] for p in out["set_aside"])
+
+
+def test_a_cdn_known_by_cname_is_named_in_the_lead():
+    # The Superdrug dev portal: behind Front Door by CNAME, provider "Microsoft/Azure"
+    results = lab_results()
+    results["enrichment"]["hosts"]["www"] = {"ips": ["150.171.109.153"], "provider": "Microsoft/Azure",
+                                             "canonical": "mr-a02.tm-azurefd.net"}
+    out, ev = run(results)
+    lead = cdn_lead(out)[0]
+    assert lead["targets"]["cdn"] == "Azure Front Door"
+    assert "around Azure Front Door" in lead["title"]
+
+
+def many_origin_results():
+    """lab_results() plus 12 plainly named origin servers and one named like
+    a login, on the highest IP: more leads than the cap (MAX_PATHS) shows."""
+    results = lab_results()
+    names = [(f"site{n}", f"198.51.100.{100 + n}") for n in range(1, 13)] + [("admin", "198.51.100.200")]
+    for name, ip in names:
+        results["subdomains"].append(name)
+        results["enrichment"]["hosts"][name] = {"ips": [ip], "provider": "DigitalOcean"}
+        results["fingerprint"]["hosts"][name] = {
+            "collected_at": None, "status": 200, "header_issues": [],
+            "techs": [{"tech": "nginx", "version": None, "evidence": "Server header"}]}
+    return results
+
+
+def test_a_login_hosts_lead_survives_the_cut():
+    out, ev = run(many_origin_results())
+    assert any(p["targets"]["hosts"] == ["admin"] for p in out["leads"])
+    assert out["more_leads"] > 0
+
+
+def test_the_hosts_behind_cut_leads_are_named():
+    out, ev = run(many_origin_results())
+    shown = {h for p in out["leads"] for h in p["targets"]["hosts"]}
+    assert out["more_leads_hosts"]
+    assert not set(out["more_leads_hosts"]) & shown
+    # The plain sites are kept by IP as numbers: .101 to .109 before .110, .111, .112
+    kept = [p["targets"]["ips"][0] for p in out["leads"] if p["targets"]["hosts"][0].startswith("site")]
+    assert kept == sorted(kept, key=lambda ip: int(ip.rsplit(".", 1)[1]))
+    assert "site12" in out["more_leads_hosts"]
+
+
+def test_without_the_lead_order_the_login_host_was_cut(monkeypatch):
+    # The removal test: rank ties the old way (as built) and admin's lead is cut
+    from monomi import paths
+    monkeypatch.setattr(paths, "_lead_order", lambda lead, results: 0)
+    out, ev = run(many_origin_results())
+    assert not any(p["targets"]["hosts"] == ["admin"] for p in out["leads"])
+    assert "admin" in out["more_leads_hosts"]
+
+
+def test_a_rented_load_balancer_ranks_first_among_cdn_leads():
+    out, ev = run(vendor_results())
+    cdn = cdn_lead(out)
+    assert cdn[0]["targets"]["ips"] == ["198.51.100.23"]
+
+
+def test_no_cut_means_no_hosts_named():
+    out, ev = run(lab_results())
+    assert out["more_leads"] == 0 and out["more_leads_hosts"] == []

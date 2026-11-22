@@ -100,6 +100,14 @@ def test_paths_and_leads_keep_their_shape(name):
         assert lead["gate"]["failed"] and lead["missing"] == lead["gate"]["failed"][0]["why"]
 
 
+def test_cut_leads_are_counted_and_named():
+    # v1.23: 0x41 reads both to say which hosts' leads were left out
+    from test_paths import many_origin_results, run as run_scan
+    built, _ = run_scan(many_origin_results())
+    assert isinstance(built["more_leads"], int) and built["more_leads"] > 0
+    assert built["more_leads_hosts"] and all(isinstance(h, str) for h in built["more_leads_hosts"])
+
+
 @pytest.mark.parametrize("name", CONTRACT_SCANS)
 def test_evidence_items_keep_their_shape(name):
     _, ev, _ = scan(name)

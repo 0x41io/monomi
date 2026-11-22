@@ -741,6 +741,13 @@ def run_exposed(results: dict, enrichment: dict, active_scope, active=None) -> N
              f"across {len(ex['hosts'])} host(s).")
     else:
         good(f"No exposed API specs or source maps on the {ex['checked']} host(s) checked.")
+    # What "nothing found" covers on each clean host (v1.23)
+    for host, c in sorted(ex.get("coverage", {}).items()):
+        if host in ex["hosts"] or not c:
+            continue
+        sp = c["spec_paths"]
+        print(f"    {ui.safe(host)}  checked: {sp['answered']}/{sp['tried']} spec paths answered, "
+              f"homepage {c['homepage']}, {c['scripts_and_maps']} script(s) and map(s)")
 
 
 def run_email(results: dict, domain: str) -> None:
@@ -1006,7 +1013,9 @@ def show_paths(results: dict) -> None:
             print(f"        {ui.paint('Note:', ui.GREY)} {ui.safe(note)}")
     if built.get("more_leads"):
         print()
-        info(f"{built['more_leads']} more lead(s) not shown.")
+        cut = built.get("more_leads_hosts", [])
+        about = f" About: {', '.join(cut[:10])}" + (f" and {len(cut) - 10} more" if len(cut) > 10 else "")
+        info(f"{built['more_leads']} more lead(s) not shown.{ui.safe(about) if cut else ''}")
     show_set_aside(built)
 
 

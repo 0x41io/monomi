@@ -3,6 +3,7 @@
 from monomi import internetdb
 from monomi.internetdb import edge_from_cname, edge_from_cpes, edge_from_ip, edge_reason, third_party_from_ip
 
+
 def test_cdn_network_owner_is_edge():
     assert edge_reason("Cloudflare", []) == "network owner is Cloudflare"
 
@@ -38,8 +39,6 @@ def test_cpe_edge_ports_are_not_blamed_on_target(monkeypatch):
     assert ip["edge_reason"].startswith("Shodan identifies the service as Cloudflare")
 
 
-
-
 def test_okta_cname_is_edge():
     assert edge_from_cname({"meli.customdomains.okta.com"}) == ("Okta", "meli.customdomains.okta.com")
 
@@ -70,6 +69,7 @@ def test_cname_edge_ports_are_not_blamed_on_target(monkeypatch):
     assert ip["shared_edge"] is True
     assert ip["edge_reason"] == "hostname's CNAME points to Okta (example.customdomains.okta.com)"
     assert result["unique_cves"] == []  # Okta's CVE isn't blamed on the target
+
 
 def test_ips_shodan_has_nothing_on_are_still_listed(monkeypatch):
     # The lab Droplet: an origin server Shodan hasn't crawled yet. It must
@@ -155,3 +155,39 @@ def test_exchange_online_blocks():
 def test_third_party_from_ip_ignores_what_isnt_an_ipv4_in_a_block():
     assert third_party_from_ip("not-an-ip") is None
     assert third_party_from_ip("2001:db8::1") is None
+
+
+def test_front_doors_chain_end_counts_as_its_edge():
+    # The Superdrug dev portal (v1.23): its CNAME chain ends on tm-azurefd.net,
+    # which the ".azurefd.net" ending can't match (the label is "tm-azurefd")
+    assert edge_from_cname({"mr-a02.tm-azurefd.net"}) == ("Azure Front Door", "mr-a02.tm-azurefd.net")
+    name = "shed.dual-low.s-part-0017.t-0009.t-msedge.net"
+    assert edge_from_cname({name}) == ("Azure Front Door", name)
+    assert edge_from_cname({"evil-tm-azurefd.net"}) is None
+
+
+def test_shared_hosting_is_known_by_cname():
+    tp = internetdb.third_party_from_cname
+    assert tp(["polite-sea-0a1b2c.azurestaticapps.net"]) == (
+        "Azure Static Web Apps", "polite-sea-0a1b2c.azurestaticapps.net")
+    assert tp(["shops.myshopify.com."]) == ("Shopify", "shops.myshopify.com")
+    assert tp(["shop.azurewebsites.net"]) == ("Azure App Service", "shop.azurewebsites.net")
+    # Endings start with a dot: a look-alike domain doesn't count
+    assert tp(["evilazurestaticapps.net"]) is None
+    assert tp([]) is None
+
+
+def test_only_app_services_shared_front_end_is_third_party_on_cloudapp():
+    # waws-prod names are App Service's shared front ends; any other
+    # cloudapp.azure.com name is a customer's own VM or load balancer
+    tp = internetdb.third_party_from_cname
+    name = "waws-prod-ln1-175-3cf9.uksouth.cloudapp.azure.com"
+    assert tp([name]) == ("Azure App Service", name)
+    assert tp(["myvm.uksouth.cloudapp.azure.com"]) is None
+    assert tp(["waws-prod-ln1-175.uksouth.cloudapp.azure.com.evil"]) is None
+
+
+def test_shopify_storefront_block_is_third_party():
+    assert third_party_from_ip("23.227.38.65") == ("Shopify", "23.227.38.0/24")
+    assert third_party_from_ip("23.227.38.32") == ("Shopify", "23.227.38.0/24")
+    assert third_party_from_ip("23.227.39.1") is None

@@ -203,3 +203,22 @@ def test_wildcard_probes_use_made_up_labels(monkeypatch):
     probes = [n for n in asked if n.endswith(".example.test")]
     assert len(probes) == enrich.WILDCARD_PROBES and len(set(probes)) == enrich.WILDCARD_PROBES
     assert all(n.startswith("monomi-wc-") for n in probes)
+
+
+def test_ips_cymru_doesnt_know_are_checked_against_amazons_list(monkeypatch):
+    # v1.23: CloudFront IPs Team Cymru had no answer for came back "unknown"
+    import ipaddress
+    ips = {"cdn.example.com": "13.224.0.5", "other.example.com": "9.9.9.9"}
+    monkeypatch.setattr(enrich, "resolve", lambda hosts: {h: {"ips": [ips[h]], "canonical": None} for h in hosts})
+    monkeypatch.setattr(enrich, "asn_lookup", lambda public: {})  # Cymru answered nothing
+    monkeypatch.setattr(enrich.aws_ranges, "cloudfront_networks", lambda: [ipaddress.ip_network("13.224.0.0/14")])
+    monkeypatch.setattr(enrich.aws_ranges, "accelerator_networks", lambda: [])
+
+    hosts = enrich.enrich(list(ips))["hosts"]
+
+    assert hosts["cdn.example.com"]["provider"] == "AWS CloudFront"
+    assert hosts["other.example.com"]["provider"] == "unknown"  # honest: not on Amazon's list either
+
+
+def test_zoho_is_named():
+    assert enrich.friendly_name("ZOHO-AS - ZOHO Corporation, US") == "Zoho"

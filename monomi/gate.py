@@ -24,6 +24,8 @@ The gate input a rule gives (every key optional except door/no_door):
   nxdomain        takeover records whose "doesn't exist" it rests on
   claim           {"cname", "claimable"} for a takeover
   program_note    a key of PROGRAM_NOTES, for kinds bug bounty programs often exclude
+  not_own         {ip: what it is, in words}: IPs the rule saw aren't the target's
+                  own, beyond what not_own_ips() knows (check 2; v1.23, rule F)
 
 Program notes are not a check: they never change finding, lead or set
 aside. Whether something is eligible depends on the program's own rules,
@@ -31,8 +33,8 @@ which Monomi can't know, so the note only says to check them.
 """
 
 from monomi.categorize import _find_match
-from monomi.internetdb import (SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_ip,
-                               third_party_from_ip)
+from monomi.internetdb import (SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_cname,
+                               edge_from_ip, third_party_from_cname, third_party_from_ip)
 
 # Kinds of path bug bounty programs often list as out of scope (gate "notes")
 PROGRAM_NOTES = {
@@ -54,7 +56,7 @@ SCOPE_CAUTION = [
     # "demo" and "poc" are left out: names like prod-...-demo are often real
     # production, the same false positive the roadmap lists for categorize.py
     ("non-production", ["dev", "staging", "stage", "stg", "test", "testing", "uat", "qa",
-                        "sandbox", "nonprod", "preprod"],
+                        "sandbox", "nonprod", "preprod", "tst", "pre", "pp", "etst", "euat"],
      "non-production hosts (dev, staging, test...) are often out of scope for bug bounty "
      "programs: check the program's rules"),
 ]
@@ -65,8 +67,31 @@ SCOPE_CAUTION = [
 SET_ASIDE_CHECKS = (1, 2)
 
 
+def _canonical(host: dict) -> list[str]:
+    """The end of a host's CNAME chain, as a list (empty when it has none)."""
+    return [host["canonical"]] if host.get("canonical") else []
+
+
+def edge_vendor(host: dict) -> str | None:
+    """Which CDN a host (an enrichment entry) is behind, if any: by the
+    network owner, its CNAME, or its IP block, in that order."""
+    if host.get("provider") in SHARED_EDGE:
+        return host["provider"]
+    found = edge_from_cname(_canonical(host))
+    if found:
+        return found[0]
+    for ip in host.get("ips", []):
+        found = edge_from_ip(ip)
+        if found:
+            return found[0]
+    return None
+
+
 def edge_ips(results: dict) -> set[str]:
-    """IPs that are shared CDN edge servers: what they show isn't the target's own."""
+    """IPs that are shared CDN edge servers: what they show isn't the target's own.
+
+    Reads the host's CNAME too (v1.23), so a passive scan without --ports
+    knows a host behind Azure Front Door is behind a CDN, the same as one with it."""
     edge = set()
     exp = results.get("exposure") or {}
     for group in ("ips", "nothing_seen"):
@@ -75,7 +100,7 @@ def edge_ips(results: dict) -> set[str]:
                 edge.add(ip)
     enr = results.get("enrichment") or {}
     for h in enr.get("hosts", {}).values():
-        if h.get("provider") in SHARED_EDGE:
+        if h.get("provider") in SHARED_EDGE or edge_from_cname(_canonical(h)):
             edge.update(h["ips"])
         edge.update(ip for ip in h["ips"] if edge_from_ip(ip))
     return edge
@@ -91,6 +116,10 @@ def not_own_ips(results: dict) -> dict[str, str]:
         for ip in h.get("ips", []):
             found = third_party_from_ip(ip)  # by address: the provider name can't tell (v1.22.1)
             if found:
+                out.setdefault(ip, f"third-party hosting ({found[0]})")
+        found = third_party_from_cname(_canonical(h))  # by CNAME: same reason (v1.23)
+        if found:
+            for ip in h.get("ips", []):
                 out.setdefault(ip, f"third-party hosting ({found[0]})")
         provider = h.get("provider")
         if provider in THIRD_PARTY_HOSTING:
@@ -203,10 +232,11 @@ def target_own(candidate: dict, ctx: Context) -> str | None:
     server: a shared CDN edge (Cloudflare, Vercel...), third-party hosting (a
     store, a forum...) or a shared front door (AWS Global Accelerator). What
     such an IP shows belongs to that service, not to the target."""
-    ips = [ip for ip in candidate["gate_input"].get("ips", []) if ip in ctx.not_own]
+    not_own = {**candidate["gate_input"].get("not_own", {}), **ctx.not_own}
+    ips = [ip for ip in candidate["gate_input"].get("ips", []) if ip in not_own]
     if not ips:
         return None
-    kinds = sorted({ctx.not_own[ip] for ip in ips})
+    kinds = sorted({not_own[ip] for ip in ips})
     return (f"{_names(ips)} {'is' if len(ips) == 1 else 'are'} {' / '.join(kinds)}: what "
             f"{'it shows' if len(ips) == 1 else 'they show'} belongs to that service, not only "
             f"{ctx.target or 'the target'}")

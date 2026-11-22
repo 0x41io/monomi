@@ -317,7 +317,9 @@ def to_html(results: dict, generated) -> str:
         out.append(f"</ol><p>Missing: {esc(p['missing'])}</p>")
         out += [f'<p class="note">Note: {esc(n)}</p>' for n in (p.get("gate") or {}).get("notes", [])]
     if built.get("more_leads"):
-        out.append(f"<p>{built['more_leads']} more lead(s) left out</p>")
+        cut = built.get("more_leads_hosts", [])
+        about = f": about {esc(', '.join(cut))}" if cut else ""
+        out.append(f"<p>{built['more_leads']} more lead(s) left out{about}</p>")
     set_aside = built.get("set_aside", [])
     if set_aside:
         out += ["<h3>Set aside</h3>",

@@ -34,12 +34,13 @@ is one job for one owner and holds the evidence IDs it deals with. A path is
 only closed when every one of its actions is done.
 """
 
+import ipaddress
 import re
 
 from monomi import gate
 from monomi.categorize import categorize
 from monomi.evidence import OWNERS
-from monomi.internetdb import SHARED_EDGE
+from monomi.internetdb import cloud_infra_from_cname
 
 LABEL_RANK = {"Observed": 0, "Inference": 1, "Lead": 2}
 SEVERITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
@@ -127,13 +128,14 @@ def _targets(hosts=(), ips=(), **extra):
 
 
 def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdomain=(),
-          hosts=(), ips=(), claim=None, program_note=None, *, rule, targets):
+          hosts=(), ips=(), claim=None, program_note=None, not_own=None, *, rule, targets):
     """A candidate attack path, with what the gate checks (see gate.py):
     door: the facts that show an observed way in (check 5); no_door: why it
     isn't a path when there are none; nxdomain: the takeover records whose
     "doesn't exist" it rests on (check 4); hosts / ips: what the attack goes
     through (checks 1, 2, 6); claim: a takeover's {"cname", "claimable"} (check 6);
-    program_note: a gate.PROGRAM_NOTES key, for kinds programs often exclude (never a check).
+    program_note: a gate.PROGRAM_NOTES key, for kinds programs often exclude (never a check);
+    not_own: {ip: words} for IPs the rule saw aren't the target's own (check 2).
     rule: which rule built it, one of RULES; targets: see _targets(). Both are
     saved with the scan, unlike the gate input, which never leaves the gate."""
     assert rule in RULES, rule
@@ -148,8 +150,46 @@ def _path(title, severity, steps, outcome, actions, door=(), no_door=None, nxdom
         "actions": actions,
         "gate_input": {"door": list(door), "no_door": no_door, "nxdomain": list(nxdomain),
                        "hosts": list(hosts), "ips": list(ips), "claim": claim,
-                       "program_note": program_note},
+                       "program_note": program_note, "not_own": dict(not_own or {})},
     }
+
+
+# Which leads survive the cut (v1.23). Before, leads that tied on severity and
+# strength (most of them) kept the order their rule built them in, which for
+# rule F was IPs sorted as text, so which 10 were shown was close to random.
+# Now ties go to the hosts worth the most to an attacker: the lower the tier,
+# the earlier the lead.
+CATEGORY_TIER = {
+    "apex": 0, "app-api": 0, "access": 0, "management": 0,
+    "internal-tools": 1, "iot-ot": 1, "partner-portal": 1, "non-production": 1, "legacy": 1,
+    "content": 2,
+    "email": 3, "marketing": 3,
+}
+LAST_TIER = 4  # uncategorized, and anything without hosts
+
+
+def _ip_order(ip):
+    """An IP as numbers, so 198.51.100.9 comes before 198.51.100.10."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return (9, 0, ip)
+    return (addr.version, int(addr), "")
+
+
+def _lead_order(lead, results):
+    """How a lead ranks among leads of the same severity and strength:
+    a go-around-the-CDN lead through a rented load balancer or VM first (the
+    classic origin), then by its best host's category, then its first IP as
+    numbers, then its title, so the order is the same every run."""
+    target = results.get("target", "")
+    enr = (results.get("enrichment") or {}).get("hosts", {})
+    hosts, ips = lead["targets"]["hosts"], lead["targets"]["ips"]
+    rented = lead["rule"] == "around_cdn" and any(
+        cloud_infra_from_cname([enr.get(h, {}).get("canonical") or ""]) for h in hosts)
+    tier = min((CATEGORY_TIER.get(categorize(h, target)["category"], LAST_TIER) for h in hosts),
+               default=LAST_TIER)
+    return (0 if rented else 1, tier, _ip_order(ips[0]) if ips else (9, 0, ""), lead["title"])
 
 
 def _names(hosts, most=3):
@@ -173,7 +213,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
 
     scope: the --scope file (a scope.Scope), for gate check 1, or None.
     Returns {"paths", "leads", "set_aside", "fix_first", "more", "more_leads",
-    "more_set_aside", "out_of_scope_hosts"}.
+    "more_leads_hosts", "more_set_aside", "out_of_scope_hosts"}.
 
     Out-of-scope hosts (gate.out_of_scope_hosts) are left out of every rule's
     supporting evidence: they never count as a production neighbor, as "behind
@@ -424,6 +464,16 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         for ip in h_ips:
             if ip not in not_own and ip not in private.get(h, []):
                 hosts_of.setdefault(ip, []).append(h)
+    # Where each direct host's CNAME goes (v1.23). A CNAME outside the target's
+    # domain names someone else's server, unless it's cloud infrastructure the
+    # target rents (a load balancer, a VM). Hosts on known vendors never get
+    # here (gate.not_own_ips); these are the ones no list knows yet.
+    foreign = {}  # direct host -> its CNAME, when that leaves the target's domain
+    for h, d in enr.get("hosts", {}).items():
+        cname = d.get("canonical")
+        if (cname and target and not gate._under(cname, target)
+                and not cloud_infra_from_cname([cname])):
+            foreign[h] = cname
     fronted = sorted(h for h, h_ips in ips_of.items()
                      if h_ips and all(ip in edge for ip in h_ips) and h not in out_of_scope)
     web = {}  # own IP -> facts showing it answers web requests
@@ -437,7 +487,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
             if ip in hosts_of:
                 web.setdefault(ip, []).append(e)
     if fronted and web:
-        vendors = {enr["hosts"][h].get("provider") for h in fronted} & SHARED_EDGE
+        vendors = {gate.edge_vendor(enr["hosts"][h]) for h in fronted} - {None}
         cdn_name = vendors.pop() if len(vendors) == 1 else None  # None: hosts behind more than one CDN
         cdn = cdn_name or "the CDN"
         who = _names(fronted)
@@ -449,7 +499,15 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         # server behind the CDN?), so a big organization gets a lead per server,
         # not one lead covering every server. The usual lead cap applies.
         for ip in sorted(web):
-            direct = hosts_of[ip]
+            # Hosts on this IP whose name points outside the target's domain don't
+            # show it's the target's server; if they're all there is, the gate
+            # sets the lead aside with the CNAMEs named (check 2)
+            direct = [h for h in hosts_of[ip] if h not in foreign] or hosts_of[ip]
+            outside = {}
+            if all(h in foreign for h in direct):
+                via = "; ".join(f"{h} -> {foreign[h]}" for h in direct[:3])
+                outside = {ip: f"a server named only through CNAMEs outside {target} ({via}), "
+                               "likely a vendor's platform"}
             one_direct = len(direct) == 1
             straight = _names(direct)
             direct_facts = [resolves[h] for h in direct[:3] if h in resolves]
@@ -470,7 +528,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                          [OWNERS["server"], OWNERS["cdn"]])],
                 no_door=(f"nothing shows that {ip} is the server behind {who} "
                          "(a CDN hides its origin from outside)"),
-                hosts=direct, ips=[ip], rule="around_cdn",
+                hosts=direct, ips=[ip], not_own=outside, rule="around_cdn",
                 targets=_targets(direct, [ip], fronted=fronted, cdn=cdn_name)))
 
     paths, leads, set_aside = gate.review(candidates, results, evidence, scope)
@@ -479,9 +537,14 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     paths = paths[:MAX_PATHS]
     for i, p in enumerate(paths, 1):
         p["id"] = f"P{i}"
-    # Leads: never above Medium, surest first, and no part in fix_first
-    leads.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))
+    # Leads: never above Medium, surest first, ties by what they're about
+    # (_lead_order), and no part in fix_first
+    leads.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]],
+                              _lead_order(p, results)))
     more_leads = max(0, len(leads) - MAX_PATHS)
+    # The hosts behind the leads that were cut, so nothing is left out unnamed (v1.23)
+    shown = {h for p in leads[:MAX_PATHS] for h in p["targets"]["hosts"]}
+    more_leads_hosts = sorted({h for p in leads[MAX_PATHS:] for h in p["targets"]["hosts"]} - shown)
     leads = leads[:MAX_PATHS]
     for i, p in enumerate(leads, 1):
         p["id"] = f"L{i}"
@@ -489,7 +552,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     more_set_aside = max(0, len(set_aside) - MAX_PATHS)
     return {"paths": paths, "leads": leads, "set_aside": set_aside[:MAX_PATHS],
             "fix_first": _fix_first(paths), "more": more, "more_leads": more_leads,
-            "more_set_aside": more_set_aside, "out_of_scope_hosts": sorted(out_of_scope)}
+            "more_leads_hosts": more_leads_hosts, "more_set_aside": more_set_aside,
+            "out_of_scope_hosts": sorted(out_of_scope)}
 
 
 def _fix_first(paths):

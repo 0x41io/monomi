@@ -114,6 +114,7 @@ KNOWN_PROVIDERS = [
     ("HUBSPOT", "HubSpot"),
     ("ZENDESK", "Zendesk"),
     ("CDCK", "Discourse (CDCK)"),  # Civilized Discourse Construction Kit: hosted Discourse forums
+    ("ZOHO", "Zoho"),  # Zoho's own network: its hosted sites, help desks and mail (v1.23)
 ]
 
 
@@ -251,9 +252,11 @@ def enrich(hosts: list[str]) -> dict:
 
     # Amazon's ASN covers both CloudFront edges and normal AWS servers; use
     # Amazon's published range list to tell them apart. Only downloaded when
-    # the scan actually has AWS IPs.
+    # the scan actually has AWS IPs. IPs Team Cymru had no answer for are
+    # checked too: Amazon's list is right whatever Cymru says (v1.23, CloudFront
+    # IPs on Superdrug came back "unknown"). One not on the list stays "unknown".
     cdn_error = None
-    aws_ips = [ip for ip, i in ip_info.items() if i["provider"] == "AWS"]
+    aws_ips = [ip for ip, i in ip_info.items() if i["provider"] in ("AWS", "unknown")]
     if aws_ips:
         try:
             nets = aws_ranges.cloudfront_networks()

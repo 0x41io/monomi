@@ -609,3 +609,45 @@ def test_every_output_shows_the_scope_note(capsys):
     for text in (capsys.readouterr().out, report.to_markdown(results, datetime(2026, 11, 13)),
                  report.to_html(results, datetime(2026, 11, 13))):
         assert "non-production hosts (dev, staging, test...) are often out of scope" in text
+
+
+def superdrug_hosts():
+    """A passive scan's hosts like Superdrug's (v1.23): the dev portal behind
+    Front Door by CNAME, the API on an App Service front end, two Static Web
+    Apps, and one VM of the target's own. Provider says "Microsoft/Azure" for all."""
+    az = "Microsoft/Azure"
+    return {"enrichment": {"hosts": {
+        "portal-dev": {"ips": ["150.171.109.153"], "provider": az, "canonical": "mr-a02.tm-azurefd.net"},
+        "portal-api": {"ips": ["20.90.134.44"], "provider": az,
+                       "canonical": "waws-prod-ln1-175-3cf9.uksouth.cloudapp.azure.com"},
+        "appt": {"ips": ["20.50.2.10"], "provider": az, "canonical": "polite-sea-1.azurestaticapps.net"},
+        "vm": {"ips": ["20.1.2.3"], "provider": az, "canonical": "myvm.uksouth.cloudapp.azure.com"}}}}
+
+
+def test_cnames_decide_whats_the_targets_own_without_ports():
+    # No "exposure" (no --ports): before v1.23 all four counted as the target's own
+    assert gate.not_own_ips(superdrug_hosts()) == {
+        "150.171.109.153": "a shared CDN edge IP",
+        "20.90.134.44": "third-party hosting (Azure App Service)",
+        "20.50.2.10": "third-party hosting (Azure Static Web Apps)"}
+
+
+def test_without_the_cname_lists_every_azure_host_counts_as_own(monkeypatch):
+    # The removal test: the CNAME lists are what tells these apart
+    from monomi import internetdb
+    monkeypatch.setattr(internetdb, "EDGE_CNAMES", [])
+    monkeypatch.setattr(internetdb, "THIRD_PARTY_CNAMES", [])
+    monkeypatch.setattr(internetdb, "THIRD_PARTY_CNAME_PATTERNS", [])
+    assert gate.not_own_ips(superdrug_hosts()) == {}
+
+
+def test_edge_vendor_names_the_cdn_by_owner_cname_or_block():
+    assert gate.edge_vendor({"provider": "Cloudflare", "ips": ["198.51.100.1"]}) == "Cloudflare"
+    assert gate.edge_vendor(superdrug_hosts()["enrichment"]["hosts"]["portal-dev"]) == "Azure Front Door"
+    assert gate.edge_vendor({"provider": "AWS", "ips": ["216.150.1.1"]}) == "Vercel"
+    assert gate.edge_vendor({"provider": "DigitalOcean", "ips": ["198.51.100.1"]}) is None
+
+
+def test_short_non_production_words_get_the_scope_note():
+    notes = gate.scope_notes(["www-tst.shop.test", "press.shop.test"], "shop.test")
+    assert len(notes) == 1 and "www-tst.shop.test" in notes[0] and "press" not in notes[0]
