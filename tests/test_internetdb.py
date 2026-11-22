@@ -191,3 +191,41 @@ def test_shopify_storefront_block_is_third_party():
     assert third_party_from_ip("23.227.38.65") == ("Shopify", "23.227.38.0/24")
     assert third_party_from_ip("23.227.38.32") == ("Shopify", "23.227.38.0/24")
     assert third_party_from_ip("23.227.39.1") is None
+
+
+def test_cves_on_someone_elses_server_arent_the_targets(monkeypatch):
+    # v1.23.1, the Superdrug run: jQuery UI CVEs on Google's shared front end
+    # were counted as the target's, and 0x41's report listed them as such
+    shodan = {"216.239.32.21": {"ports": [80, 443], "vulns": ["CVE-2021-41184"], "tags": [], "cpes": []},
+              "9.9.9.9": {"ports": [443, 3389], "vulns": ["CVE-2024-0001"], "tags": [], "cpes": []}}
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: dict(shodan[ip]))
+    enrichment = {"hosts": {"ecom.shop.test": {"ips": ["216.239.32.21"], "provider": "Google"},
+                            "app.shop.test": {"ips": ["9.9.9.9"], "provider": "DigitalOcean"}},
+                  "ip_info": {}}
+    result = internetdb.lookup(enrichment)
+    google = result["ips"]["216.239.32.21"]
+    assert google["not_own"] == "third-party hosting (Google front end)" and google["shared_edge"] is False
+    assert "not_own" not in result["ips"]["9.9.9.9"]
+    assert result["unique_cves"] == ["CVE-2024-0001"]          # Google's CVE left out
+    assert result["risky"] == [("9.9.9.9", ["3389/RDP"])]
+    assert internetdb.is_own(result["ips"]["9.9.9.9"]) and not internetdb.is_own(google)
+
+
+def test_without_the_label_googles_cve_was_counted(monkeypatch):
+    # The removal test: no third-party address list, and the CVE counts again
+    monkeypatch.setattr(internetdb, "THIRD_PARTY_RANGES", [])
+    monkeypatch.setattr(internetdb, "lookup_one",
+                        lambda ip: {"ports": [443], "vulns": ["CVE-2021-41184"], "tags": [], "cpes": []})
+    result = internetdb.lookup({"hosts": {"ecom.shop.test": {"ips": ["216.239.32.21"], "provider": "Google"}},
+                                "ip_info": {}})
+    assert result["unique_cves"] == ["CVE-2021-41184"]
+
+
+def test_a_cdn_edge_gets_no_not_own_label(monkeypatch):
+    # shared_edge already says it; not_own is for servers that aren't a CDN
+    monkeypatch.setattr(internetdb, "lookup_one",
+                        lambda ip: {"ports": [443], "vulns": [], "tags": [], "cpes": []})
+    result = internetdb.lookup({"hosts": {"www.shop.test": {"ips": ["1.1.1.1"], "provider": "Cloudflare"}},
+                                "ip_info": {}})
+    assert result["ips"]["1.1.1.1"]["shared_edge"] is True
+    assert "not_own" not in result["ips"]["1.1.1.1"]

@@ -108,7 +108,7 @@ def test_check_ports_summary_counts(monkeypatch):
     assert result["summary"] == {
         "hosts_wildcard_only": 0,
         "hosts_resolved": 3, "hosts_not_resolving": 3,
-        "edge_ips": 1, "origin_ips": 2, "ips_nothing_seen": 1,
+        "edge_ips": 1, "third_party_ips": 0, "origin_ips": 2, "ips_nothing_seen": 1,
         "origin_cves": 1, "origin_ips_with_risky_ports": 1,
     }
     assert result["not_resolving"]["no_address"] == ["y.example.com", "z.example.com"]
@@ -1085,3 +1085,18 @@ def test_a_rate_too_slow_for_one_host_refuses_before_any_lookup(monkeypatch, res
     with pytest.raises(mcp_server.ToolError, match="Use the CLI instead"):
         mcp_server.check_exposed_files(["app"])
     assert read_log(results_dir)[-1]["event"] == "refused"
+
+
+def test_check_ports_keeps_someone_elses_server_out_of_the_targets_ips(monkeypatch):
+    # v1.23.1, the Superdrug run: CVEs on Google's shared front end
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {}, "resolved": 2})
+    monkeypatch.setattr(mcp_server.internetdb, "lookup", lambda enrichment: {
+        "ips": {"216.239.32.21": {"shared_edge": False, "not_own": "third-party hosting (Google front end)",
+                                  "hosts": ["ecom.shop.test"], "vulns": ["CVE-2021-41184"], "ports": [443]},
+                "198.51.100.7": {"shared_edge": False, "hosts": ["shop.test"], "vulns": [], "ports": [443]}},
+        "nothing_seen": {}, "checked": 2, "errors": 0, "skipped": 0, "unique_cves": [], "risky": []})
+    result = mcp_server.check_ports(["shop.test"])
+    assert result["summary"]["third_party_ips"] == 1 and result["summary"]["origin_ips"] == 1
+    assert list(result["origin_ips"]) == ["198.51.100.7"]
+    assert result["third_party_ips"]["216.239.32.21"] == {
+        "not_own": "third-party hosting (Google front end)", "hosts": ["ecom.shop.test"], "cve_count": 1}

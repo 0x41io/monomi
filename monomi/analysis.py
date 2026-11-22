@@ -69,6 +69,9 @@ Mention the CVE count per IP and the most notable CVE IDs, but say they are \
 matched from software version banners and must be verified.
 - Ignore open ports on IPs marked shared_edge (CDN edge servers such as \
 Cloudflare); they belong to the CDN, not the target. Say so once.
+- An IP with "not_own" is someone else's server (third-party hosting, a \
+shared front door): its ports and CVEs belong to that service, never to the \
+target. Never list them as the target's; say so once, naming the service.
 - In section 5, suggest triaging the CVE list with kaidoku and closing or \
 firewalling services that don't need to be public.
 - In Limitations, note that Shodan's data can be days or weeks old.
@@ -302,6 +305,7 @@ def summarize(results: dict) -> tuple[str, str]:
                     "hosts": d["hosts"][:10],
                     "provider": d["provider"],
                     "shared_edge": d["shared_edge"],
+                    "not_own": d.get("not_own"),
                     "ports": d["ports"],
                     "risky_services": d["risky"],
                     "cve_count": len(d["vulns"]),

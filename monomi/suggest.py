@@ -8,7 +8,7 @@ there is one) that would add something, each with the reason from this
 scan. A check that already ran is never suggested again.
 """
 
-from monomi import paths
+from monomi import internetdb, paths
 
 
 def _own_ips(results: dict) -> dict:
@@ -72,7 +72,7 @@ def next_checks(results: dict, cves_saved: bool = False) -> list[dict]:
         add("--email", "check_email_auth",
             f"not checked yet: whether someone can send email pretending to be {target} (DNS lookups only)")
     exp = results.get("exposure") or {}
-    cves = {c for d in exp.get("ips", {}).values() if not d.get("shared_edge") for c in d.get("vulns", [])}
+    cves = {c for d in exp.get("ips", {}).values() if internetdb.is_own(d) for c in d.get("vulns", [])}
     if cves and not cves_saved:
         add("--cves FILE", None,
             f"{_count(len(cves), 'known CVE was', 'known CVEs were')} found: this saves them to a file "

@@ -401,3 +401,15 @@ def test_scope_objects_keep_their_fields():
     assert (m.host, m.allowed) == ("www.example.test", True) and m.rule
     assert s.match("dev.example.test").allowed is False
     assert issubclass(scope.OutOfScope, Exception)
+
+
+def test_exposure_ip_labels_kaidoku_reads(monkeypatch):
+    # v1.23.1: kaidoku's monomi_import skips an IP when "shared_edge" is true
+    # or "not_own" is set, so both names are part of the contract
+    from monomi import internetdb
+    monkeypatch.setattr(internetdb, "lookup_one",
+                        lambda ip: {"ports": [443], "vulns": ["CVE-2021-41184"], "tags": [], "cpes": []})
+    out = internetdb.lookup({"hosts": {"ecom.shop.test": {"ips": ["216.239.32.21"], "provider": "Google"}},
+                             "ip_info": {}})
+    d = out["ips"]["216.239.32.21"]
+    assert d["shared_edge"] is False and isinstance(d["not_own"], str) and d["vulns"]

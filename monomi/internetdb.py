@@ -298,6 +298,15 @@ def edge_reason(provider: str | None, cpes: list[str], cnames=(), ip=None) -> st
     return None
 
 
+def is_own(d: dict) -> bool:
+    """Whether an IP's Shodan data (from lookup()) belongs to the target: not a
+    shared CDN edge and not someone else's server (third-party hosting, a
+    shared front door). Only these count as the target's CVEs and risky
+    services (v1.23.1: CVEs on Google's shared front end were counted as the
+    target's, and 0x41's report listed them as such)."""
+    return not d.get("shared_edge") and not d.get("not_own")
+
+
 def lookup_one(ip: str, timeout: int = 15) -> dict | None:
     """Return Shodan's data for one IP, or None if Shodan has nothing on it."""
     resp = requests.get(API_URL.format(ip=ip), headers={"User-Agent": USER_AGENT}, timeout=timeout)
@@ -324,6 +333,8 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
     """Look up every public IP from the --enrich step.
 
     Returns {"ips": {ip: {...}}, "unique_cves": [...], "risky": [...], "errors": n, "skipped": n}.
+    An IP that's someone else's server (not a CDN edge) has "not_own": what it is
+    (v1.23.1); unique_cves and risky are the target's own IPs only (is_own).
     """
     # Group hostnames by IP. Each IP gets its OWN provider from enrich's ip_info,
     # so a host's CDN edge IP and its cloud origin IP are judged separately.
@@ -363,13 +374,21 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
             data["risky"] = [f"{p}/{RISKY_PORTS[p]}" for p in data["ports"] if p in RISKY_PORTS]
             found[ip] = data
 
-    own = [d for d in found.values() if not d["shared_edge"]]
+    # Someone else's server, though not a CDN edge (v1.23.1): labeled with what
+    # it is, the same words the gate uses (gate.not_own_ips decides, in one place)
+    from monomi import gate  # here, not at the top: gate imports this module
+    not_own = gate.not_own_ips({"enrichment": enrichment})
+    for ip, d in [*found.items(), *quiet.items()]:
+        if not d["shared_edge"] and ip in not_own:
+            d["not_own"] = not_own[ip]
+
+    own = [d for d in found.values() if is_own(d)]
     return {
         "ips": found,
         "nothing_seen": quiet,
         "checked": len(ips),
         "unique_cves": sorted({c for d in own for c in d["vulns"]}),
-        "risky": [(ip, d["risky"]) for ip, d in found.items() if d["risky"] and not d["shared_edge"]],
+        "risky": [(ip, d["risky"]) for ip, d in found.items() if d["risky"] and is_own(d)],
         "errors": errors,
         "skipped": skipped,
     }

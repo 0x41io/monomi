@@ -627,13 +627,15 @@ def ports_summary(enrichment: dict, exposure: dict) -> dict:
     found = exposure["ips"]
     every = list(found.values()) + list(exposure.get("nothing_seen", {}).values())
     edge = sum(1 for d in every if d["shared_edge"])
+    third_party = sum(1 for d in every if not d["shared_edge"] and d.get("not_own"))
     not_resolving = enrichment.get("not_resolving", {})
     return {
         "hosts_resolved": enrichment.get("resolved", 0),
         "hosts_wildcard_only": len(enrichment.get("wildcard_only", {})),
         "hosts_not_resolving": sum(len(hosts) for hosts in not_resolving.values()),
         "edge_ips": edge,
-        "origin_ips": len(every) - edge,
+        "third_party_ips": third_party,  # someone else's server, not a CDN (v1.23.1)
+        "origin_ips": len(every) - edge - third_party,
         "ips_nothing_seen": exposure["ips_checked"] - exposure["ip_errors"] - len(found),
         "origin_cves": len(exposure.get("unique_cves", [])),
         "origin_ips_with_risky_ports": len(exposure.get("risky", [])),
@@ -681,8 +683,8 @@ def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
     exposure["ip_errors"] = exposure.pop("errors")
     exposure["ips_skipped"] = exposure.pop("skipped")
     for d in exposure["ips"].values():
-        if not d["shared_edge"]:
-            d["owners"] = owners("server")  # CDN edge ports belong to the CDN, not the target
+        if internetdb.is_own(d):
+            d["owners"] = owners("server")  # a CDN's or vendor's ports belong to them, not the target
 
     full = {"summary": ports_summary(enrichment, exposure),
             "hosts_checked": len(checked), "hosts_skipped": skipped, "rejected": rejected,
@@ -714,9 +716,14 @@ def ports_brief(full: dict) -> dict:
         "unique_cves": full.get("unique_cves", []),
         "risky": full.get("risky", []),
         "origin_ips": {ip: short(d) for ip, d in full.get("ips", {}).items()
-                       if not d["shared_edge"]},
+                       if internetdb.is_own(d)},
         "nothing_seen": {ip: short(d) for ip, d in full.get("nothing_seen", {}).items()
-                         if not d["shared_edge"]},
+                         if internetdb.is_own(d)},
+        # Someone else's server (v1.23.1): what it is and its CVE count, never the target's
+        "third_party_ips": {ip: {"not_own": d["not_own"], "hosts": first(d.get("hosts", [])),
+                                 "cve_count": len(d.get("vulns", []))}
+                            for ip, d in full.get("ips", {}).items()
+                            if not d["shared_edge"] and d.get("not_own")},
         "edge_ips_by_provider": dict(edge.most_common()),
         "not_resolving_counts": {s: len(h) for s, h in full["not_resolving"].items()},
     }

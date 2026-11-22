@@ -80,6 +80,7 @@ def banner() -> str:
     pad = " " * (LOGO_WIDTH - len(tag_text))
     return f"\n{logo}\n{pad}{tag}\n"
 
+
 # Status markers used throughout the CLI
 def info(msg: str) -> None:
     print(f"{paint('[*]', GREY)} {msg}")
@@ -118,6 +119,7 @@ def host_table(hosts: dict, indent: str = "    ", show_dead: int = 3) -> None:
 
     cols = shutil.get_terminal_size((110, 24)).columns
     ip_w = 18
+
     def prov_label(e):
         # "Cloudflare +1" when a host's IPs belong to more than one provider
         extra = len(e.get("providers") or []) - 1
@@ -180,6 +182,9 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
     edge = [ip for ip, d in items if d["shared_edge"]]
     # The target's own IPs Shodan has no data on: checked, just nothing on record
     quiet_own = [ip for ip, d in exposure.get("nothing_seen", {}).items() if not d["shared_edge"]]
+    # Someone else's server, not a CDN (v1.23.1): one line, like CDN edges
+    vendor = [(ip, d) for ip, d in items if not d["shared_edge"] and d.get("not_own")]
+    items = [(ip, d) for ip, d in items if not (not d["shared_edge"] and d.get("not_own"))]
     web_only = {ip for ip, d in items if not d["shared_edge"] and not d["vulns"] and set(d["ports"]) <= web}
     rows = sorted(
         ((ip, d) for ip, d in items if not d["shared_edge"] and ip not in web_only),
@@ -213,6 +218,12 @@ def exposure_table(exposure: dict, indent: str = "    ") -> None:
 
     if web_only:
         print(indent + paint(f"{len(web_only)} IP(s) only serve web traffic (80/443) with no known CVEs.", GREY))
+    if vendor:
+        cves = sum(len(d["vulns"]) for _, d in vendor)
+        kinds = sorted({d["not_own"] for _, d in vendor})
+        print(indent + paint(f"{len(vendor)} IP(s) are someone else's server ({safe('; '.join(kinds))})"
+                             + (f", with {cves} CVE(s) that belong to that service, not the target" if cves else "")
+                             + ": not shown.", GREY))
     if edge:
         print(indent + paint(f"{len(edge)} shared CDN edge IP(s) not shown: their open ports belong to the CDN.", GREY))
     if web_only or edge:

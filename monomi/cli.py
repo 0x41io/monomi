@@ -552,7 +552,7 @@ def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
     else:
         ui.exposure_table(exposure)
         print()
-        own = [d for d in exposure["ips"].values() if not d["shared_edge"]]
+        own = [d for d in exposure["ips"].values() if internetdb.is_own(d)]
         n_cves = len(exposure["unique_cves"])
         good(
             f"{len(own)} IP(s) with open ports, "
