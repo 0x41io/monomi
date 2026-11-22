@@ -110,3 +110,12 @@ def test_management_order_in_rules():
     from monomi.categorize import RULES
     names = [name for name, _ in RULES]
     assert names.index("management") == names.index("access") + 1
+
+
+def test_short_non_production_words_v1_23():
+    # From the Superdrug and Exoscale runs
+    for host in ["www-tst", "etst", "euat", "pre-appcms", "pre", "pp-portal", "pp2"]:
+        assert categorize(f"{host}.shop.test", "shop.test")["category"] == "non-production", host
+    # Matched like every word: whole label, or the word then a number or hyphen
+    for host in ["press", "prem", "ppportal", "tstore", "euatlas"]:
+        assert categorize(f"{host}.shop.test", "shop.test")["category"] != "non-production", host

@@ -895,7 +895,7 @@ def run_exposed(grant: dict, detail: str, ran: set) -> dict:
             "batch": None, "requests_sent": ex["requests"], "active_log": ACTIVE_LOG,
             "sent_as": sent_as(research_file),
             "not_requested": sorted(set(checked) - set(ex["requested"])),
-            "hosts": ex["hosts"]}
+            "hosts": ex["hosts"], "coverage": ex.get("coverage", {})}
     summary = exposed_summary(full)
     attach_next_checks("check_exposed_files", full, summary, {
         "subdomains": checked, "enrichment": enrichment, "exposed_files": ex}, ran)
@@ -933,6 +933,10 @@ def exposed_summary(full: dict) -> dict:
         "maps_with_source_code": sorted({m["host"] for m in maps if m["has_source_content"]}),
         "not_requested_count": len(full["not_requested"]),
         "not_requested": first(full["not_requested"]),
+        # What "nothing found" covers, per host with no finding (v1.23): how many
+        # spec paths answered, the homepage's status, scripts and maps requested
+        "checked_clean": [{"host": h, **c} for h, c in sorted(full.get("coverage", {}).items())
+                          if h not in full["hosts"]][:LIST_CAP],
     }
 
 

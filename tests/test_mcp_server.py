@@ -872,6 +872,10 @@ def test_exposed_clean_host_is_no_finding(monkeypatch):
     fake_exposed_web(monkeypatch, {"https://app/": MapResp(body=b"<html></html>")})
     result = run(monkeypatch, "check_exposed_files", EXP_HOSTS)
     assert result["hosts_with_findings"] == 0 and result["specs_found"] == 0
+    # v1.23: a clean result says what was checked on each host
+    [clean] = result["checked_clean"]
+    assert clean["host"] == "app" and clean["homepage"] == 200
+    assert clean["spec_paths"] == {"tried": 6, "answered": 6}
 
 
 def test_exposed_suggests_next_active_and_passive_checks(monkeypatch):

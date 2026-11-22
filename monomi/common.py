@@ -5,7 +5,7 @@ Shared helpers used across monomi: version info, hostname checks, timestamps.
 import re
 from datetime import datetime, timezone
 
-VERSION = "1.22.1"
+VERSION = "1.23.0"
 USER_AGENT = f"0x41-monomi/{VERSION} (passive OSINT research)"
 # Active checks (--fingerprint, --exposed-files) contact the target's own
 # servers, so they say so plainly: a site owner reading their logs should
@@ -46,6 +46,7 @@ def scan_version(results: dict) -> tuple[int, int, int] | None:
 def now_utc() -> str:
     """Current time in UTC as a short ISO string, e.g. 2026-10-21T00:05:00+00:00."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 
 def subdomains_in(names, domain: str) -> list[str]:
     """Clean a pile of certificate names down to the domain's own hostnames.

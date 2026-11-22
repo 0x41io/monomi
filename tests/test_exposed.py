@@ -349,3 +349,33 @@ def test_every_exposed_request_waits_for_a_slot_and_carries_research(monkeypatch
     finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI, limiter=Count(), research=r)
     assert Count.n == n == len(headers_seen)      # one slot per request sent
     assert all(h["X-HackerOne-Researcher"] == "x41ok" for h in headers_seen)
+
+
+def test_coverage_says_what_a_clean_host_was_checked_for(monkeypatch):
+    # v1.23: "nothing found" names what was tried. All 6 spec paths answer
+    # (404), the homepage answers with one same-host script that has no map
+    pages = {"https://lab/": Resp(body=b'<script src="/app.js"></script>'),
+             "https://lab/app.js": Resp(body=b"x=1")}
+    fake_site(monkeypatch, pages)
+    coverage = {}
+    finding, n = exposed.check_host("lab", scope=UNSCOPED_CLI, coverage=coverage)
+    assert finding is None
+    assert coverage == {"spec_paths": {"tried": 6, "answered": 6}, "homepage": 200,
+                        "scripts_and_maps": 1, "requests": n}
+
+
+def test_coverage_tells_no_answer_apart_from_not_found(monkeypatch):
+    # A host that answers nothing is not "clean": the coverage shows it
+    pages = {u: requests.ConnectionError("refused") for u in
+             [f"https://down{p}" for p in exposed.SPEC_PATHS] + ["https://down/"]}
+    fake_site(monkeypatch, pages)
+    coverage = {}
+    exposed.check_host("down", scope=UNSCOPED_CLI, coverage=coverage)
+    assert coverage["spec_paths"] == {"tried": 6, "answered": 0}
+    assert coverage["homepage"] == "no answer" and coverage["scripts_and_maps"] == 0
+
+
+def test_check_all_returns_coverage_for_every_host_contacted(monkeypatch):
+    fake_site(monkeypatch, {"https://pub/": Resp(body=b"<html></html>")})
+    out = exposed.check_all({"hosts": {"pub": {"ips": ["8.8.8.8"]}}}, scope=UNSCOPED_CLI)
+    assert out["coverage"]["pub"]["homepage"] == 200

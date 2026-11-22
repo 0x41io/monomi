@@ -213,6 +213,17 @@ def test_run_exposed_clean_says_nothing_found(monkeypatch, capsys):
     assert "No exposed API specs or source maps" in capsys.readouterr().out
 
 
+def test_run_exposed_clean_says_what_each_host_was_checked_for(monkeypatch, capsys):
+    # v1.23
+    cov = {"spec_paths": {"tried": 6, "answered": 6}, "homepage": 200, "scripts_and_maps": 2, "requests": 9}
+    empty = {"hosts": {}, "requested": ["a"], "checked": 1, "requests": 9, "skipped": 0,
+             "coverage": {"a": cov}}
+    monkeypatch.setattr(cli.exposed, "check_all", lambda enrichment, **kwargs: empty)
+    cli.run_exposed({}, {"hosts": {}}, cli.scope.UNSCOPED_CLI)
+    out = capsys.readouterr().out
+    assert "a  checked: 6/6 spec paths answered, homepage 200, 2 script(s) and map(s)" in out
+
+
 # ---------- --scope on the CLI (v1.12) ----------
 
 

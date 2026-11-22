@@ -10,7 +10,10 @@ same output, so a category is a fact with a stated reason, not a guess.
 # come first, so "dev-api.example.com" counts as non-production.
 RULES = [
     ("non-production", ["dev", "staging", "stage", "stg", "test", "testing", "uat", "qa",
-                        "sandbox", "preview", "nonprod", "preprod", "poc", "demo", "beta"]),
+                        "sandbox", "preview", "nonprod", "preprod", "poc", "demo", "beta",
+                        # v1.23, from the Superdrug and Exoscale runs (www-tst, etst,
+                        # euat, pre-appcms, pp-...): short forms, matched like the rest
+                        "tst", "pre", "pp", "etst", "euat"]),
     ("legacy", ["old", "legacy", "deprecated"]),
     ("iot-ot", ["camera", "cameras", "cam", "scada", "plc", "hmi", "forklift",
                 "sensor", "sensors", "iot"]),

@@ -28,7 +28,7 @@ import requests
 from monomi import rate as ratemod
 from monomi.common import now_utc
 from monomi.research import request_headers
-from monomi.scope import check_url
+from monomi.scope import OutOfScope, check_url
 
 # Well-known places an OpenAPI/Swagger spec is served, tried in order.
 SPEC_PATHS = [
@@ -267,13 +267,34 @@ def _find_source_maps(host, fetch):
     return maps, sent
 
 
+def _answer(fetch, outcomes):
+    """fetch, but every call's outcome is added to `outcomes`: the HTTP
+    status, "out of scope" (nothing sent) or "no answer"."""
+    def wrapped(url, want_body=False, cap=0):
+        try:
+            result = fetch(url, want_body=want_body, cap=cap)
+        except OutOfScope:
+            outcomes.append("out of scope")
+            raise
+        except requests.RequestException:
+            outcomes.append("no answer")
+            raise
+        outcomes.append(result["status"])
+        return result
+    return wrapped
+
+
 def check_host(host, timeout=8, on_request=None, *, scope,
-               limiter=ratemod.UNLIMITED, research=None):
+               limiter=ratemod.UNLIMITED, research=None, coverage=None):
     """Check one host for an exposed spec and source maps.
     Returns (finding dict or None, requests_sent). None = nothing found.
     scope is required (see _fetch). requests_sent counts the requests that
     really went out (the moment each is logged), so a URL the scope blocked
-    is never counted and the number always matches the audit log."""
+    is never counted and the number always matches the audit log.
+    coverage, if given (a dict), is filled with what was checked (v1.23), so
+    a clean result can say what "nothing found" covers: {"spec_paths":
+    {"tried", "answered"}, "homepage": its status, "no answer" or "out of
+    scope", "scripts_and_maps": the scripts and .map files requested, "requests"}."""
     sent_count = [0]
 
     def sent_now(h, url, rule):
@@ -285,9 +306,17 @@ def check_host(host, timeout=8, on_request=None, *, scope,
         return _fetch(url, timeout, sent_now, host, want_body=want_body, cap=cap,
                       scope=scope, limiter=limiter, research=research)
 
-    spec, _ = _find_spec(host, fetch)
-    maps, _ = _find_source_maps(host, fetch)
+    spec_outcomes, page_outcomes = [], []
+    spec, _ = _find_spec(host, _answer(fetch, spec_outcomes))
+    maps, _ = _find_source_maps(host, _answer(fetch, page_outcomes))
     sent = sent_count[0]
+    if coverage is not None:
+        coverage.update({
+            "spec_paths": {"tried": len(spec_outcomes),
+                           "answered": sum(isinstance(o, int) for o in spec_outcomes)},
+            "homepage": page_outcomes[0] if page_outcomes else "not requested",
+            "scripts_and_maps": max(0, len(page_outcomes) - 1),
+            "requests": sent})
     if not spec and not maps:
         return None, sent
     return {"host": host, "spec": spec, "source_maps": maps,
@@ -301,10 +330,11 @@ def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeo
     for the whole run, so --rate is a total across threads).
 
     Returns {"hosts": {host: finding}, "requested", "checked", "requests",
-    "skipped"}. "hosts" holds only hosts where something was found (never
+    "skipped", "coverage"}. "hosts" holds only hosts where something was found (never
     invent a finding); "requested" is every host actually contacted (so the
     caller can report the ones with no public IP); "requests" counts every
-    request sent, matching the audit log.
+    request sent, matching the audit log; "coverage" is what was checked on
+    each requested host (see check_host), found or not.
     """
     import ipaddress
 
@@ -315,9 +345,11 @@ def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeo
     skipped = max(0, len(hosts) - max_hosts)
     hosts = hosts[:max_hosts]
 
+    coverage = {host: {} for host in hosts}  # one dict per host: each thread fills its own
+
     def run(host):
         return host, check_host(host, timeout=timeout, on_request=on_request, scope=scope,
-                                limiter=limiter, research=research)
+                                limiter=limiter, research=research, coverage=coverage[host])
 
     found, sent = {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -326,4 +358,4 @@ def check_all(enrichment, workers=8, on_request=None, max_hosts=MAX_HOSTS, timeo
             if finding:
                 found[host] = finding
     return {"hosts": found, "requested": hosts, "checked": len(hosts),
-            "requests": sent, "skipped": skipped}
+            "requests": sent, "skipped": skipped, "coverage": coverage}
