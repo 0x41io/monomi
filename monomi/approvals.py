@@ -91,7 +91,8 @@ TOOLS = {
         "paths": [p for p, _ in content.PATHS],
         "more": (f"first {content.CALIBRATION} made-up paths (random letters) on https://{{host}}, to learn "
                  "what its not-found looks like; then each path in the list above, one GET each. "
-                 "http://{host} instead, once, only if HTTPS fails with a TLS error or is refused. A redirect "
+                 "http://{host} instead, once, only if HTTPS can't connect (a TLS error, a refused or reset "
+                 "connection; never after a timeout). A redirect "
                  "is recorded, never followed, and no other host is ever asked"),
         "max_per_host": content.MAX_REQUESTS,
     },

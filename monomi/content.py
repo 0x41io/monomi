@@ -83,9 +83,13 @@ URL_CREDS_RE = re.compile(rb"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", re.I)
 PRIVATE_KEY_RE = re.compile(rb"-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----")
 
 
+HTML_STARTS = (b"<!doctype", b"<html", b"<head", b"<body", b"<script", b"<?xml-stylesheet", b"<!--",
+               b"<meta", b"<div", b"<title", b"<link", b"<style", b"<p>", b"<pre", b"<h1", b"<center")
+
+
 def _looks_like_html(body: bytes) -> bool:
-    head = body[:512].lstrip().lower()
-    return head.startswith((b"<!doctype", b"<html", b"<head", b"<body", b"<script", b"<?xml-stylesheet"))
+    head = body[:512].removeprefix(b"\xef\xbb\xbf").lstrip().lower()   # a UTF-8 BOM first is common
+    return head.startswith(HTML_STARTS) or b"<html" in body[:2048].lower()
 
 
 def _git_head(body):
@@ -105,8 +109,10 @@ def _git_config(body):
 
 
 def _svn_entries(body):
-    first = body.split(b"\n", 1)[0].strip()
-    if first.isdigit() and len(first) <= 3 and b"dir" in body[:200]:
+    lines = body.split(b"\n")
+    # format 8-12: a version number line, then (after the name line) "dir" on its own line
+    if len(lines) > 3 and lines[0].strip() in (b"8", b"9", b"10", b"11", b"12") and b"dir" in [
+            ln.strip() for ln in lines[1:4]]:
         return "a Subversion entries file"
     return None
 
@@ -151,7 +157,8 @@ def _env(body):
 
 def _htpasswd(body):
     lines = [ln for ln in body.strip().split(b"\n") if ln.strip()]
-    hashed = re.compile(rb"^[^:\s]+:(\$apr1\$|\$2[aby]\$|\$[156]\$|\{SHA\}|[A-Za-z0-9./]{13}$)")
+    # known hash formats only (old 13-character DES is left out: "error:AccessDenied" looks like one)
+    hashed = re.compile(rb"^[^:\s]+:(\$apr1\$|\$2[aby]\$|\$[156]\$|\{SHA\})")
     hits = sum(1 for ln in lines if hashed.match(ln.strip()))
     return f"an .htpasswd file with {hits} password hash(es) (not kept)" if hits and hits == len(lines) else None
 
@@ -208,8 +215,14 @@ def _compose(body):
     return None
 
 
+DOCKER_STEP_RE = re.compile(rb"^(RUN|COPY|ADD|CMD|ENTRYPOINT|WORKDIR|ENV|EXPOSE|USER|ARG|LABEL|VOLUME)\s", re.M)
+
+
 def _dockerfile(body):
-    return "a Dockerfile" if not _looks_like_html(body) and re.search(rb"^FROM\s+\S", body, re.M | re.I) else None
+    # FROM in capitals (a JS "from 'react'" isn't one) and at least one more instruction
+    if not _looks_like_html(body) and re.search(rb"^FROM\s+\S", body, re.M) and DOCKER_STEP_RE.search(body):
+        return "a Dockerfile"
+    return None
 
 
 def _phpinfo(body):
@@ -272,7 +285,7 @@ def _php_error_log(body):
 
 
 def _npm_debug(body):
-    return "an npm debug log" if re.search(rb"^\d+ (verbose|info|error) ", body, re.M) and b"npm" in body else None
+    return "an npm debug log" if re.search(rb"^\d+ verbose cli ", body, re.M) else None
 
 
 def _sql_dump(body):
@@ -402,7 +415,10 @@ def max_requests(extra_count: int = 0) -> int:
 
 MAX_REQUESTS = max_requests()
 
-BAD_PATH_RE = re.compile(r"[\s#?\\]|\.\.|://|%2e|%2f|%5c", re.I)
+BAD_PATH_RE = re.compile(r"[\s#?\\]|\.\.|://|%2e|%2f|%5c|%25|%00", re.I)
+# a path may only use these characters (RFC 3986 path characters, and % only
+# before two hex digits): no control characters, nothing outside ASCII
+PLAIN_PATH_RE = re.compile(r"^/(?!/)(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})*$")
 
 
 class WordlistError(ValueError):
@@ -411,8 +427,10 @@ class WordlistError(ValueError):
 
 def load_wordlist(path: str) -> list[str]:
     """Paths from a --wordlist file (SecLists-style: one per line, # comments).
-    Each must be a plain path: no "..", no query, no "://", no backslash or
-    encoded dots/slashes, so it can only ever name a path on the host given."""
+    Each must be a plain path: printable ASCII path characters only, no
+    "..", no query, no "://", no leading "//", no backslash and no encoded
+    dot, slash, percent or NUL, so it can only ever name a path on the host
+    given."""
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             lines = f.read().splitlines()
@@ -424,7 +442,7 @@ def load_wordlist(path: str) -> list[str]:
         if not p or p.startswith("#"):
             continue
         p = p if p.startswith("/") else "/" + p
-        if BAD_PATH_RE.search(p) or len(p) > 200:
+        if BAD_PATH_RE.search(p) or not PLAIN_PATH_RE.match(p) or len(p) > 200:
             bad.append(p)
             continue
         out.append(p)
@@ -450,14 +468,22 @@ class _Budget:
         return True
 
 
-def _read(resp, deadline: float) -> bytes:
+def _read(resp, deadline: float) -> tuple[bytes, bool]:
+    """Up to MAX_BODY_BYTES of the body, and whether there was more. read1
+    returns as soon as any bytes arrive (iter_content waits for a whole
+    chunk), so the deadline is checked after every few bytes: a server that
+    sends one byte every few seconds can't hold a request past it. Each wait
+    is still bounded by the request's timeout."""
     chunks, size = [], 0
-    for chunk in resp.iter_content(CHUNK):
+    while size < MAX_BODY_BYTES:
+        if CLOCK() > deadline:
+            return b"".join(chunks), True
+        chunk = resp.raw.read1(CHUNK, decode_content=True)
+        if not chunk:
+            return b"".join(chunks), False
         chunks.append(chunk)
         size += len(chunk)
-        if size >= MAX_BODY_BYTES or CLOCK() > deadline:
-            break
-    return b"".join(chunks)[:MAX_BODY_BYTES]
+    return b"".join(chunks)[:MAX_BODY_BYTES], True
 
 
 def _get(url, host, *, scope, limiter, research, on_request, timeout, budget, stop_at):
@@ -477,19 +503,24 @@ def _get(url, host, *, scope, limiter, research, on_request, timeout, budget, st
     resp = requests.get(url, headers=request_headers(research), timeout=timeout,
                         allow_redirects=False, stream=True)
     try:
-        body = _read(resp, CLOCK() + 2 * timeout)
+        deadline = CLOCK() + 2 * timeout
+        if stop_at is not None:
+            deadline = min(deadline, stop_at)
+        body, more = _read(resp, deadline)
         headers = {k.lower(): v for k, v in resp.headers.items()}
         return {"status": resp.status_code, "headers": headers, "body": body,
-                "length": _length(headers, body)}
+                "length": _length(headers, body, more)}
     finally:
         resp.close()
 
 
-def _length(headers, body):
+def _length(headers, body, more=False):
+    """The body's full length: Content-Length, else what was read, else None
+    when the body was cut off and its real length is unknown."""
     try:
         return int(headers.get("content-length"))
     except (TypeError, ValueError):
-        return len(body)
+        return None if more else len(body)
 
 
 # --- Telling a real answer from "not found" ----------------------------------
@@ -511,13 +542,14 @@ def _like(answer: dict, baseline: list[dict], path: str) -> bool:
     for b in baseline:
         if answer["status"] != b["status"]:
             continue
+        if 300 <= answer["status"] < 400:   # a redirect is told apart by where it goes, nothing else
+            if answer["headers"].get("location", "").replace(path, "") == b["location"]:
+                return True
+            continue
         if _shape(answer, path.lstrip("/")) == (b["status"], b["shape"][1]):
             return True
         n, m = answer["length"], b["length"]
-        if max(n, m) == 0 or abs(n - m) <= 0.05 * max(n, m):
-            return True
-        if answer["status"] in (301, 302, 303, 307, 308) and \
-                answer["headers"].get("location", "").replace(path, "") == b["location"]:
+        if n is not None and m is not None and (max(n, m) == 0 or abs(n - m) <= 0.05 * max(n, m)):
             return True
     return False
 
@@ -534,6 +566,33 @@ def _baseline(path: str, a: dict) -> dict:
 
 
 STOPS = (OutOfScope, RequestCapReached, TimeLimit)
+
+
+AUTH_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,29}")
+
+
+def _lead(path: str, url: str, a: dict) -> dict:
+    """A lead's record. The target writes the Location and WWW-Authenticate
+    headers, so only their safe parts are kept: a redirect's address without
+    its query (which can carry tokens or SSO state), and the login scheme's
+    name only."""
+    lead = {"path": path, "url": url, "status": a["status"], "length": a["length"]}
+    if 300 <= a["status"] < 400:
+        loc = a["headers"].get("location", "")
+        bare = loc.split("#", 1)[0].split("?", 1)[0]
+        lead["location"] = bare[:200]   # recorded, never followed
+        if bare != loc:
+            lead["location_query_dropped"] = True
+    if a["status"] == 401:
+        m = AUTH_SCHEME_RE.match(a["headers"].get("www-authenticate", "").strip())
+        lead["auth"] = m.group(0) if m else "unknown"
+    return lead
+
+
+def _encoded_tar(a: dict, body: bytes) -> bool:
+    """A .tar.gz served with Content-Encoding: gzip arrives already
+    decompressed by requests, so it's a tar by then."""
+    return a["headers"].get("content-encoding", "").strip().lower() in ("gzip", "x-gzip") and bool(_tar(body))
 
 
 def check_host(host, timeout=8, on_request=None, *, scope, limiter=ratemod.UNLIMITED, research=None,
@@ -569,7 +628,8 @@ def check_host(host, timeout=8, on_request=None, *, scope, limiter=ratemod.UNLIM
     made_up = calibration_paths(TOKEN())
     base, baseline = f"https://{host}", []
     # The first made-up path also decides the scheme, the same rule as
-    # --fingerprint: plain HTTP once, only when HTTPS broke at TLS or was refused.
+    # --fingerprint: plain HTTP once, only when HTTPS couldn't connect (TLS
+    # broke, or the connection was refused or reset), never after a timeout.
     try:
         baseline.append(_baseline(made_up[0], get(base + made_up[0])))
         out["scheme"] = "https"
@@ -600,6 +660,8 @@ def check_host(host, timeout=8, on_request=None, *, scope, limiter=ratemod.UNLIM
     out["untrusted"] = sorted(untrusted)
     for path, kind in host_paths(host, extra):
         if kind in untrusted:
+            if progress:
+                progress()
             continue
         url = base + path
         try:
@@ -609,24 +671,28 @@ def check_host(host, timeout=8, on_request=None, *, scope, limiter=ratemod.UNLIM
             break
         except requests.RequestException:
             out["tried"] += 1
+            if progress:
+                progress()
             continue
         out["tried"] += 1
         if progress:
             progress()
         if kind == LEAD:
             if a["status"] in (200, 204, 301, 302, 303, 307, 308, 401, 403) and not _like(a, baseline, path):
-                lead = {"path": path, "url": url, "status": a["status"], "length": a["length"]}
-                if 300 <= a["status"] < 400:
-                    lead["location"] = a["headers"].get("location", "")[:200]  # recorded, never followed
-                if a["status"] == 401:
-                    lead["auth"] = a["headers"].get("www-authenticate", "").split(" ")[0][:30]
-                out["leads"].append(lead)
+                out["leads"].append(_lead(path, url, a))
             continue
         if a["status"] != 200:
             continue
-        what = CHECKS[kind](a["body"])
+        # a not-found page that echoes the path back must not pass a check because of the path
+        body = a["body"].replace(path.encode(), b"").replace(path.lstrip("/").encode(), b"")
+        what = CHECKS[kind](body)
+        if not what and kind == "gzip" and _encoded_tar(a, body):
+            what = "a gzip archive (the server decompressed it on the way: a tar inside)"
         if what:
-            out["found"].append({"path": path, "url": url, "kind": kind, "severity": SEVERITY[kind],
+            severity = SEVERITY[kind]
+            if kind == "env" and path.endswith(".example"):
+                severity, what = "info", what + ", a template"
+            out["found"].append({"path": path, "url": url, "kind": kind, "severity": severity,
                                  "what": what, "status": a["status"]})
     out["found"].sort(key=lambda f: (SEVERITY_ORDER[f["severity"]], f["path"]))
     out["requests"] = sent[0]

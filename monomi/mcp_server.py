@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import threading
+import time
 from collections import Counter
 from datetime import datetime
 from monomi.cli import clean_domain, collect_ct
@@ -70,6 +71,13 @@ MAX_CONTENT_HOSTS = 5
 CONTENT_WORKERS = 2
 CONTENT_TIMEOUT = 8
 CONTENT_JOB_SECONDS = 30 * 60
+# Only one active check runs at a time, a call or a job (they share one rate
+# limit). The slot is taken before an approval is claimed, so a refusal never
+# uses one up, and it expires, so a job stuck on one hanging request can't
+# block everything forever: nothing more is sent after the limit anyway.
+SYNC_SLOT_SECONDS = 120          # a call runs well under the app's 60s
+SLOT_GRACE_SECONDS = 120         # past a job's own limit, for its last request
+JOB_SAVE_EVERY = 10              # requests between saves of a job's state
 # Under --rate (v1.19) the requests of one call are spread out, so a call
 # checks only as many hosts as fit in this many seconds of pacing (worst
 # case per host: fingerprint 2 requests, the HTTP retry; exposed 13).
@@ -1099,7 +1107,9 @@ def discover_content(hostnames: list[str] | None = None, hosts_file: str | None 
     Per host it sends only GETs: 3 made-up paths first (to learn what the
     host's not-found looks like), then the list; at most 159 per host. It
     never follows a redirect, never asks another host, and reads at most
-    16 KB of any answer. A FILE counts as found only when its content is the
+    16 KB of any answer. If HTTPS can't connect (a TLS error, or the
+    connection is refused or reset; never after a timeout) it uses http://
+    instead, once. A FILE counts as found only when its content is the
     real thing (/.git/HEAD must look like a Git HEAD, a .zip must start like
     a zip), so a 200 error page is never a finding; findings say what a file
     is, never what it holds (no values, no keys). A LEAD (an admin path that
@@ -1125,7 +1135,34 @@ def discover_content(hostnames: list[str] | None = None, hosts_file: str | None 
 
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
-JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+SAVE_LOCK = threading.Lock()     # one writer at a time for a job file
+JOB_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")   # fullmatch: no "/" or "." can get in
+SLOT = {"holder": None, "until": 0.0}
+SLOT_LOCK = threading.Lock()
+
+
+def take_slot(holder: str, seconds: float) -> str | None:
+    """Take the one active slot for `seconds`. Returns None when taken, or
+    the holder that has it now (nothing taken)."""
+    with SLOT_LOCK:
+        now = time.monotonic()
+        if SLOT["holder"] and now < SLOT["until"]:
+            return SLOT["holder"]
+        SLOT.update(holder=holder, until=now + seconds)
+        return None
+
+
+def hand_slot(old: str, new: str, seconds: float) -> None:
+    """Pass the slot from the active_run call to the job it started."""
+    with SLOT_LOCK:
+        if SLOT["holder"] == old:
+            SLOT.update(holder=new, until=time.monotonic() + seconds)
+
+
+def free_slot(holder: str) -> None:
+    with SLOT_LOCK:
+        if SLOT["holder"] == holder:
+            SLOT.update(holder=None, until=0.0)
 
 
 def jobs_dir() -> str:
@@ -1140,14 +1177,15 @@ def _save_job(job: dict) -> None:
     """Write the job's state in one step (a temp file, then a rename), so a
     reader never sees half a file."""
     path = _job_path(job["job_id"])
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".tmp", "w") as f:
-        json.dump(job, f, indent=2, default=list)
-    os.replace(path + ".tmp", path)
+    with SAVE_LOCK:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump(job, f, indent=2, default=list)
+        os.replace(path + ".tmp", path)
 
 
 def running_job() -> str | None:
-    """The id of the job still running in this server, or None."""
+    """The id of a job still running in this server, or None."""
     with JOBS_LOCK:
         return next((j for j, job in JOBS.items() if job["status"] == "running"), None)
 
@@ -1178,6 +1216,12 @@ def run_content(grant: dict, detail: str, ran: set) -> dict:
         log_request(tool, host, url, rule, grant)   # the audit line first, then the count
         with lock:
             job["requests_sent"] += 1
+            snapshot = dict(job) if job["requests_sent"] % JOB_SAVE_EVERY == 0 else None
+        if snapshot:   # so a restart mid-run still says about how much went out
+            try:
+                _save_job(snapshot)
+            except OSError:
+                pass
 
     def progress():
         with lock:
@@ -1212,11 +1256,20 @@ def run_content(grant: dict, detail: str, ran: set) -> dict:
                 print(f"monomi discover_content job {job_id}: couldn't save its state: {e}", file=sys.stderr)
             with JOBS_LOCK:
                 job.update(final)
+            free_slot(job_id)
 
+    _save_job(job)   # first: if it can't be saved, it never starts (and the slot is freed by active_run)
     with JOBS_LOCK:
         JOBS[job_id] = job
-    _save_job(job)
-    threading.Thread(target=work, name=f"monomi-{job_id}", daemon=True).start()
+    job["_until"] = time.monotonic() + CONTENT_JOB_SECONDS + SLOT_GRACE_SECONDS
+    hand_slot(grant["slot"], job_id, CONTENT_JOB_SECONDS + SLOT_GRACE_SECONDS)
+    try:
+        threading.Thread(target=work, name=f"monomi-{job_id}", daemon=True).start()
+    except RuntimeError:
+        with JOBS_LOCK:
+            job.update(status="failed", error="couldn't start the job's thread")
+        free_slot(job_id)
+        raise
     return {"job_started": True, "job_id": job_id, "status": "running", "hosts": live,
             "not_requested": job["not_requested"], "out_of_scope_count": len(out_of_scope),
             "max_requests": job["max_requests"], "estimate_seconds": estimate,
@@ -1269,7 +1322,7 @@ def active_status(job_id: str, detail: str = "summary") -> dict:
     (why), or interrupted (the Claude app or Monomi restarted while it ran:
     what it sent up to then is in scans/active.log). Reads files only;
     sends nothing."""
-    if not JOB_ID_RE.match(job_id or ""):
+    if not JOB_ID_RE.fullmatch(job_id or ""):
         raise ToolError("job_id should be the id active_run returned, like 20261123-190500-k7m2-x9pq")
     with JOBS_LOCK:
         job = JOBS.get(job_id)
@@ -1282,11 +1335,15 @@ def active_status(job_id: str, detail: str = "summary") -> dict:
         if job["status"] == "running":   # on disk as running, but not in this server: it died
             job = dict(job, status="interrupted",
                        error="Monomi's MCP server restarted while this job ran (the Claude app was closed or "
-                             "restarted), so it stopped. What it sent up to then is in scans/active.log; "
-                             "ask for a new approval to run it again.")
+                             "restarted), so it stopped. requests_sent is the count at its last save (every "
+                             f"{JOB_SAVE_EVERY} requests); scans/active.log has every request it sent. Ask for "
+                             "a new approval to run it again.")
     out = {k: job[k] for k in ("job_id", "tool", "status", "started", "finished", "requests_sent",
                                "paths_tried", "paths_total", "max_requests", "estimate_seconds",
                                "time_limit_seconds", "error")}
+    if job["status"] == "running" and time.monotonic() > job.get("_until", float("inf")):
+        out["note"] = ("past its time limit: one request is still hanging, and nothing more will be sent "
+                       "(every request checks the limit first). Other active checks can run again.")
     if job["status"] == "done":
         out["full_results_file"] = job["full_results_file"]
         if detail == "full":
@@ -1328,19 +1385,24 @@ def active_run(approval_id: str, detail: str = "summary", already_ran: list[str]
     """
     ran = check_already_ran(already_ran)
     check_rate("active_run")
-    busy = running_job()
+    token = f"active_run:{approval_id}"
+    busy = take_slot(token, SYNC_SLOT_SECONDS)   # one step: two calls can't both get it
     if busy:   # refused before the claim, so the approval isn't used up
-        log_refusal("active_run", f"background job {busy} still running")
-        raise ToolError(f"A discover_content job ({busy}) is still running, and every active check shares one "
-                        f"rate limit, so nothing was sent and this approval is still unused. Call "
-                        f"active_status with job_id \"{busy}\" and try again once it is done.")
+        log_refusal("active_run", f"another active check is running ({busy})")
+        follow = (f" Call active_status with job_id \"{busy}\" and try again once it is done."
+                  if not busy.startswith("active_run:") else " Try again in a minute.")
+        raise ToolError("Another active check is still running, and every active check shares one rate "
+                        f"limit, so nothing was sent and this approval is still unused.{follow}")
     try:
-        grant = approvals.claim(approval_id)
-    except approvals.ApprovalError as e:
-        log_refusal("active_run", str(e))
-        raise ToolError(f"{e}. Nothing was sent.")
-    grant["approval_id"] = approval_id
-    return RUNNERS[grant["tool"]](grant, detail, ran)
+        try:
+            grant = approvals.claim(approval_id)
+        except approvals.ApprovalError as e:
+            log_refusal("active_run", str(e))
+            raise ToolError(f"{e}. Nothing was sent.")
+        grant["approval_id"], grant["slot"] = approval_id, token
+        return RUNNERS[grant["tool"]](grant, detail, ran)
+    finally:
+        free_slot(token)   # a job took the slot over by now; this frees it only after a call
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))

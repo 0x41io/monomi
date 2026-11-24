@@ -952,8 +952,9 @@ def run_content(results: dict, enrichment: dict, active_scope, active=None, extr
             tag = ui.paint(f["severity"], SEVERITY_COLOR[f["severity"]])
             print(f"        {tag}  {ui.safe(f['path'])}: {ui.safe(f['what'])}")
         for lead in r["leads"][:content.LEADS_SHOWN]:
-            extra_bit = (f" -> {ui.safe(lead['location'])} (not followed)" if lead.get("location")
-                         else f" ({lead['auth']} login)" if lead.get("auth") else "")
+            dropped = ", its query not kept" if lead.get("location_query_dropped") else ""
+            extra_bit = (f" -> {ui.safe(lead['location'])} (not followed{dropped})" if lead.get("location")
+                         else f" ({ui.safe(lead['auth'])} login)" if lead.get("auth") else "")
             print(f"        {ui.paint('lead', ui.GREY)}  {ui.safe(lead['path'])}: {lead['status']}{extra_bit}")
         if len(r["leads"]) > content.LEADS_SHOWN:
             print(f"        ... and {len(r['leads']) - content.LEADS_SHOWN} more lead(s) in the saved scan")

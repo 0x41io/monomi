@@ -19,10 +19,14 @@ class Page:
         self._body = body
         self.read_bytes = 0
 
-    def iter_content(self, size):
-        for i in range(0, len(self._body), size):
-            self.read_bytes += len(self._body[i:i + size])
-            yield self._body[i:i + size]
+        self.raw = self   # content reads with resp.raw.read1, like urllib3
+        self._at = 0
+
+    def read1(self, size, decode_content=True):
+        chunk = self._body[self._at:self._at + size]
+        self._at += len(chunk)
+        self.read_bytes += len(chunk)
+        return chunk
 
     def close(self):
         pass
@@ -51,7 +55,10 @@ def fake_site(monkeypatch, pages=None, default=NOT_FOUND, hosts=(HOST,)):
         out = pages.get(parsed.path, default)
         if isinstance(out, type) and issubclass(out, Exception):
             raise out("fake")
-        return out(parsed.path) if callable(out) and not isinstance(out, Page) else out
+        page = out(parsed.path) if callable(out) and not isinstance(out, Page) else out
+        if page.read_bytes or page._at:   # the same Page object served again: start from the top
+            page._at = 0
+        return page
     monkeypatch.setattr(content.requests, "get", get)
     return sent
 
@@ -351,3 +358,117 @@ def test_a_huge_wordlist_is_refused(tmp_path):
     f.write_text("\n".join(f"p{i}" for i in range(content.MAX_WORDLIST + 1)))
     with pytest.raises(content.WordlistError, match="split"):
         content.load_wordlist(str(f))
+
+
+# --- from the v1.26 review ----------------------------------------------------
+
+class Drip(Page):
+    """A body that arrives one byte per read, each read taking `step` seconds on a fake clock."""
+    def __init__(self, clock, step, size=5000):
+        super().__init__(200, {"Content-Length": str(size)}, b"a" * size)
+        self.clock, self.step = clock, step
+
+    def read1(self, size, decode_content=True):
+        self.clock[0] += self.step
+        return super().read1(1)
+
+
+def test_a_server_that_drips_its_body_cant_hold_a_request_past_its_deadline(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(content, "CLOCK", lambda: clock[0])
+    drip = Drip(clock, step=7)
+    monkeypatch.setattr(content.requests, "get", lambda url, **kw: drip)
+    a = content._get("https://app.example.test/x", HOST, scope=LAB, limiter=content.ratemod.UNLIMITED,
+                     research=None, on_request=None, timeout=8, budget=content._Budget(5), stop_at=None)
+    assert clock[0] <= 2 * 8 + 7      # one read past the deadline at most
+    assert len(a["body"]) < 5 and a["length"] == 5000
+
+
+def test_the_run_time_limit_also_cuts_a_body_short(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(content, "CLOCK", lambda: clock[0])
+    drip = Drip(clock, step=1)
+    monkeypatch.setattr(content.requests, "get", lambda url, **kw: drip)
+    content._get("https://app.example.test/x", HOST, scope=LAB, limiter=content.ratemod.UNLIMITED,
+                 research=None, on_request=None, timeout=8, budget=content._Budget(5), stop_at=3)
+    assert clock[0] <= 4
+
+
+def test_a_not_found_page_that_echoes_the_path_is_never_a_finding(monkeypatch):
+    fake_site(monkeypatch, default=lambda path: Page(200, {"Content-Type": "text/plain"},
+                                                     f"404 error - nothing at {path}".encode()))
+    assert run()["found"] == []
+
+
+@pytest.mark.parametrize("kind, body", [
+    ("dockerfile", b"import x from 'react'\nfrom y import z\n"),
+    ("dockerfile", b"<!-- page -->\nFROM the team\n"),
+    ("sql_dump", b"\xef\xbb\xbf<html><pre>\nCREATE TABLE x (id int);</pre></html>"),
+    ("svn_entries", b"200\nOK\ndirectory listing\nmore\n"),
+    ("htpasswd", b"error:AccessDenied\n"),
+    ("npm_debug", b"404 error - nothing at /npm-debug.log\n"),
+])
+def test_weak_matches_found_in_review_no_longer_pass(kind, body):
+    assert content.CHECKS[kind](body) is None
+
+
+def test_a_redirect_lead_is_told_apart_by_where_it_goes(monkeypatch):
+    nginx = b"<html><center>302 Found</center><hr><center>nginx</center></html>"
+    fake_site(monkeypatch, {"/jenkins/": Page(302, {"Location": "/jenkins/login"}, nginx)},
+              default=Page(302, {"Location": "/"}, nginx))
+    assert [lead["path"] for lead in run()["leads"]] == ["/jenkins/"]
+
+
+def test_a_tar_gz_the_server_decompressed_still_counts(monkeypatch):
+    tar = b"\x00" * 257 + b"ustar\x00" + b"\x00" * 20
+    fake_site(monkeypatch, {"/backup.tar.gz": Page(200, {"Content-Encoding": "gzip"}, tar)})
+    found = {f["path"]: f["what"] for f in run()["found"]}
+    assert "a tar inside" in found["/backup.tar.gz"]
+
+
+def test_an_env_example_is_a_template_not_a_secret(monkeypatch):
+    fake_site(monkeypatch, {"/.env.example": Page(200, {}, b"DB_PASSWORD=\nAPI_KEY=\n")})
+    [f] = run()["found"]
+    assert f["severity"] == "info" and "template" in f["what"]
+
+
+def test_a_cut_off_body_of_unknown_length_never_matches_by_length(monkeypatch):
+    # two different pages, both cut off at MAX_BODY_BYTES: before, both "were" 16384 bytes, so alike
+    fake_site(monkeypatch, {"/admin": Page(200, {}, b"<html>admin panel" + b"z" * 20000)},
+              default=Page(200, {}, b"<html>shop home" + b"x" * 20000))
+    assert [lead["path"] for lead in run()["leads"]] == ["/admin"]
+
+
+def test_a_redirect_keeps_its_address_but_not_its_query(monkeypatch):
+    fake_site(monkeypatch, {"/login": Page(302, {"Location": "https://sso.test/auth?state=SECRET123#t"})})
+    [lead] = run()["leads"]
+    assert lead["location"] == "https://sso.test/auth" and lead["location_query_dropped"]
+    assert "SECRET123" not in repr(run())
+
+
+def test_only_a_login_schemes_name_is_kept(monkeypatch):
+    fake_site(monkeypatch, {"/admin": Page(401, {"WWW-Authenticate": "\x1b]0;pwn\x07Basic"}, b"")})
+    [lead] = run()["leads"]
+    assert lead["auth"] == "unknown"
+
+
+@pytest.mark.parametrize("line", ["a\x1bb", "%252e%252e/x", "ａｂ", "%00x", "//evil.test/x", "a\x7f"])
+def test_a_wordlist_refuses_untidy_paths_too(tmp_path, line):
+    f = tmp_path / "w.txt"
+    f.write_text(f"ok\n{line}\n", encoding="utf-8")
+    with pytest.raises(content.WordlistError, match="plain path"):
+        content.load_wordlist(str(f))
+
+
+def test_a_wordlist_still_takes_ordinary_seclists_paths(tmp_path):
+    f = tmp_path / "w.txt"
+    f.write_text("admin\n.well-known/security.txt\napi/v1/users;jsessionid\n~root\nfoo%20bar\n")
+    expected = ["/admin", "/.well-known/security.txt", "/api/v1/users;jsessionid", "/~root", "/foo%20bar"]
+    assert content.load_wordlist(str(f)) == expected
+
+
+def test_progress_reaches_every_path(monkeypatch):
+    fake_site(monkeypatch, default=Page(body=b"PK\x03\x04" + b"\x00" * 100))   # zips untrusted: skipped
+    ticks = []
+    run(progress=lambda: ticks.append(1))
+    assert len(ticks) == len(content.host_paths(HOST))

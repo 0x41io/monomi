@@ -1205,9 +1205,11 @@ class ContentPage:
     def __init__(self, status=404, body=b"<html>nope</html>", headers=None):
         self.status_code, self._body = status, body
         self.headers = headers or {"Content-Type": "text/html"}
+        self.raw = self
 
-    def iter_content(self, size):
-        yield self._body
+    def read1(self, size, decode_content=True):
+        chunk, self._body = self._body[:size], self._body[size:]
+        return chunk
 
     def close(self):
         pass
@@ -1226,7 +1228,8 @@ def fake_content_web(monkeypatch, pages=None):
         sent.append(url)
         if url.startswith(("https://www/", "http://www/")):
             raise mcp_server.content.requests.ConnectTimeout("no answer")
-        return (pages or {}).get(url, ContentPage())
+        page = (pages or {}).get(url) or ContentPage()
+        return ContentPage(page.status_code, page._body, page.headers)
     monkeypatch.setattr(mcp_server.content.requests, "get", get)
     return sent
 
@@ -1247,7 +1250,7 @@ def no_jobs(monkeypatch):
     monkeypatch.setattr(mcp_server, "JOBS", {})
 
 
-def test_discover_content_runs_as_a_job_and_reports_what_it_found(monkeypatch, results_dir, no_jobs):
+def test_discover_content_runs_as_a_job_and_reports_what_it_found(monkeypatch, results_dir, no_jobs, free_slot):
     sent = fake_content_web(monkeypatch, {
         "https://app/.git/HEAD": ContentPage(200, b"ref: refs/heads/main\n"),
         "https://app/.env": ContentPage(200, b"A=1\nSECRET_KEY=do-not-keep-me\n"),
@@ -1272,17 +1275,84 @@ def test_discover_content_runs_as_a_job_and_reports_what_it_found(monkeypatch, r
     assert all(not u.startswith("http://www") for u in sent)   # a timeout gets no HTTP retry
 
 
-def test_no_other_active_check_starts_while_a_job_runs(monkeypatch, results_dir, no_jobs):
-    mcp_server.JOBS["20261123-190000-abcd-efgh"] = {"status": "running"}
+@pytest.fixture
+def free_slot(monkeypatch):
+    monkeypatch.setattr(mcp_server, "SLOT", {"holder": None, "until": 0.0})
+
+
+def test_no_other_active_check_starts_while_a_job_runs(monkeypatch, results_dir, no_jobs, free_slot):
+    assert mcp_server.take_slot("20261123-190000-abcd-efgh", 60) is None   # a job holds it
     claimed = []
     monkeypatch.setattr(mcp_server.approvals, "claim", lambda rid: claimed.append(rid))
     rid = mcp_server.fingerprint_hosts(["app"])["approval_id"]
-    with pytest.raises(mcp_server.ToolError, match="still running.*still unused"):
+    with pytest.raises(mcp_server.ToolError, match="still running.*still unused.*active_status"):
         mcp_server.active_run(rid)
     assert claimed == []   # refused before the claim: the approval can still be used later
 
 
-def test_a_job_that_crashes_ends_as_failed_with_the_reason(monkeypatch, results_dir, no_jobs):
+def test_two_active_runs_at_once_only_one_gets_through(monkeypatch, results_dir, no_jobs, free_slot):
+    # the MCP SDK runs tool calls side by side: the check and the start must be one step
+    import threading
+    import time
+    sent = fake_content_web(monkeypatch)
+    slow_enrich = mcp_server.enrich
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: (time.sleep(0.3), slow_enrich(hosts))[1])
+    grant = {"tool": "discover_content", "hosts": ["app"], "scope": AllowAll(), "research": None,
+             "max_per_host": 159}
+    claims = []
+    monkeypatch.setattr(mcp_server.approvals, "claim", lambda rid: claims.append(rid) or dict(grant))
+    results, errors = [], []
+
+    def call(rid):
+        try:
+            results.append(mcp_server.active_run(rid))
+        except mcp_server.ToolError as e:
+            errors.append(str(e))
+    threads = [threading.Thread(target=call, args=(rid,)) for rid in ("aaaa-aaaa", "bbbb-bbbb")]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(claims) == 1 and len(results) == 1 and len(errors) == 1
+    assert "still unused" in errors[0]
+    wait_for(results[0]["job_id"])
+    assert sent
+
+
+def test_a_running_call_blocks_a_job_too(monkeypatch, results_dir, no_jobs, free_slot):
+    assert mcp_server.take_slot("active_run:zzzz-zzzz", 60) is None   # a probe call in progress
+    monkeypatch.setattr(mcp_server.approvals, "claim", lambda rid: pytest.fail("claimed"))
+    rid = mcp_server.discover_content(["app"])["approval_id"]
+    with pytest.raises(mcp_server.ToolError, match="Try again in a minute"):
+        mcp_server.active_run(rid)
+
+
+def test_a_stuck_job_stops_blocking_once_its_slot_expires(free_slot):
+    assert mcp_server.take_slot("20261123-190000-abcd-efgh", -1) is None   # already past its time
+    assert mcp_server.take_slot("active_run:next-call", 60) is None
+
+
+def test_a_job_that_cant_be_saved_never_starts_and_blocks_nothing(monkeypatch, results_dir, no_jobs, free_slot):
+    fake_content_web(monkeypatch)
+
+    def no_disk(job):
+        raise OSError("disk full")
+    monkeypatch.setattr(mcp_server, "_save_job", no_disk)
+    with pytest.raises(OSError):
+        run(monkeypatch, "discover_content", ["app"])
+    assert mcp_server.running_job() is None and mcp_server.JOBS == {}
+    assert mcp_server.SLOT["holder"] is None   # the next active check can run
+
+
+def test_a_running_job_saves_its_count_as_it_goes(monkeypatch, results_dir, no_jobs, free_slot):
+    fake_content_web(monkeypatch)
+    saved = []
+    real_save = mcp_server._save_job
+    monkeypatch.setattr(mcp_server, "_save_job", lambda job: (saved.append(job["requests_sent"]), real_save(job)))
+    started = run(monkeypatch, "discover_content", ["app"])
+    wait_for(started["job_id"])
+    assert saved[0] == 0 and 10 in saved and 150 in saved   # every 10 requests, then the final state
+
+
+def test_a_job_that_crashes_ends_as_failed_with_the_reason(monkeypatch, results_dir, no_jobs, free_slot):
     fake_content_web(monkeypatch)
 
     def boom(*args, **kwargs):
@@ -1291,7 +1361,7 @@ def test_a_job_that_crashes_ends_as_failed_with_the_reason(monkeypatch, results_
     started = run(monkeypatch, "discover_content", ["app"])
     done = wait_for(started["job_id"])
     assert done["status"] == "failed" and "disk full" in done["error"]
-    assert mcp_server.running_job() is None
+    assert mcp_server.running_job() is None and mcp_server.SLOT["holder"] is None
 
 
 def test_a_job_lost_to_a_restart_shows_as_interrupted(results_dir, no_jobs):
@@ -1303,7 +1373,7 @@ def test_a_job_lost_to_a_restart_shows_as_interrupted(results_dir, no_jobs):
     assert out["status"] == "interrupted" and "restarted" in out["error"] and out["requests_sent"] == 40
 
 
-@pytest.mark.parametrize("bad", ["../../etc/passwd", "a/b", "", "x" * 81])
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "a/b", "", "x" * 81, "abc\n", "a.b"])
 def test_active_status_takes_only_a_job_id(bad):
     with pytest.raises(mcp_server.ToolError, match="job_id"):
         mcp_server.active_status(bad)

@@ -789,9 +789,11 @@ class ContentPage:
     def __init__(self, status=404, body=b"<html>nope</html>", headers=None):
         self.status_code, self._body = status, body
         self.headers = headers or {"Content-Type": "text/html"}
+        self.raw = self
 
-    def iter_content(self, size):
-        yield self._body
+    def read1(self, size, decode_content=True):
+        chunk, self._body = self._body[:size], self._body[size:]
+        return chunk
 
     def close(self):
         pass
@@ -805,7 +807,8 @@ def fake_content_web(monkeypatch, pages):
     def get(url, **kwargs):
         assert kwargs["allow_redirects"] is False
         sent.append(url)
-        return pages.get(url, ContentPage())
+        page = pages.get(url) or ContentPage()
+        return ContentPage(page.status_code, page._body, page.headers)
     monkeypatch.setattr(content.requests, "get", get)
     return sent
 
