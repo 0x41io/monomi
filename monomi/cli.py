@@ -20,8 +20,8 @@ from monomi.collectors import certspotter, crtsh, crtsh_db, otx, saved
 from monomi.common import VERSION, is_hostname, now_utc
 from monomi.importers import spiderfoot, subfinder
 from monomi import (activelog, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate,
-                    history, home, internetdb, mcp_setup, paths, rate, report, research, scope,
-                    suggest, takeover, threatintel, ui)
+                    history, home, internetdb, mcp_setup, paths, probe, rate, report, research,
+                    scope, suggest, takeover, threatintel, ui)
 from monomi.ui import fail, good, info, warn
 
 # Reports always go in the monomi folder, wherever the command is run from
@@ -76,6 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cves", metavar="FILE", help="save every CVE found by --ports to a file (feed it to kaidoku --file)")
     parser.add_argument("--fingerprint", action="store_true", help="ACTIVE: one homepage request per live host to spot web server/framework (turns on --enrich)")
     parser.add_argument("--exposed-files", action="store_true", help="ACTIVE: look for public API specs (OpenAPI/Swagger) and JS source maps on live hosts (turns on --enrich)")
+    parser.add_argument("--probe", action="store_true",
+                        help="ACTIVE: follow each live host's homepage through its redirects (every hop "
+                             "scope-checked) and read the final page's title (turns on --enrich)")
     parser.add_argument("--scope", metavar="FILE",
                         help="ACTIVE checks only reach hosts this scope file allows: one rule per "
                              "line, example.com, *.example.com (subdomains), !host (never); every "
@@ -625,6 +628,16 @@ class ActiveRun:
         out["research_sha256"] = research.sha_of(self.research)
 
 
+# The ACTIVE checks: the only flags that send requests to the target itself.
+ACTIVE_FLAGS = "--fingerprint, --probe or --exposed-files"
+
+
+def any_active(args) -> bool:
+    """Is any ACTIVE check on? One place, so a new active check can't be
+    left out of one of the places that ask."""
+    return bool(args.fingerprint or args.probe or args.exposed_files)
+
+
 def load_active_run(args, active_scope):
     """--rate and --research as an ActiveRun, checked before anything is scanned
     (a bad research file stops the run). Returns None to stop."""
@@ -635,9 +648,9 @@ def load_active_run(args, active_scope):
         except research.ResearchError as e:
             fail(f"--research: {e}. Nothing was scanned.")
             return None
-    if not (args.fingerprint or args.exposed_files):
+    if not any_active(args):
         if args.rate is not None or research_file:
-            info("--rate/--research without --fingerprint or --exposed-files: no active "
+            info(f"--rate/--research without {ACTIVE_FLAGS}: no active "
                  "request is sent, so they change nothing.")
         return ActiveRun(rate.UNLIMITED, research_file)
     scoped = active_scope is not scope.UNSCOPED_CLI
@@ -702,6 +715,54 @@ def run_fingerprint(results: dict, enrichment: dict, active_scope, active=None) 
             print(f"    {header}: {n}/{pages}")
     elif pages:
         good(f"All {pages} hosts that served a page have the checked security headers.")
+
+
+def run_probe(results: dict, enrichment: dict, active_scope, active=None) -> None:
+    """--probe: follow each live host's homepage through its redirects and read the
+    final page's title (ACTIVE: one request per hop)."""
+    print()
+    info("Probing live pages (active: one request per redirect hop, at most "
+         f"{probe.MAX_REDIRECTS + 1} per host)...")
+    allowed, out_of_scope = scope_hosts("--probe", enrichment, active_scope)
+    active = active or ActiveRun()
+    pr = probe.probe_all(allowed, scope=active_scope,
+                         on_request=log_cli_request("--probe", active_scope, active),
+                         limiter=active.limiter, research=active.research)
+    active.record(pr)
+    pr["out_of_scope"] = out_of_scope
+    pr["collected_at"] = now_utc()
+    results["probe"] = pr
+    if pr["skipped"]:
+        warn(f"Only the first {probe.MAX_HOSTS} hosts were checked ({pr['skipped']} skipped).")
+    print()
+    for host, r in sorted(pr["hosts"].items()):
+        # titles, URLs and content types come from the target: clean them first
+        title = ui.safe(r["title"]) if r["title"] else ui.paint("(no title)", ui.GREY)
+        line = f"    {ui.safe(host)}  [{r['status']}]  {title}"
+        if r["chain"]:
+            line += f"  -> {ui.safe(r['final_url'])} ({len(r['chain'])} redirect(s))"
+        print(line)
+        notes = []
+        if r["redirect_blocked"]:
+            notes.append(f"redirect leaves scope, not followed: {ui.safe(r['redirect_blocked'])}")
+        if r["hit_redirect_limit"]:
+            notes.append(f"still redirecting after {probe.MAX_REDIRECTS} hops, stopped")
+        if r["body_kind"] == "json":
+            notes.append(f"body is JSON but labeled {ui.safe(r['content_type'])}")
+        if "https_error" in r:
+            notes.append(f"plain HTTP only: HTTPS failed, {r['https_error']}")
+        for note in notes:
+            print(f"        {ui.paint(note, ui.YELLOW)}")
+    print()
+    redirected = sum(1 for r in pr["hosts"].values() if r["chain"])
+    good(f"{len(pr['hosts'])}/{pr['checked']} hosts answered"
+         + (f", {redirected} redirected elsewhere." if redirected else ".")
+         + f" {pr['requests']} request(s) sent.")
+    blocked = sorted(h for h, r in pr["hosts"].items() if r["redirect_blocked"])
+    if blocked:
+        warn(f"{len(blocked)} host(s) redirect outside scope (not followed): {', '.join(blocked)}")
+    if pr["errors"]:
+        info(f"{len(pr['errors'])} host(s) didn't answer (timeouts, TLS errors, refused).")
 
 
 def run_exposed(results: dict, enrichment: dict, active_scope, active=None) -> None:
@@ -1302,8 +1363,8 @@ def main() -> int:
         return run_investigate(args.investigate_ip, args.json, args.ai)
 
     # --scope: checked before anything is scanned, so a bad file costs nothing
-    if args.scope and not (args.fingerprint or args.exposed_files):
-        info("--scope without --fingerprint or --exposed-files: no active request is sent, "
+    if args.scope and not any_active(args):
+        info(f"--scope without {ACTIVE_FLAGS}: no active request is sent, "
              "so it only sets aside attack paths through hosts it doesn't allow.")
     active_scope = load_cli_scope(args.scope)
     if active_scope is None:
@@ -1318,6 +1379,8 @@ def main() -> int:
         args.enrich = True  # we only fingerprint hosts that resolve, which --enrich tells us
     if args.exposed_files and not args.enrich:
         args.enrich = True  # same: we only check hosts that resolve to a public IP
+    if args.probe and not args.enrich:
+        args.enrich = True  # same: we only probe hosts that resolve to a public IP
     if args.cves and not args.ports:
         warn("--cves only works together with --ports; ignoring it.")
 
@@ -1374,6 +1437,8 @@ def main() -> int:
             run_ports(results, data, args.cves)
         if args.fingerprint:
             run_fingerprint(results, data, active_scope, active)
+        if args.probe:
+            run_probe(results, data, active_scope, active)
         if args.exposed_files:
             run_exposed(results, data, active_scope, active)
     else:

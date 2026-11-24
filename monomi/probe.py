@@ -20,7 +20,9 @@ Like --fingerprint, this is an opt-in ACTIVE check.
 """
 
 import html
+import ipaddress
 import re
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 
 import requests
@@ -32,6 +34,7 @@ from monomi.research import request_headers
 from monomi.scope import UNSCOPED_CLI, OutOfScope, check_url
 
 # Ceilings that keep the probe small and polite.
+MAX_HOSTS = 100          # hosts per run, like fingerprint
 MAX_REDIRECTS = 5        # hops followed before we stop and say so
 MAX_BODY_BYTES = 65536   # bytes of the final page read while looking for <title>
 MAX_TITLE = 300          # characters of title kept
@@ -41,16 +44,32 @@ MAX_TITLE = 300          # characters of title kept
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
 
-def _read_title(resp, headers: dict, max_bytes: int) -> str | None:
-    """The page's <title>, reading at most max_bytes of the body.
+def _body_kind(text: str) -> str:
+    """What the body actually looks like, judged from its first character,
+    whatever the Content-Type header claims: "json", "html", "empty" or
+    "other". Headers can lie: an API that sends JSON labeled text/html shows
+    up as content_type text/html with body_kind "json"."""
+    start = text.lstrip("﻿ \t\r\n")
+    if not start:
+        return "empty"
+    if start[0] in "{[":
+        return "json"
+    if start[0] == "<":
+        return "html"
+    return "other"
 
-    headers: the response headers, already lowercased. Only HTML is read: a
-    PDF or an image has no title and could be big. The body is streamed and
-    cut off at max_bytes, so a large page is never pulled in full just for a
-    title that sits in its first few hundred bytes.
+
+def _read_page(resp, headers: dict, max_bytes: int) -> tuple[str | None, str | None]:
+    """(title, body_kind) of the final page, reading at most max_bytes.
+
+    headers: the response headers, already lowercased. Only a body labeled
+    HTML is read: a PDF or an image has no title and could be big, so for
+    those both values are None (not read). The body is streamed and cut off
+    at max_bytes, so a large page is never pulled in full just for a title
+    that sits in its first few hundred bytes.
     """
     if "html" not in headers.get("content-type", "").lower():
-        return None
+        return None, None
     chunks, total = [], 0
     for chunk in resp.iter_content(8192):
         chunks.append(chunk)
@@ -58,6 +77,11 @@ def _read_title(resp, headers: dict, max_bytes: int) -> str | None:
         if total >= max_bytes:
             break
     text = b"".join(chunks)[:max_bytes].decode(resp.encoding or "utf-8", errors="replace")
+    return _title(text), _body_kind(text)
+
+
+def _title(text: str) -> str | None:
+    """The <title> in a page's text, cleaned, or None if there isn't one."""
     match = TITLE_RE.search(text)
     if not match:
         return None
@@ -71,7 +95,7 @@ def _read_title(resp, headers: dict, max_bytes: int) -> str | None:
 
 
 def _record(host, start_url, final_url, status, chain, title, headers,
-            *, redirect_blocked=None, hit_redirect_limit=False) -> dict:
+            *, body_kind=None, redirect_blocked=None, hit_redirect_limit=False) -> dict:
     """One host's probe result. headers: already lowercased."""
     return {
         "host": host,
@@ -80,6 +104,8 @@ def _record(host, start_url, final_url, status, chain, title, headers,
         "status": status,                          # status of the FINAL response
         "chain": chain,                            # one {"status", "from", "to"} per redirect followed
         "title": title,
+        "content_type": headers.get("content-type"),  # what the server says the body is
+        "body_kind": body_kind,                    # what it looked like when read; None = not read
         "headers": headers,
         "redirect_blocked": redirect_blocked,      # where a redirect wanted to go outside scope
         "hit_redirect_limit": hit_redirect_limit,  # still redirecting after max_redirects hops
@@ -141,9 +167,9 @@ def fetch_live(host: str, timeout: int = 10, on_request=None, scheme: str = "htt
                 continue
             # The final response: a page, an error, or a redirect we ran out
             # of hops to follow. Only here is the body read, for the title.
-            title = _read_title(resp, headers, max_body_bytes)
+            title, body_kind = _read_page(resp, headers, max_body_bytes)
             return _record(host, start_url, url, status, chain, title, headers,
-                           hit_redirect_limit=redirecting)
+                           body_kind=body_kind, hit_redirect_limit=redirecting)
         finally:
             resp.close()  # free the connection, whether or not the body was read
 
@@ -190,6 +216,42 @@ def probe_host(host: str, timeout: int = 10, on_request=None, *, scope,
     return host, record, None, sent
 
 
+def probe_all(enrichment: dict, workers: int = 8, on_request=None,
+              max_hosts: int = MAX_HOSTS, timeout: int = 10, *, scope,
+              limiter=ratemod.UNLIMITED, research=None) -> dict:
+    """Probe every host from --enrich that has a public IP (like fingerprint_all).
+
+    scope is required: every hop of every host is checked against it again,
+    right before its request is sent. limiter: one for the whole run, so
+    --rate is a total across threads and hops. on_request, max_hosts and
+    timeout: as in fingerprint_all.
+    Returns {"hosts": {host: record}, "checked", "requests", "errors",
+    "skipped"}. "requests" counts every request sent (hops and HTTP retries
+    included), so it always matches the audit log.
+    """
+    hosts = sorted(
+        host for host, e in enrichment["hosts"].items()
+        if any(ipaddress.ip_address(ip).is_global for ip in e["ips"])
+    )
+    skipped = max(0, len(hosts) - max_hosts)
+    hosts = hosts[:max_hosts]
+
+    def one(host):
+        return probe_host(host, timeout=timeout, on_request=on_request, scope=scope,
+                          limiter=limiter, research=research)
+
+    found, errors, sent = {}, {}, 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for host, record, err, n in pool.map(one, hosts):
+            sent += n
+            if err:
+                errors[host] = err
+            else:
+                found[host] = record
+    return {"hosts": found, "checked": len(hosts), "requests": sent,
+            "errors": errors, "skipped": skipped}
+
+
 if __name__ == "__main__":
     import sys
 
@@ -201,4 +263,6 @@ if __name__ == "__main__":
         print(f"  redirect leaves scope, not followed: {record['redirect_blocked']}")
     elif record["hit_redirect_limit"]:
         print(f"  still redirecting after {MAX_REDIRECTS} hops, stopped")
+    print(f"  content type: {record['content_type'] or '(none given)'}"
+          + (f"  (body looks like {record['body_kind']})" if record["body_kind"] else ""))
     print(f"  title: {record['title'] or '(none)'}")

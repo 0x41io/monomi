@@ -626,3 +626,131 @@ def test_takeover_same_domain_rule_uses_the_per_host_domain(monkeypatch):
     cli.takeover.check_hosts(["app.other.test", "www.example.test"], workers=1, domain="example.test",
                              domains={"app.other.test": "app.other.test"})
     assert sorted(calls) == [("app.other.test", "app.other.test"), ("www.example.test", "example.test")]
+
+
+# ---------- --probe (ACTIVE, v1.25) ----------
+
+class ProbePage:
+    """A fake streamed response for --probe."""
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status_code = status
+        self.headers = headers if headers is not None else {"Content-Type": "text/html"}
+        self.encoding = "utf-8"
+        self._body = body
+
+    def iter_content(self, size):
+        yield self._body
+
+    def close(self):
+        pass
+
+
+def fake_probe_web(monkeypatch, pages):
+    """pages: {url: ProbePage}. Returns the URLs requested, in order."""
+    sent = []
+
+    def get(url, **kwargs):
+        sent.append(url)
+        if url not in pages:
+            raise AssertionError(f"unexpected request to {url}")
+        return pages[url]
+    monkeypatch.setattr(cli.probe.requests, "get", get)
+    return sent
+
+
+def test_probe_flag_parses_and_counts_as_active():
+    args = args_for("--probe")
+    assert args.probe is True
+    assert cli.any_active(args) is True
+    assert cli.any_active(args_for()) is False
+
+
+def test_probe_turns_on_the_rate_limit(capsys):
+    # --rate only takes effect when an active check runs: --probe is one
+    run = cli.load_active_run(args_for("--probe", "--rate", "2"), cli.scope.UNSCOPED_CLI)
+    assert run.limiter.rate == 2
+    assert "change nothing" not in capsys.readouterr().out
+
+
+def test_rate_without_an_active_check_names_probe(capsys):
+    cli.load_active_run(args_for("--rate", "2"), cli.scope.UNSCOPED_CLI)
+    assert "--fingerprint, --probe or --exposed-files" in capsys.readouterr().out
+
+
+def test_run_probe_uses_the_scope_and_logs_every_hop(monkeypatch, tmp_path, capsys, active_log):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    sent = fake_probe_web(monkeypatch, {
+        "https://www.example.test/": ProbePage(301, {"Location": "/home"}),
+        "https://www.example.test/home": ProbePage(body=b"<title>Home</title>"),
+        "https://example.test/": ProbePage(body=b"<title>Root</title>"),
+    })
+    results = {}
+    cli.run_probe(results, ENRICHED, s)
+    assert sorted(sent) == ["https://example.test/", "https://www.example.test/",
+                            "https://www.example.test/home"]
+    pr = results["probe"]
+    assert [o["host"] for o in pr["out_of_scope"]] == ["dev.example.test", "evil.test"]
+    assert pr["requests"] == 3 and pr["hosts"]["www.example.test"]["title"] == "Home"
+    log = [json.loads(x) for x in active_log.read_text().splitlines()]
+    assert {x["tool"] for x in log} == {"--probe"}
+    assert len([x for x in log if x["event"] == "request"]) == 3   # one line per hop
+    out = capsys.readouterr().out
+    assert "www.example.test  [200]  Home  -> https://www.example.test/home (1 redirect(s))" in out
+    assert "2/2 hosts answered, 1 redirected elsewhere. 3 request(s) sent." in out
+
+
+def test_run_probe_flags_blocked_redirects_and_mislabeled_json(monkeypatch, tmp_path, capsys, active_log):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    fake_probe_web(monkeypatch, {
+        "https://www.example.test/": ProbePage(302, {"Location": "https://evil.test/"}),
+        "https://example.test/": ProbePage(headers={"Content-Type": "text/html"}, body=b'{"ok": 1}'),
+    })
+    results = {}
+    cli.run_probe(results, ENRICHED, s)
+    out = capsys.readouterr().out
+    assert "redirect leaves scope, not followed: https://evil.test/" in out
+    assert "body is JSON but labeled text/html" in out
+    assert "1 host(s) redirect outside scope (not followed): www.example.test" in out
+
+
+def test_run_probe_cleans_target_text_before_printing(monkeypatch, capsys, active_log):
+    fake_probe_web(monkeypatch, {f"https://{h}/": ProbePage(body=b"<title>ok</title>")
+                                 for h in ENRICHED["hosts"]})
+    monkeypatch.setattr(cli.probe, "_title", lambda text: "evil\x1b[2Jtitle")
+    cli.run_probe({}, ENRICHED, cli.scope.UNSCOPED_CLI)
+    out = capsys.readouterr().out
+    assert "\x1b[2J" not in out and "evil?[2Jtitle" in out
+
+
+def test_probe_carries_research_and_rate_into_results_and_log(monkeypatch, tmp_path, capsys, active_log):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    headers = []
+
+    def get(url, **kwargs):
+        headers.append(kwargs["headers"])
+        return ProbePage(body=b"<title>x</title>")
+    monkeypatch.setattr(cli.probe.requests, "get", get)
+    run = cli.load_active_run(args_for("--probe", "--scope", "x", "--rate", "1000",
+                                       "--research", research_file(tmp_path)), s)
+    results = {}
+    cli.run_probe(results, ENRICHED, s, run)
+    assert len(headers) == 2 and all(h["X-Intigriti"] == "x41ok" for h in headers)
+    assert results["probe"]["rate"] == 1000
+    assert results["probe"]["research_sha256"] == run.research.sha256
+    sent = [json.loads(x) for x in active_log.read_text().splitlines() if '"request"' in x]
+    assert all(x["rate"] == 1000 and x["research_sha256"] == run.research.sha256 for x in sent)
+
+
+def test_one_limiter_is_shared_by_all_three_active_checks(monkeypatch, active_log):
+    seen = []
+    empty = {"hosts": {}, "checked": 0, "requests": 0, "errors": {}, "skipped": 0}
+    monkeypatch.setattr(cli.fingerprint, "fingerprint_all", lambda e, **k: seen.append(k["limiter"]) or dict(empty))
+    monkeypatch.setattr(cli.probe, "probe_all", lambda e, **k: seen.append(k["limiter"]) or dict(empty))
+    monkeypatch.setattr(cli.exposed, "check_all", lambda e, **k: seen.append(k["limiter"]) or
+                        {"hosts": {}, "requested": [], "checked": 0, "requests": 0, "skipped": 0})
+    run = cli.load_active_run(args_for("--fingerprint", "--probe", "--exposed-files", "--rate", "2"),
+                              cli.scope.UNSCOPED_CLI)
+    cli.run_fingerprint({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
+    cli.run_probe({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
+    cli.run_exposed({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
+    assert seen[0] is seen[1] is seen[2] is run.limiter

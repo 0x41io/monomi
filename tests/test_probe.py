@@ -108,7 +108,8 @@ def test_non_html_page_body_is_not_read(monkeypatch):
     pdf = Page(headers={"Content-Type": "application/pdf"}, body=b"%PDF-1.7 ...")
     fake_web(monkeypatch, {"https://docs.example.test/": pdf})
     r = probe.fetch_live("docs.example.test", scope=LAB)
-    assert r["title"] is None and pdf.read_bytes == 0
+    assert r["title"] is None and r["body_kind"] is None and pdf.read_bytes == 0
+    assert r["content_type"] == "application/pdf"
 
 
 def test_big_page_is_read_only_up_to_the_cap(monkeypatch):
@@ -263,3 +264,91 @@ def test_probe_host_passes_rate_and_research_to_the_http_retry(monkeypatch):
     probe.probe_host("dev2.example.test", scope=LAB, limiter=limiter, research=res)
     assert limiter.slots == 2
     assert all(headers["X-Intigriti"] == "someone" for _, headers in sent)
+
+
+# ---------- what the body really is (content_type vs body_kind) ----------
+
+def test_json_labeled_html_is_seen_as_json(monkeypatch):
+    # like the lab's notes app: JSON sent with Content-Type text/html
+    fake_web(monkeypatch, {"https://api.example.test/":
+                           Page(headers={"Content-Type": "text/html;charset=utf-8"},
+                                body=b'{"app": "notes", "mode": "vulnerable"}')})
+    r = probe.fetch_live("api.example.test", scope=LAB)
+    assert r["content_type"] == "text/html;charset=utf-8"
+    assert r["body_kind"] == "json" and r["title"] is None
+
+
+@pytest.mark.parametrize("body, kind", [
+    (b"<!doctype html><title>x</title>", "html"),
+    (b"\xef\xbb\xbf\n  <html></html>", "html"),  # a BOM and blank lines first
+    (b"[1, 2]", "json"),
+    (b"", "empty"),
+    (b"   \n", "empty"),
+    (b"plain words", "other"),
+])
+def test_body_kind_is_judged_from_the_first_character(monkeypatch, body, kind):
+    fake_web(monkeypatch, {"https://www.example.test/": Page(body=body)})
+    assert probe.fetch_live("www.example.test", scope=LAB)["body_kind"] == kind
+
+
+def test_unread_body_has_no_kind(monkeypatch):
+    fake_web(monkeypatch, {"https://docs.example.test/":
+                           Page(headers={"Content-Type": "application/json"}, body=b"{}")})
+    r = probe.fetch_live("docs.example.test", scope=LAB)
+    assert r["content_type"] == "application/json" and r["body_kind"] is None
+
+
+def test_missing_content_type_is_none_and_body_not_read(monkeypatch):
+    page = Page(headers={}, body=b"<title>x</title>")
+    fake_web(monkeypatch, {"https://www.example.test/": page})
+    r = probe.fetch_live("www.example.test", scope=LAB)
+    assert r["content_type"] is None and r["body_kind"] is None and page.read_bytes == 0
+
+
+# ---------- probe_all ----------
+
+ENRICHED = {"hosts": {
+    "www.example.test": {"ips": ["8.8.8.8"]},
+    "app.example.test": {"ips": ["8.8.4.4"]},
+    "dev.example.test": {"ips": ["8.8.8.8"]},   # excluded by the scope
+    "internal.example.test": {"ips": ["10.0.0.5"]},  # private IP: never probed
+    "gone.example.test": {"ips": []},           # doesn't resolve: never probed
+}}
+
+
+def test_probe_all_has_no_default_scope():
+    with pytest.raises(TypeError, match="scope"):
+        probe.probe_all({"hosts": {}})
+
+
+def test_probe_all_probes_public_hosts_and_counts_every_request(monkeypatch):
+    sent = fake_web(monkeypatch, {
+        "https://www.example.test/": redirect(301, "https://www.example.test/home"),
+        "https://www.example.test/home": Page(body=b"<title>Home</title>"),
+        "https://app.example.test/": Page(body=b"<title>App</title>"),
+    })
+    logged = []
+    out = probe.probe_all(ENRICHED, scope=LAB, on_request=lambda h, url, rule: logged.append(url))
+    assert sorted(out["hosts"]) == ["app.example.test", "www.example.test"]
+    assert out["hosts"]["www.example.test"]["title"] == "Home"
+    assert out["checked"] == 3                        # the three public hosts
+    assert out["errors"] == {"dev.example.test": "OutOfScope"}  # rechecked: no request
+    assert out["requests"] == 3 == len(logged) == len(sent)   # 2 hops + 1, matches the log
+    assert "https://dev.example.test/" not in urls(sent)
+
+
+def test_probe_all_caps_the_hosts(monkeypatch):
+    fake_web(monkeypatch, {"https://app.example.test/": Page()})
+    out = probe.probe_all(ENRICHED, scope=UNSCOPED_CLI, max_hosts=1)
+    assert out["checked"] == 1 and out["skipped"] == 2
+
+
+def test_probe_all_shares_one_limiter_across_hosts_and_hops(monkeypatch):
+    fake_web(monkeypatch, {
+        "https://www.example.test/": redirect(301, "https://www.example.test/home"),
+        "https://www.example.test/home": Page(),
+        "https://app.example.test/": Page(),
+    })
+    limiter = CountingLimiter()
+    probe.probe_all(ENRICHED, scope=LAB, limiter=limiter)
+    assert limiter.slots == 3   # every hop of every host, dev never takes one
