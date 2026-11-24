@@ -2,7 +2,8 @@
 Approvals: active checks that an agent asks for over MCP, but that run only
 after a person's typed yes at a real terminal (issue #27 part B).
 
-    request()  (MCP: fingerprint_hosts / check_exposed_files / probe_hosts)
+    request()  (MCP: fingerprint_hosts / check_exposed_files / probe_hosts /
+               discover_content)
                records the tool and the hostnames asked for. Sends
                nothing, looks nothing up, returns an approval id.
     approve()  (terminal: `python monomi.py approve RID --scope FILE`)
@@ -28,7 +29,9 @@ rule ("same host only") and a hard cap instead of URLs; every URL is
 still checked against the scope and the approved hosts before it's sent.
 probe_hosts (v1.25) is the same kind: the homepage is fixed, its redirects
 aren't, so the rule ("only the approved hosts, only in scope") and the cap
-are what's approved.
+are what's approved. discover_content (v1.26) sends the same fixed list of
+paths to every host, so the plan shows the list once ("paths") instead of
+once per host, and describes the made-up calibration paths as a rule.
 
 Each approval is one JSON file, scans/approvals/<rid>.json, with every
 event in it (refusals too), so it's its own audit trail. "Used" is a
@@ -47,7 +50,7 @@ The gate is against agents that only have MCP tools.
 import os
 import sys
 
-from monomi import exposed, home, probe, research, scope
+from monomi import content, exposed, home, probe, research, scope
 from monomi.approvalcore import (APPROVAL_TTL, ALPHABET, RID, REQUEST_TTL,  # noqa: F401 (re-exported)
                                  ApprovalError, Store, expired as _expired, now_utc as _now, typed_yes)
 
@@ -81,6 +84,17 @@ TOOLS = {
                  "A redirect to another host here counts toward {host}'s cap"),
         "max_per_host": probe.MAX_REQUESTS,
     },
+    # v1.26: the same list on every host, shown once; the made-up paths that
+    # come first are random letters, so they're a rule, not URLs.
+    "discover_content": {
+        "fixed": lambda h: [],
+        "paths": [p for p, _ in content.PATHS],
+        "more": (f"first {content.CALIBRATION} made-up paths (random letters) on https://{{host}}, to learn "
+                 "what its not-found looks like; then each path in the list above, one GET each. "
+                 "http://{host} instead, once, only if HTTPS fails with a TLS error or is refused. A redirect "
+                 "is recorded, never followed, and no other host is ever asked"),
+        "max_per_host": content.MAX_REQUESTS,
+    },
 }
 
 
@@ -110,6 +124,10 @@ def plan_lines(tool: str, inside: list[str], outside: list[dict]) -> list[str]:
     spec = TOOLS[tool]
     out = [f"{tool}: {len(inside)} host(s) in scope, at most {spec['max_per_host']} GET request(s) each "
            f"({len(inside) * spec['max_per_host']} at most in total)"]
+    if "paths" in spec:
+        out.append(f"  The same {len(spec['paths'])} paths on every host ({{host}} is the host itself, "
+                   "{label} its first label):")
+        out += _wrapped(spec["paths"])
     for h in inside:
         out.append(f"  {h}")
         out += [f"      GET {url}" for url in spec["fixed"](h)]
@@ -118,6 +136,17 @@ def plan_lines(tool: str, inside: list[str], outside: list[dict]) -> list[str]:
         out.append(f"Not in scope, will get no request and no DNS lookup ({len(outside)}):")
         out += [f"  {o['host']}: {o['reason']}" for o in outside]
     return out
+
+
+def _wrapped(paths: list[str], width: int = 100) -> list[str]:
+    """The paths, several to a line, so a long list stays readable."""
+    lines, line = [], ""
+    for p in paths:
+        if line and len(line) + 2 + len(p) > width:
+            lines.append("      " + line)
+            line = ""
+        line = f"{line}  {p}" if line else p
+    return lines + (["      " + line] if line else [])
 
 
 def approve(rid: str, scope_path: str, research_path: str | None = None, *, ask=input, out=print,

@@ -624,7 +624,8 @@ def run(monkeypatch, tool, hosts, detail="summary", already_ran=None, scope_file
     return mcp_server.active_run(asked["approval_id"], detail=detail, already_ran=already_ran)
 
 
-@pytest.mark.parametrize("tool", ["fingerprint_hosts", "check_exposed_files", "probe_hosts"])
+@pytest.mark.parametrize("tool", ["fingerprint_hosts", "check_exposed_files", "probe_hosts",
+                                  "discover_content"])
 def test_an_active_tool_only_asks_sends_nothing_and_looks_nothing_up(monkeypatch, results_dir, tool):
     def boom(*args, **kwargs):
         raise AssertionError("DNS lookup ran before a person approved")
@@ -716,8 +717,9 @@ def test_fingerprint_never_suggests_itself(monkeypatch):
     assert "--fingerprint" not in flags(result)
     # app/www/down sit on the target's own IPs; having fingerprinted, the next
     # active step it points to is checking those live pages for exposed files
-    assert flags(result) == ["--ports", "--exposed-files"]
-    result = run(monkeypatch, "fingerprint_hosts", HOSTS, already_ran=["check_ports", "check_exposed_files"])
+    assert flags(result) == ["--ports", "--exposed-files", "--content"]
+    result = run(monkeypatch, "fingerprint_hosts", HOSTS,
+                 already_ran=["check_ports", "check_exposed_files", "discover_content"])
     assert flags(result) == []
 
 
@@ -1160,8 +1162,9 @@ def test_probe_summary_lists_blocked_redirects_and_json_labeled_html(monkeypatch
 def test_probe_suggests_exposed_files_but_never_itself(monkeypatch):
     fake_web(monkeypatch)
     result = run(monkeypatch, "probe_hosts", HOSTS)
-    assert flags(result) == ["--ports", "--exposed-files"]
-    result = run(monkeypatch, "probe_hosts", HOSTS, already_ran=["check_ports", "check_exposed_files"])
+    assert flags(result) == ["--ports", "--exposed-files", "--content"]
+    result = run(monkeypatch, "probe_hosts", HOSTS,
+                 already_ran=["check_ports", "check_exposed_files", "discover_content"])
     assert flags(result) == []
 
 
@@ -1194,3 +1197,118 @@ def test_probe_refuses_a_backslash_redirect_over_mcp(monkeypatch, results_dir):
     assert "https://app/" in sent and not any("evil" in u for u in sent)
     assert result["hosts"]["app"]["redirect_blocked_reason"] == "ambiguous_url"
     assert not any("evil" in entry["url"] for entry in read_log(results_dir))
+
+
+# --- discover_content (v1.26): a background job ---------------------------------
+
+class ContentPage:
+    def __init__(self, status=404, body=b"<html>nope</html>", headers=None):
+        self.status_code, self._body = status, body
+        self.headers = headers or {"Content-Type": "text/html"}
+
+    def iter_content(self, size):
+        yield self._body
+
+    def close(self):
+        pass
+
+
+def fake_content_web(monkeypatch, pages=None):
+    """DNS as in fake_web; app answers (pages, else 404), www never answers."""
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {
+        "app": {"ips": ["8.8.8.8"]}, "www": {"ips": ["8.8.4.4"]},
+        "intranet": {"ips": ["10.0.0.5"]}, "gone": {"ips": []}}})
+    monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(None))
+    sent = []
+
+    def get(url, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        sent.append(url)
+        if url.startswith(("https://www/", "http://www/")):
+            raise mcp_server.content.requests.ConnectTimeout("no answer")
+        return (pages or {}).get(url, ContentPage())
+    monkeypatch.setattr(mcp_server.content.requests, "get", get)
+    return sent
+
+
+def wait_for(job_id, seconds=20):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        status = mcp_server.active_status(job_id)
+        if status["status"] != "running":
+            return status
+        time.sleep(0.02)
+    raise AssertionError("the job never finished")
+
+
+@pytest.fixture
+def no_jobs(monkeypatch):
+    monkeypatch.setattr(mcp_server, "JOBS", {})
+
+
+def test_discover_content_runs_as_a_job_and_reports_what_it_found(monkeypatch, results_dir, no_jobs):
+    sent = fake_content_web(monkeypatch, {
+        "https://app/.git/HEAD": ContentPage(200, b"ref: refs/heads/main\n"),
+        "https://app/.env": ContentPage(200, b"A=1\nSECRET_KEY=do-not-keep-me\n"),
+        "https://app/admin": ContentPage(401, b"", {"WWW-Authenticate": "Basic"}),
+    })
+    started = run(monkeypatch, "discover_content", ["app", "www", "intranet", "gone"])
+    assert started["job_started"] and started["status"] == "running"
+    assert started["hosts"] == ["app", "www"] and started["not_requested"] == ["gone", "intranet"]
+    done = wait_for(started["job_id"])
+    assert done["status"] == "done", done
+    summary = done["summary"]
+    found = [(f["path"], f["severity"]) for f in summary["found"]]
+    assert found == [("/.env", "secrets"), ("/.git/HEAD", "source")]
+    assert [lead["path"] for lead in summary["leads"]] == ["/admin"]
+    assert summary["no_answer"] == ["www"]
+    assert "do-not-keep-me" not in json.dumps(done)
+    # every request was logged before it went out, and only to the approved hosts
+    log = [entry for entry in read_log(results_dir) if entry["event"] == "request"]
+    assert sorted(entry["url"] for entry in log) == sorted(sent)
+    assert done["requests_sent"] == summary["requests_sent"] == len(sent)
+    assert {u.split("/")[2] for u in sent} == {"app", "www"}
+    assert all(not u.startswith("http://www") for u in sent)   # a timeout gets no HTTP retry
+
+
+def test_no_other_active_check_starts_while_a_job_runs(monkeypatch, results_dir, no_jobs):
+    mcp_server.JOBS["20261123-190000-abcd-efgh"] = {"status": "running"}
+    claimed = []
+    monkeypatch.setattr(mcp_server.approvals, "claim", lambda rid: claimed.append(rid))
+    rid = mcp_server.fingerprint_hosts(["app"])["approval_id"]
+    with pytest.raises(mcp_server.ToolError, match="still running.*still unused"):
+        mcp_server.active_run(rid)
+    assert claimed == []   # refused before the claim: the approval can still be used later
+
+
+def test_a_job_that_crashes_ends_as_failed_with_the_reason(monkeypatch, results_dir, no_jobs):
+    fake_content_web(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(mcp_server.content, "check_all", boom)
+    started = run(monkeypatch, "discover_content", ["app"])
+    done = wait_for(started["job_id"])
+    assert done["status"] == "failed" and "disk full" in done["error"]
+    assert mcp_server.running_job() is None
+
+
+def test_a_job_lost_to_a_restart_shows_as_interrupted(results_dir, no_jobs):
+    job = {"job_id": "20261123-190000-abcd-efgh", "tool": "discover_content", "status": "running",
+           "started": "x", "finished": None, "requests_sent": 40, "paths_tried": 38, "paths_total": 155,
+           "max_requests": 159, "estimate_seconds": 159, "time_limit_seconds": 1800, "error": None}
+    mcp_server._save_job(job)
+    out = mcp_server.active_status(job["job_id"])
+    assert out["status"] == "interrupted" and "restarted" in out["error"] and out["requests_sent"] == 40
+
+
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "a/b", "", "x" * 81])
+def test_active_status_takes_only_a_job_id(bad):
+    with pytest.raises(mcp_server.ToolError, match="job_id"):
+        mcp_server.active_status(bad)
+
+
+def test_an_unknown_job_is_a_clean_error(results_dir, no_jobs):
+    with pytest.raises(mcp_server.ToolError, match="no job"):
+        mcp_server.active_status("20261123-190000-zzzz-zzzz")

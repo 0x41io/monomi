@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, saved
 from monomi.common import VERSION, is_hostname, now_utc
 from monomi.importers import spiderfoot, subfinder
-from monomi import (activelog, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate,
+from monomi import (activelog, content, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate,
                     history, home, internetdb, mcp_setup, paths, probe, rate, report, research,
                     scope, suggest, takeover, threatintel, ui)
 from monomi.ui import fail, good, info, warn
@@ -79,6 +79,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--probe", action="store_true",
                         help="ACTIVE: follow each live host's homepage through its redirects (every hop "
                              "scope-checked) and read the final page's title (turns on --enrich)")
+    parser.add_argument("--content", action="store_true",
+                        help=f"ACTIVE: content discovery: about {len(content.PATHS)} paths per live host "
+                             "(.git, .env, backups, debug pages, admin panels...); a file counts only when "
+                             "its content is the real thing (turns on --enrich)")
+    parser.add_argument("--wordlist", metavar="FILE",
+                        help="with --content: your own paths too (one per line, SecLists style), "
+                             "reported as leads only")
     parser.add_argument("--scope", metavar="FILE",
                         help="ACTIVE checks only reach hosts this scope file allows: one rule per "
                              "line, example.com, *.example.com (subdomains), !host (never); every "
@@ -629,13 +636,13 @@ class ActiveRun:
 
 
 # The ACTIVE checks: the only flags that send requests to the target itself.
-ACTIVE_FLAGS = "--fingerprint, --probe or --exposed-files"
+ACTIVE_FLAGS = "--fingerprint, --probe, --exposed-files or --content"
 
 
 def any_active(args) -> bool:
     """Is any ACTIVE check on? One place, so a new active check can't be
     left out of one of the places that ask."""
-    return bool(args.fingerprint or args.probe or args.exposed_files)
+    return bool(args.fingerprint or args.probe or args.exposed_files or args.content)
 
 
 def load_active_run(args, active_scope):
@@ -909,6 +916,57 @@ def run_takeover(results: dict) -> None:
         checked = report["checked"] - rest
         good(f"No takeover leads among {checked} hosts checked.")
     show_wildcard_takeover_note(results)
+
+
+SEVERITY_COLOR = {"secrets": ui.RED, "source": ui.YELLOW, "info": ui.WHITE}
+
+
+def run_content(results: dict, enrichment: dict, active_scope, active=None, extra=None) -> None:
+    """--content: content discovery on every live in-scope host (ACTIVE)."""
+    print()
+    per_host = content.max_requests(len(extra or []))
+    rate_note = f", at {active.limiter.rate:g}/s" if active and active.limiter.rate else ""
+    info(f"Content discovery: {len(content.PATHS) + len(extra or [])} paths per live host, "
+         f"at most {per_host} requests each{rate_note}. A file counts only when its content "
+         "is the real thing...")
+    allowed, out_of_scope = scope_hosts("--content", enrichment, active_scope)
+    active = active or ActiveRun()
+    cd = content.check_all(allowed, scope=active_scope, extra=extra,
+                           on_request=log_cli_request("--content", active_scope, active),
+                           limiter=active.limiter, research=active.research)
+    active.record(cd)
+    cd["out_of_scope"] = out_of_scope
+    results["content"] = cd
+    if cd["skipped"]:
+        warn(f"Only the first {content.MAX_HOSTS} hosts were checked ({cd['skipped']} skipped).")
+    print()
+    for host, r in sorted(cd["hosts"].items()):
+        # hosts, paths and locations come from the target: clean before printing
+        if r["scheme"] is None:
+            print(f"    {ui.safe(host)}  no answer over HTTPS" +
+                  (" or plain HTTP" if r["https_error"] else "") + ", so nothing else was sent")
+            continue
+        over = f" over plain HTTP (HTTPS failed: {r['https_error']})" if r["scheme"] == "http" else ""
+        print(f"    {ui.paint(ui.safe(host), ui.BOLD)}  {r['tried']} paths tried{over}, {r['requests']} requests")
+        for f in r["found"]:
+            tag = ui.paint(f["severity"], SEVERITY_COLOR[f["severity"]])
+            print(f"        {tag}  {ui.safe(f['path'])}: {ui.safe(f['what'])}")
+        for lead in r["leads"][:content.LEADS_SHOWN]:
+            extra_bit = (f" -> {ui.safe(lead['location'])} (not followed)" if lead.get("location")
+                         else f" ({lead['auth']} login)" if lead.get("auth") else "")
+            print(f"        {ui.paint('lead', ui.GREY)}  {ui.safe(lead['path'])}: {lead['status']}{extra_bit}")
+        if len(r["leads"]) > content.LEADS_SHOWN:
+            print(f"        ... and {len(r['leads']) - content.LEADS_SHOWN} more lead(s) in the saved scan")
+        if r["untrusted"]:
+            print(f"        {ui.paint('skipped', ui.GREY)}  a made-up path passed the "
+                  f"{', '.join(r['untrusted'])} check(s), so those weren't trusted here")
+        if r["stopped"]:
+            warn(f"{ui.safe(host)}: stopped early: {ui.safe(r['stopped'])}")
+    if cd["found"]:
+        good(f"{cd['found']} exposed file(s) and {cd['leads']} lead(s) across {cd['checked']} host(s).")
+    else:
+        good(f"No exposed files on the {cd['checked']} host(s) checked"
+             + (f"; {cd['leads']} lead(s) to look at." if cd["leads"] else "."))
 
 
 def show_wildcard_takeover_note(results: dict) -> None:
@@ -1385,6 +1443,17 @@ def main() -> int:
     active = load_active_run(args, active_scope)
     if active is None:
         return 1
+    # --wordlist: read and checked before anything is scanned, like --scope
+    extra_paths = None
+    if args.wordlist:
+        if not args.content:
+            info("--wordlist without --content: no path is requested, so it changes nothing.")
+        else:
+            try:
+                extra_paths = content.load_wordlist(args.wordlist)
+            except content.WordlistError as e:
+                fail(f"--wordlist: {e}.")
+                return 1
 
     if args.ports and not args.enrich:
         args.enrich = True  # Shodan lookups need IP addresses, which --enrich provides
@@ -1394,6 +1463,8 @@ def main() -> int:
         args.enrich = True  # same: we only check hosts that resolve to a public IP
     if args.probe and not args.enrich:
         args.enrich = True  # same: we only probe hosts that resolve to a public IP
+    if args.content and not args.enrich:
+        args.enrich = True  # same: content discovery only reaches hosts with a public IP
     if args.cves and not args.ports:
         warn("--cves only works together with --ports; ignoring it.")
 
@@ -1454,6 +1525,8 @@ def main() -> int:
             run_probe(results, data, active_scope, active)
         if args.exposed_files:
             run_exposed(results, data, active_scope, active)
+        if args.content:
+            run_content(results, data, active_scope, active, extra_paths)
     else:
         for sub in all_subs:
             print(f"    {sub}")

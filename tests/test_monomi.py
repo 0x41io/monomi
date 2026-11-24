@@ -674,7 +674,7 @@ def test_probe_turns_on_the_rate_limit(capsys):
 
 def test_rate_without_an_active_check_names_probe(capsys):
     cli.load_active_run(args_for("--rate", "2"), cli.scope.UNSCOPED_CLI)
-    assert "--fingerprint, --probe or --exposed-files" in capsys.readouterr().out
+    assert "--fingerprint, --probe, --exposed-files or --content" in capsys.readouterr().out
 
 
 def test_run_probe_uses_the_scope_and_logs_every_hop(monkeypatch, tmp_path, capsys, active_log):
@@ -781,3 +781,72 @@ def test_probe_progress_line_quotes_the_true_worst_case(monkeypatch, capsys, act
     assert f"at most {cli.probe.MAX_REQUESTS} per host" in capsys.readouterr().out
     from monomi import approvals
     assert cli.probe.MAX_REQUESTS == approvals.TOOLS["probe_hosts"]["max_per_host"] == 12
+
+
+# --- --content (v1.26) --------------------------------------------------------
+
+class ContentPage:
+    def __init__(self, status=404, body=b"<html>nope</html>", headers=None):
+        self.status_code, self._body = status, body
+        self.headers = headers or {"Content-Type": "text/html"}
+
+    def iter_content(self, size):
+        yield self._body
+
+    def close(self):
+        pass
+
+
+def fake_content_web(monkeypatch, pages):
+    """pages: {url: ContentPage}; any other URL gets a 404. Returns the URLs sent."""
+    from monomi import content
+    sent = []
+
+    def get(url, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        sent.append(url)
+        return pages.get(url, ContentPage())
+    monkeypatch.setattr(content.requests, "get", get)
+    return sent
+
+
+def test_run_content_stays_in_scope_logs_every_request_and_prints_findings(
+        monkeypatch, tmp_path, capsys, active_log):
+    s = cli.load_cli_scope(lab_file(tmp_path))
+    sent = fake_content_web(monkeypatch, {
+        "https://www.example.test/.git/HEAD": ContentPage(200, b"ref: refs/heads/main\n"),
+        "https://www.example.test/admin": ContentPage(401, b"", {"WWW-Authenticate": "Basic"}),
+    })
+    results = {}
+    cli.run_content(results, ENRICHED, s)
+    cd = results["content"]
+    assert {u.split("/")[2] for u in sent} == {"www.example.test", "example.test"}
+    assert [o["host"] for o in cd["out_of_scope"]] == ["dev.example.test", "evil.test"]
+    log = [json.loads(x) for x in active_log.read_text().splitlines()]
+    assert len([x for x in log if x["event"] == "request"]) == len(sent) == cd["requests"]
+    assert {x["tool"] for x in log} == {"--content"}
+    out = capsys.readouterr().out
+    assert "/.git/HEAD: a Git HEAD file (branch main)" in out
+    assert "/admin: 401 (Basic login)" in out
+    assert "1 exposed file(s) and 1 lead(s) across 2 host(s)." in out
+
+
+def test_content_turns_on_enrich_and_counts_as_active():
+    args = args_for("--content")
+    assert cli.any_active(args)
+
+
+def test_a_bad_wordlist_stops_before_anything_is_scanned(monkeypatch, tmp_path, capsys):
+    w = tmp_path / "w.txt"
+    w.write_text("admin\n../../etc/passwd\n")
+    monkeypatch.setattr(cli, "run_enrich", lambda *a, **k: (_ for _ in ()).throw(AssertionError("scanned")))
+    monkeypatch.setattr(cli.sys, "argv", ["monomi.py", "example.test", "--content", "--wordlist", str(w)])
+    assert cli.main() == 1
+    assert "--wordlist:" in capsys.readouterr().out
+
+
+def test_a_wordlist_without_content_changes_nothing(monkeypatch, tmp_path, capsys):
+    w = tmp_path / "w.txt"
+    w.write_text("admin\n")
+    args = args_for("--wordlist", str(w))
+    assert not cli.any_active(args)

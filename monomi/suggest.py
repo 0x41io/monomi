@@ -70,6 +70,12 @@ def next_checks(results: dict, cves_saved: bool = False) -> list[dict]:
         add("--exposed-files", "check_exposed_files",
             f"{_count(len(answered), 'host served', 'hosts served')} a real page: this checks whether "
             "any serve a public API spec (OpenAPI/Swagger) or a JavaScript source map", active=True)
+    if answered and "content" not in results:
+        from monomi import content
+        add("--content", "discover_content",
+            f"{_count(len(answered), 'host served', 'hosts served')} a real page: content discovery tries "
+            f"about {len(content.PATHS)} paths on each (an exposed .git or .env, backups, debug pages, "
+            "admin panels) and counts a file only when its content is the real thing", active=True)
     if "email" not in results:
         add("--email", "check_email_auth",
             f"not checked yet: whether someone can send email pretending to be {target} (DNS lookups only)")
