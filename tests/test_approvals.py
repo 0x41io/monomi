@@ -235,3 +235,16 @@ def test_cli_approve_has_no_yes_flag(monkeypatch, scope_file):
     monkeypatch.setattr(sys, "argv", ["monomi.py", "approve", "abcd-efgh", "--scope", scope_file, "--yes"])
     with pytest.raises(SystemExit):
         cli.main()
+
+
+def test_probe_plan_shows_homepage_redirect_rule_and_cap(scope_file):
+    req = approvals.request("probe_hosts", [f"www.{D}"], now=T0)
+    assert req["max_requests"] == 12
+    shown = []
+    approvals.approve(req["approval_id"], scope_file, ask=lambda q: "no", out=shown.append,
+                      interactive=lambda: True, now=T0)
+    text = " ".join(shown)
+    assert f"GET https://www.{D}/" in text and "at most 12" in text
+    # v1.25: before the yes, the person sees that redirects stay on the hosts they approve
+    assert f"followed only to www.{D} or another host in this approval" in text
+    assert "only if the scope allows it" in text and "never requested" in text

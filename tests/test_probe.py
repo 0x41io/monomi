@@ -153,7 +153,7 @@ def test_out_of_scope_host_gets_no_request_no_slot_and_no_log_line(monkeypatch):
 def test_redirect_out_of_scope_is_recorded_not_followed(monkeypatch, target):
     sent, limiter = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, target)}), CountingLimiter()
     r = probe.fetch_live("www.example.test", scope=LAB, limiter=limiter)
-    assert r["redirect_blocked"] == target
+    assert r["redirect_blocked"] == target and r["redirect_blocked_reason"] == "out_of_scope"
     assert r["status"] == 302 and r["final_url"] == "https://www.example.test/"
     assert r["title"] is None
     assert urls(sent) == ["https://www.example.test/"]  # the target was never requested
@@ -352,3 +352,47 @@ def test_probe_all_shares_one_limiter_across_hosts_and_hops(monkeypatch):
     limiter = CountingLimiter()
     probe.probe_all(ENRICHED, scope=LAB, limiter=limiter)
     assert limiter.slots == 3   # every hop of every host, dev never takes one
+
+
+# ---------- allowed_hosts: redirects stay on the hosts a person approved (MCP) ----------
+
+def test_redirect_to_an_unapproved_host_is_recorded_not_followed(monkeypatch):
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://shop.example.test/")})
+    r = probe.fetch_live("www.example.test", scope=LAB, allowed_hosts=["www.example.test"])
+    assert r["redirect_blocked"] == "https://shop.example.test/"   # in scope, but not approved
+    assert r["redirect_blocked_reason"] == "not_approved"
+    assert urls(sent) == ["https://www.example.test/"]
+
+
+def test_redirect_to_another_approved_host_is_followed(monkeypatch):
+    fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://SHOP.example.test./"),
+                           "https://SHOP.example.test./": Page(body=b"<title>Shop</title>")})
+    r = probe.fetch_live("www.example.test", scope=LAB,
+                         allowed_hosts=["WWW.example.test", "shop.example.test"])  # any spelling
+    assert r["title"] == "Shop" and r["redirect_blocked"] is None
+
+
+def test_scope_refusal_wins_over_approval(monkeypatch):
+    # dev is excluded by the scope: that's the reason given, even if it's "approved"
+    fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://dev.example.test/")})
+    r = probe.fetch_live("www.example.test", scope=LAB,
+                         allowed_hosts=["www.example.test", "dev.example.test"])
+    assert r["redirect_blocked_reason"] == "out_of_scope"
+
+
+def test_without_allowed_hosts_any_in_scope_host_is_followed(monkeypatch):
+    # the CLI: the scope file is the only limit
+    fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://shop.example.test/"),
+                           "https://shop.example.test/": Page()})
+    r = probe.fetch_live("www.example.test", scope=LAB)
+    assert r["final_url"] == "https://shop.example.test/" and r["redirect_blocked"] is None
+
+
+def test_probe_all_passes_allowed_hosts_to_every_host(monkeypatch):
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://shop.example.test/"),
+                                  "https://app.example.test/": Page()})
+    enrichment = {"hosts": {"www.example.test": {"ips": ["8.8.8.8"]},
+                            "app.example.test": {"ips": ["8.8.8.8"]}}}
+    out = probe.probe_all(enrichment, scope=LAB, allowed_hosts=["www.example.test", "app.example.test"])
+    assert out["hosts"]["www.example.test"]["redirect_blocked_reason"] == "not_approved"
+    assert "https://shop.example.test/" not in urls(sent)

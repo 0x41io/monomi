@@ -2,7 +2,7 @@
 Approvals: active checks that an agent asks for over MCP, but that run only
 after a person's typed yes at a real terminal (issue #27 part B).
 
-    request()  (MCP: fingerprint_hosts / check_exposed_files)
+    request()  (MCP: fingerprint_hosts / check_exposed_files / probe_hosts)
                records the tool and the hostnames asked for. Sends
                nothing, looks nothing up, returns an approval id.
     approve()  (terminal: `python monomi.py approve RID --scope FILE`)
@@ -26,6 +26,9 @@ if the HTTPS homepage fails the same way, v1.24), but the scripts
 and .map files come from the homepage itself, so the approval locks the
 rule ("same host only") and a hard cap instead of URLs; every URL is
 still checked against the scope and the approved hosts before it's sent.
+probe_hosts (v1.25) is the same kind: the homepage is fixed, its redirects
+aren't, so the rule ("only the approved hosts, only in scope") and the cap
+are what's approved.
 
 Each approval is one JSON file, scans/approvals/<rid>.json, with every
 event in it (refusals too), so it's its own audit trail. "Used" is a
@@ -44,7 +47,7 @@ The gate is against agents that only have MCP tools.
 import os
 import sys
 
-from monomi import exposed, home, research, scope
+from monomi import exposed, home, probe, research, scope
 from monomi.approvalcore import (APPROVAL_TTL, ALPHABET, RID, REQUEST_TTL,  # noqa: F401 (re-exported)
                                  ApprovalError, Store, expired as _expired, now_utc as _now, typed_yes)
 
@@ -63,6 +66,18 @@ TOOLS = {
                  f"up to {exposed.MAX_SCRIPTS} scripts the homepage loads from {{host}} itself, and up to "
                  f"{exposed.MAX_MAPS} .map files they name on {{host}}: never another host"),
         "max_per_host": exposed.MAX_REQUESTS,
+    },
+    # v1.25: one chain per host. Each redirect is one more GET, followed only
+    # to {host} or another host in this approval, and only if the scope
+    # allows it; anywhere else is recorded, never requested. Worst case:
+    # a full HTTPS chain fails on its last hop, then the HTTP chain runs.
+    "probe_hosts": {
+        "fixed": lambda h: [f"https://{h}/"],
+        "more": (f"the redirects it answers with, one GET each (up to {probe.MAX_REDIRECTS}), followed "
+                 "only to {host} or another host in this approval, and only if the scope allows it; "
+                 "a redirect anywhere else is recorded but never requested. If HTTPS fails with a "
+                 "TLS error or is refused: http://{host}/ once, and its redirects the same way"),
+        "max_per_host": 2 * (probe.MAX_REDIRECTS + 1),
     },
 }
 

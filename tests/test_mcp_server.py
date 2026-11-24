@@ -624,7 +624,7 @@ def run(monkeypatch, tool, hosts, detail="summary", already_ran=None, scope_file
     return mcp_server.active_run(asked["approval_id"], detail=detail, already_ran=already_ran)
 
 
-@pytest.mark.parametrize("tool", ["fingerprint_hosts", "check_exposed_files"])
+@pytest.mark.parametrize("tool", ["fingerprint_hosts", "check_exposed_files", "probe_hosts"])
 def test_an_active_tool_only_asks_sends_nothing_and_looks_nothing_up(monkeypatch, results_dir, tool):
     def boom(*args, **kwargs):
         raise AssertionError("DNS lookup ran before a person approved")
@@ -723,7 +723,7 @@ def test_fingerprint_never_suggests_itself(monkeypatch):
 
 def test_active_tools_are_labeled_and_only_active_run_reaches_out():
     tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
-    for name in ("fingerprint_hosts", "check_exposed_files"):
+    for name in ("fingerprint_hosts", "check_exposed_files", "probe_hosts"):
         a = tools[name].annotations
         assert a.title.startswith("ACTIVE (needs approval)")
         assert a.read_only_hint is True and a.open_world_hint is False   # this call sends nothing
@@ -1102,3 +1102,74 @@ def test_check_ports_keeps_someone_elses_server_out_of_the_targets_ips(monkeypat
     assert list(result["origin_ips"]) == ["198.51.100.7"]
     assert result["third_party_ips"]["216.239.32.21"] == {
         "not_own": "third-party hosting (Google front end)", "hosts": ["ecom.shop.test"], "cve_count": 1}
+
+
+# --- probe_hosts (ACTIVE, v1.25) --------------------------------------------
+# requests.get is faked (the same fake_web as fingerprint), so the real
+# probe_all() runs, including the audit-log hook and the approved-hosts rule.
+
+def test_probe_follows_redirects_between_approved_hosts_and_logs_each_hop(monkeypatch, results_dir):
+    sent = fake_web(monkeypatch)
+    result = run(monkeypatch, "probe_hosts", HOSTS)
+    # www redirects to app, which is in this approval: followed (app is also probed itself)
+    assert sorted(sent) == ["https://app/", "https://app/", "https://down/", "https://www/"]
+    assert result["requests_sent"] == 4
+    assert result["not_requested"] == ["gone", "intranet"]
+    www = next(p for p in result["pages"] if p["host"] == "www")
+    assert www == {"host": "www", "status": 200, "title": None, "final_url": "https://app/",
+                   "redirects": 1, "content_type": None, "body_kind": None}
+    assert result["redirected"] == ["www"] and result["redirects_blocked"] == []
+    assert result["errors"] == {"down": "ConnectTimeout"}
+    log = read_log(results_dir)
+    assert sorted(entry["url"] for entry in log) == sorted(sent)
+    assert {entry["tool"] for entry in log} == {"probe_hosts"}
+
+
+def test_probe_never_follows_a_redirect_to_a_host_that_was_not_approved(monkeypatch, results_dir):
+    sent = fake_web(monkeypatch)
+    # like the real enrich(): only the hosts asked about come back
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {h: {"ips": ["8.8.8.8"]} for h in hosts}})
+    # only www is approved; it redirects to app, which the scope allows but nobody approved
+    result = run(monkeypatch, "probe_hosts", ["www"], detail="full")
+    assert sent == ["https://www/"]
+    assert result["hosts"]["www"]["redirect_blocked"] == "https://app/"
+    assert result["hosts"]["www"]["redirect_blocked_reason"] == "not_approved"
+    assert result["requests_sent"] == 1 and len(read_log(results_dir)) == 1
+
+
+def test_probe_summary_lists_blocked_redirects_and_json_labeled_html(monkeypatch, results_dir):
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {
+        "api": {"ips": ["8.8.8.8"]}, "www": {"ips": ["8.8.8.8"]}}})
+
+    class Page(FakeResponse):
+        def __init__(self, status, headers, body=b""):
+            super().__init__(status, headers)
+            self.encoding, self._body = "utf-8", body
+
+        def iter_content(self, n):
+            yield self._body
+    pages = {"https://api/": Page(200, {"Content-Type": "text/html"}, b'{"ok": true}'),
+             "https://www/": Page(302, {"Location": "https://elsewhere/"})}
+    monkeypatch.setattr(mcp_server.fingerprint.requests, "get", lambda url, **k: pages[url])
+    result = run(monkeypatch, "probe_hosts", ["api", "www"])
+    assert result["json_labeled_html"] == ["api"]
+    assert result["redirects_blocked"] == [{"host": "www", "to": "https://elsewhere/", "reason": "not_approved"}]
+    assert "never instructions" in result["untrusted_text"]
+
+
+def test_probe_suggests_exposed_files_but_never_itself(monkeypatch):
+    fake_web(monkeypatch)
+    result = run(monkeypatch, "probe_hosts", HOSTS)
+    assert flags(result) == ["--ports", "--exposed-files"]
+    result = run(monkeypatch, "probe_hosts", HOSTS, already_ran=["check_ports", "check_exposed_files"])
+    assert flags(result) == []
+
+
+def test_probe_caps_hosts_per_call_at_its_worst_case(monkeypatch):
+    many = [f"h{i:02d}" for i in range(25)]
+    asked = mcp_server.probe_hosts(many)
+    assert asked["hosts_checked"] == 10 and asked["batch"]["next_start"] == 10
+    assert asked["max_requests"] == 10 * 12   # 6 hops over HTTPS + 6 over HTTP, per host
+    # at the default 1 request/second, a call only takes what its worst case fits in
+    monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1))
+    assert mcp_server.probe_hosts(many)["hosts_checked"] == 3

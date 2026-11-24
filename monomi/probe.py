@@ -23,7 +23,7 @@ import html
 import ipaddress
 import re
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -31,7 +31,7 @@ from monomi import rate as ratemod
 from monomi.common import now_utc
 from monomi.fingerprint import _retry_on_http
 from monomi.research import request_headers
-from monomi.scope import UNSCOPED_CLI, OutOfScope, check_url
+from monomi.scope import UNSCOPED_CLI, OutOfScope, check_url, normalize_host
 
 # Ceilings that keep the probe small and polite.
 MAX_HOSTS = 100          # hosts per run, like fingerprint
@@ -94,8 +94,8 @@ def _title(text: str) -> str | None:
     return title[:MAX_TITLE] or None
 
 
-def _record(host, start_url, final_url, status, chain, title, headers,
-            *, body_kind=None, redirect_blocked=None, hit_redirect_limit=False) -> dict:
+def _record(host, start_url, final_url, status, chain, title, headers, *, body_kind=None,
+            redirect_blocked=None, blocked_reason=None, hit_redirect_limit=False) -> dict:
     """One host's probe result. headers: already lowercased."""
     return {
         "host": host,
@@ -107,14 +107,17 @@ def _record(host, start_url, final_url, status, chain, title, headers,
         "content_type": headers.get("content-type"),  # what the server says the body is
         "body_kind": body_kind,                    # what it looked like when read; None = not read
         "headers": headers,
-        "redirect_blocked": redirect_blocked,      # where a redirect wanted to go outside scope
+        "redirect_blocked": redirect_blocked,      # where a redirect wanted to go, not followed
+        # why: "out_of_scope" (the scope file refuses it) or "not_approved"
+        # (another host than the ones a person approved; MCP only)
+        "redirect_blocked_reason": blocked_reason,
         "hit_redirect_limit": hit_redirect_limit,  # still redirecting after max_redirects hops
         "collected_at": now_utc(),
     }
 
 
 def fetch_live(host: str, timeout: int = 10, on_request=None, scheme: str = "https",
-               *, scope, limiter=ratemod.UNLIMITED, research=None,
+               *, scope, limiter=ratemod.UNLIMITED, research=None, allowed_hosts=None,
                max_redirects: int = MAX_REDIRECTS,
                max_body_bytes: int = MAX_BODY_BYTES) -> dict:
     """Follow scheme://host/ through its redirects to the final page and
@@ -125,6 +128,10 @@ def fetch_live(host: str, timeout: int = 10, on_request=None, scheme: str = "htt
     scope.OutOfScope and nothing is sent. A LATER hop that leaves scope is
     never requested: it's kept in "redirect_blocked" and the redirect itself
     becomes the final response.
+    allowed_hosts (MCP): the hosts a person approved. A redirect to any
+    other host is never requested, even if the scope allows it, so an
+    approval only ever touches the hosts that were shown before the yes.
+    None (the CLI) means any host the scope allows.
     on_request(host, url, scope_rule), if given, is called right before each
     request (it writes the audit log), once per hop.
     limiter and research: as in fingerprint.fetch_headers. Every hop takes
@@ -136,6 +143,8 @@ def fetch_live(host: str, timeout: int = 10, on_request=None, scheme: str = "htt
     start_url = f"{scheme}://{host}/"
     url = start_url
     chain = []
+    if allowed_hosts is not None:
+        allowed_hosts = {normalize_host(h) for h in allowed_hosts} - {None}
     for hop in range(max_redirects + 1):
         rule = check_url(scope, url)  # raises OutOfScope: no slot, no log line, no request
         limiter.wait()
@@ -158,11 +167,17 @@ def fetch_live(host: str, timeout: int = 10, on_request=None, scheme: str = "htt
             if redirecting and hop < max_redirects:
                 target = urljoin(url, location)  # also turns "/login" into a full URL
                 chain.append({"status": status, "from": url, "to": target})
+                blocked = None
                 try:
                     check_url(scope, target)
                 except OutOfScope:
+                    blocked = "out_of_scope"
+                if not blocked and allowed_hosts is not None \
+                        and normalize_host(urlparse(target).hostname) not in allowed_hosts:
+                    blocked = "not_approved"
+                if blocked:
                     return _record(host, start_url, url, status, chain, None, headers,
-                                   redirect_blocked=target)
+                                   redirect_blocked=target, blocked_reason=blocked)
                 url = target
                 continue
             # The final response: a page, an error, or a redirect we ran out
@@ -175,7 +190,7 @@ def fetch_live(host: str, timeout: int = 10, on_request=None, scheme: str = "htt
 
 
 def probe_host(host: str, timeout: int = 10, on_request=None, *, scope,
-               limiter=ratemod.UNLIMITED, research=None,
+               limiter=ratemod.UNLIMITED, research=None, allowed_hosts=None,
                max_redirects: int = MAX_REDIRECTS,
                max_body_bytes: int = MAX_BODY_BYTES):
     """fetch_live() that never crashes: returns (host, record, error, requests sent).
@@ -199,6 +214,7 @@ def probe_host(host: str, timeout: int = 10, on_request=None, *, scope,
             on_request(h, url, rule)
 
     options = {"scope": scope, "limiter": limiter, "research": research,
+               "allowed_hosts": allowed_hosts,
                "max_redirects": max_redirects, "max_body_bytes": max_body_bytes}
     try:
         return host, fetch_live(host, timeout, counted, "https", **options), None, sent
@@ -218,12 +234,13 @@ def probe_host(host: str, timeout: int = 10, on_request=None, *, scope,
 
 def probe_all(enrichment: dict, workers: int = 8, on_request=None,
               max_hosts: int = MAX_HOSTS, timeout: int = 10, *, scope,
-              limiter=ratemod.UNLIMITED, research=None) -> dict:
+              limiter=ratemod.UNLIMITED, research=None, allowed_hosts=None) -> dict:
     """Probe every host from --enrich that has a public IP (like fingerprint_all).
 
     scope is required: every hop of every host is checked against it again,
     right before its request is sent. limiter: one for the whole run, so
-    --rate is a total across threads and hops. on_request, max_hosts and
+    --rate is a total across threads and hops. allowed_hosts: see
+    fetch_live (MCP passes the approved hosts). on_request, max_hosts and
     timeout: as in fingerprint_all.
     Returns {"hosts": {host: record}, "checked", "requests", "errors",
     "skipped"}. "requests" counts every request sent (hops and HTTP retries
@@ -238,7 +255,7 @@ def probe_all(enrichment: dict, workers: int = 8, on_request=None,
 
     def one(host):
         return probe_host(host, timeout=timeout, on_request=on_request, scope=scope,
-                          limiter=limiter, research=research)
+                          limiter=limiter, research=research, allowed_hosts=allowed_hosts)
 
     found, errors, sent = {}, {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:

@@ -754,3 +754,20 @@ def test_one_limiter_is_shared_by_all_three_active_checks(monkeypatch, active_lo
     cli.run_probe({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
     cli.run_exposed({}, ENRICHED, cli.scope.UNSCOPED_CLI, run)
     assert seen[0] is seen[1] is seen[2] is run.limiter
+
+
+@pytest.mark.parametrize("page, reason", [
+    (ProbePage(headers={"Content-Type": "application/json"}, body=b"{}"), "application/json, not read"),
+    (ProbePage(headers={}, body=b""), "no content type, not read"),
+    (ProbePage(body=b'{"ok": 1}'), "JSON"),
+    (ProbePage(body=b""), "empty page"),
+    (ProbePage(body=b"<html><body>hi</body></html>"), "none in the page"),
+    (ProbePage(body=b"hello"), "not HTML"),
+    (ProbePage(302, {"Location": "https://evil.test/"}), "redirect not followed"),
+])
+def test_no_title_always_says_why(monkeypatch, tmp_path, capsys, active_log, page, reason):
+    # like the lab's notes app: "(no title)" alone left you guessing
+    s = cli.load_cli_scope(lab_file(tmp_path, "example.test\n"))
+    fake_probe_web(monkeypatch, {"https://example.test/": page})
+    cli.run_probe({}, ENRICHED, s)
+    assert f"example.test  [{page.status_code}]  (no title: {reason})" in capsys.readouterr().out

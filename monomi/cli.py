@@ -717,6 +717,17 @@ def run_fingerprint(results: dict, enrichment: dict, active_scope, active=None) 
         good(f"All {pages} hosts that served a page have the checked security headers.")
 
 
+def no_title_reason(r: dict) -> str:
+    """Why a probed page has no title, so "(no title)" is never a mystery:
+    the body wasn't read (and what the server said it was), or what it was."""
+    if r["redirect_blocked"] or r["hit_redirect_limit"]:
+        return "redirect not followed"
+    if r["body_kind"] is None:
+        return f"{r['content_type'] or 'no content type'}, not read"
+    return {"json": "JSON", "empty": "empty page", "html": "none in the page",
+            "other": "not HTML"}[r["body_kind"]]
+
+
 def run_probe(results: dict, enrichment: dict, active_scope, active=None) -> None:
     """--probe: follow each live host's homepage through its redirects and read the
     final page's title (ACTIVE: one request per hop)."""
@@ -737,14 +748,17 @@ def run_probe(results: dict, enrichment: dict, active_scope, active=None) -> Non
     print()
     for host, r in sorted(pr["hosts"].items()):
         # titles, URLs and content types come from the target: clean them first
-        title = ui.safe(r["title"]) if r["title"] else ui.paint("(no title)", ui.GREY)
+        title = (ui.safe(r["title"]) if r["title"]
+                 else ui.paint(f"(no title: {ui.safe(no_title_reason(r))})", ui.GREY))
         line = f"    {ui.safe(host)}  [{r['status']}]  {title}"
         if r["chain"]:
             line += f"  -> {ui.safe(r['final_url'])} ({len(r['chain'])} redirect(s))"
         print(line)
         notes = []
         if r["redirect_blocked"]:
-            notes.append(f"redirect leaves scope, not followed: {ui.safe(r['redirect_blocked'])}")
+            why = ("leaves the approved hosts" if r["redirect_blocked_reason"] == "not_approved"
+                   else "leaves scope")
+            notes.append(f"redirect {why}, not followed: {ui.safe(r['redirect_blocked'])}")
         if r["hit_redirect_limit"]:
             notes.append(f"still redirecting after {probe.MAX_REDIRECTS} hops, stopped")
         if r["body_kind"] == "json":
