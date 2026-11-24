@@ -710,7 +710,7 @@ def test_run_probe_flags_blocked_redirects_and_mislabeled_json(monkeypatch, tmp_
     out = capsys.readouterr().out
     assert "redirect leaves scope, not followed: https://evil.test/" in out
     assert "body is JSON but labeled text/html" in out
-    assert "1 host(s) redirect outside scope (not followed): www.example.test" in out
+    assert "1 host(s) had a redirect Monomi refused to follow: www.example.test" in out
 
 
 def test_run_probe_cleans_target_text_before_printing(monkeypatch, capsys, active_log):
@@ -771,3 +771,13 @@ def test_no_title_always_says_why(monkeypatch, tmp_path, capsys, active_log, pag
     fake_probe_web(monkeypatch, {"https://example.test/": page})
     cli.run_probe({}, ENRICHED, s)
     assert f"example.test  [{page.status_code}]  (no title: {reason})" in capsys.readouterr().out
+
+
+def test_probe_progress_line_quotes_the_true_worst_case(monkeypatch, capsys, active_log):
+    # v1.25 field run: it said "at most 6 per host", but the HTTP retry can double that
+    monkeypatch.setattr(cli.probe, "probe_all", lambda e, **k:
+                        {"hosts": {}, "checked": 0, "requests": 0, "errors": {}, "skipped": 0})
+    cli.run_probe({}, ENRICHED, cli.scope.UNSCOPED_CLI)
+    assert f"at most {cli.probe.MAX_REQUESTS} per host" in capsys.readouterr().out
+    from monomi import approvals
+    assert cli.probe.MAX_REQUESTS == approvals.TOOLS["probe_hosts"]["max_per_host"] == 12

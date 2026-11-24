@@ -328,3 +328,51 @@ def test_split_sorts_hosts_with_reasons():
 
 def test_split_unscoped_keeps_everything():
     assert scope.split(UNSCOPED_CLI, ["a.test", "b.test"]) == (["a.test", "b.test"], [])
+
+
+# --- v1.25 review: the host checked is the host requests connects to ---------
+# These run real requests/urllib3 URL parsing (nothing faked): a fake would hide
+# exactly the parser disagreement this is about.
+
+def connects_to(url):
+    """Where requests would really open a connection for this URL."""
+    import requests
+    from urllib3.util import parse_url
+    return parse_url(requests.Request("GET", url).prepare().url).host
+
+
+@pytest.mark.parametrize("url", [
+    f"http://evil.test\\@www.{D}/",          # urlparse: www.lab; requests: evil.test
+    f"https://evil.test\\@www.{D}/x.js",
+    f"https://evil.test\\\\@www.{D}/",
+])
+@pytest.mark.parametrize("which", ["scoped", "unscoped"])
+def test_a_url_the_parsers_read_differently_is_refused_in_every_mode(url, which):
+    assert connects_to(url) == "evil.test"              # the trick is real...
+    with pytest.raises(scope.OutOfScope, match="one clear host"):   # ...and refused
+        scope.check_url(LAB if which == "scoped" else UNSCOPED_CLI, url)
+
+
+@pytest.mark.parametrize("url, host", [
+    (f"https://www.{D}/", f"www.{D}"),
+    (f"http://WWW.{D}.:8080/x", f"www.{D}"),            # case, trailing dot, port
+    (f"https://www.{D}@evil.test/", "evil.test"),       # userinfo: both parsers agree
+    (f"https://evil.test:@www.{D}/", f"www.{D}"),
+    ("https:///x", None), ("not a url", None), (None, None),
+])
+def test_request_host_is_the_host_requests_connects_to(url, host):
+    assert scope.request_host(url) == host
+
+
+def test_check_url_matches_the_connected_host_not_the_named_one():
+    # userinfo spelled to look in scope still connects to evil.test: refused by the scope
+    with pytest.raises(scope.OutOfScope, match="evil.test: out of scope"):
+        scope.check_url(LAB, f"https://www.{D}@evil.test/")
+
+
+@pytest.mark.parametrize("url", [f"ftp://www.{D}/", f"file://www.{D}/etc/passwd",
+                                 "javascript:alert(1)", f"gopher://www.{D}/"])
+@pytest.mark.parametrize("which", ["scoped", "unscoped"])
+def test_only_http_and_https_are_ever_sent(url, which):
+    with pytest.raises(scope.OutOfScope, match="only send http"):
+        scope.check_url(LAB if which == "scoped" else UNSCOPED_CLI, url)

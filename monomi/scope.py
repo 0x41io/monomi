@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import requests
+from urllib3.util import parse_url
 
 # One DNS label: letters, digits, hyphens (not at either end), underscores,
 # 1-63 characters. Same rule as mcp_server.LABEL_RE.
@@ -262,6 +263,32 @@ def from_bytes(data: bytes, path: str | None = None) -> Scope:
     return Scope(path, digest, rules, rejected)
 
 
+def request_host(url) -> str | None:
+    """The host an HTTP request for this URL would really connect to, the
+    way `requests` reads it (lowercase, no trailing dot), or None if it
+    couldn't send one (no host, not a hostname, an unparseable URL).
+
+    Why not just urlparse(url).hostname: the two parsers can disagree. For
+    "http://evil.test\\@good.test/" urlparse says good.test while requests
+    connects to evil.test (v1.25 review). Anything deciding where a request
+    may go must ask what will actually be connected to."""
+    if not isinstance(url, str):
+        return None
+    try:
+        host = parse_url(requests.Request("GET", url).prepare().url).host
+    except (requests.RequestException, ValueError):
+        return None
+    return normalize_host(host) if host else None
+
+
+def named_host(url) -> str | None:
+    """The host the URL names as urlparse reads it (normalized), or None."""
+    try:
+        return normalize_host(urlparse(url).hostname)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def check_url(scope, url: str) -> str | None:
     """The last check before an ACTIVE request goes out: is this URL's host
     in scope? Returns the rule that allowed it (None for UNSCOPED_CLI) or
@@ -270,18 +297,29 @@ def check_url(scope, url: str) -> str | None:
     The host is read from the URL itself, never from a separate argument:
     this check exists to catch bugs, so it doesn't trust the caller's label.
     `scope` must be a Scope or UNSCOPED_CLI; anything else (None, a typo,
-    a forgotten argument passed through) is a TypeError, never a pass."""
+    a forgotten argument passed through) is a TypeError, never a pass.
+
+    Since v1.25 the host checked is the one `requests` will connect to, and
+    a URL whose host two parsers read differently is refused outright, in
+    every mode (UNSCOPED_CLI too): a URL that hides where it goes is never
+    sent. Before v1.25 a target could slip a request past the scope with a
+    backslash ("http://evil.test\\@good.test/")."""
+    if scope is not UNSCOPED_CLI and not isinstance(scope, Scope):
+        raise TypeError(f"scope must be a Scope or scope.UNSCOPED_CLI, not {scope!r}")
+    # Every active check speaks HTTP: anything else (ftp:, file:...) is
+    # refused here, before it can take a --rate slot or a log line.
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        shown = url[:120] if isinstance(url, str) else repr(url)
+        raise OutOfScope(f"{shown!r}: refused, active checks only send http:// and https://")
+    real = request_host(url)
+    if real is None or named_host(url) != real:
+        shown = url[:120] if isinstance(url, str) else repr(url)
+        raise OutOfScope(f"{shown!r}: refused, it doesn't name one clear host to connect to")
     if scope is UNSCOPED_CLI:
         return None
-    if not isinstance(scope, Scope):
-        raise TypeError(f"scope must be a Scope or scope.UNSCOPED_CLI, not {scope!r}")
-    try:
-        host = urlparse(url).hostname
-    except ValueError:
-        host = None
-    m = scope.match(host)
+    m = scope.match(real)
     if not m.allowed:
-        raise OutOfScope(f"{host or url}: out of scope ({m.reason})")
+        raise OutOfScope(f"{real}: out of scope ({m.reason})")
     return m.rule
 
 

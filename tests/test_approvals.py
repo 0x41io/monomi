@@ -246,5 +246,6 @@ def test_probe_plan_shows_homepage_redirect_rule_and_cap(scope_file):
     text = " ".join(shown)
     assert f"GET https://www.{D}/" in text and "at most 12" in text
     # v1.25: before the yes, the person sees that redirects stay on the hosts they approve
-    assert f"followed only to www.{D} or another host in this approval" in text
+    assert f"followed only to www.{D} or another host in this approval that has a public IP" in text
     assert "only if the scope allows it" in text and "never requested" in text
+    assert "port 80 or 443" in text and f"counts toward www.{D}'s cap" in text

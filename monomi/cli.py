@@ -732,8 +732,8 @@ def run_probe(results: dict, enrichment: dict, active_scope, active=None) -> Non
     """--probe: follow each live host's homepage through its redirects and read the
     final page's title (ACTIVE: one request per hop)."""
     print()
-    info("Probing live pages (active: one request per redirect hop, at most "
-         f"{probe.MAX_REDIRECTS + 1} per host)...")
+    info("Probing live pages (active: the homepage plus one request per redirect, at most "
+         f"{probe.MAX_REQUESTS} per host if HTTPS fails and it retries over plain HTTP)...")
     allowed, out_of_scope = scope_hosts("--probe", enrichment, active_scope)
     active = active or ActiveRun()
     pr = probe.probe_all(allowed, scope=active_scope,
@@ -756,8 +756,7 @@ def run_probe(results: dict, enrichment: dict, active_scope, active=None) -> Non
         print(line)
         notes = []
         if r["redirect_blocked"]:
-            why = ("leaves the approved hosts" if r["redirect_blocked_reason"] == "not_approved"
-                   else "leaves scope")
+            why = probe.BLOCK_REASONS[r["redirect_blocked_reason"]]
             notes.append(f"redirect {why}, not followed: {ui.safe(r['redirect_blocked'])}")
         if r["hit_redirect_limit"]:
             notes.append(f"still redirecting after {probe.MAX_REDIRECTS} hops, stopped")
@@ -774,7 +773,7 @@ def run_probe(results: dict, enrichment: dict, active_scope, active=None) -> Non
          + f" {pr['requests']} request(s) sent.")
     blocked = sorted(h for h, r in pr["hosts"].items() if r["redirect_blocked"])
     if blocked:
-        warn(f"{len(blocked)} host(s) redirect outside scope (not followed): {', '.join(blocked)}")
+        warn(f"{len(blocked)} host(s) had a redirect Monomi refused to follow: {', '.join(blocked)}")
     if pr["errors"]:
         info(f"{len(pr['errors'])} host(s) didn't answer (timeouts, TLS errors, refused).")
 

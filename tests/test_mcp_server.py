@@ -1173,3 +1173,24 @@ def test_probe_caps_hosts_per_call_at_its_worst_case(monkeypatch):
     # at the default 1 request/second, a call only takes what its worst case fits in
     monkeypatch.setattr(mcp_server, "LIMITER", mcp_server.rate.Limiter(1))
     assert mcp_server.probe_hosts(many)["hosts_checked"] == 3
+
+
+def test_probe_never_reaches_an_approved_host_without_a_public_ip(monkeypatch, results_dir):
+    # v1.25 review #5: intranet is approved but resolves to 10.0.0.5; app redirects to it
+    sent = fake_web(monkeypatch)
+    monkeypatch.setattr(mcp_server, "enrich", lambda hosts: {"hosts": {   # like the real enrich()
+        "app": {"ips": ["8.8.8.8"]}, "intranet": {"ips": ["10.0.0.5"], "private_ips": ["10.0.0.5"]}}})
+    monkeypatch.setitem(FAKE_SITES, "https://app/", FakeResponse(302, {"Location": "https://intranet/"}))
+    result = run(monkeypatch, "probe_hosts", ["app", "intranet"], detail="full")
+    assert sent == ["https://app/"]
+    assert result["hosts"]["app"]["redirect_blocked_reason"] == "not_approved"
+
+
+def test_probe_refuses_a_backslash_redirect_over_mcp(monkeypatch, results_dir):
+    # the critical review finding, through the whole MCP path: never sent, never logged
+    sent = fake_web(monkeypatch)
+    monkeypatch.setitem(FAKE_SITES, "https://app/", FakeResponse(302, {"Location": "http://evil.test\\@www/"}))
+    result = run(monkeypatch, "probe_hosts", ["app", "www"], detail="full")
+    assert "https://app/" in sent and not any("evil" in u for u in sent)
+    assert result["hosts"]["app"]["redirect_blocked_reason"] == "ambiguous_url"
+    assert not any("evil" in entry["url"] for entry in read_log(results_dir))

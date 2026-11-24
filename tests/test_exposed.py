@@ -411,3 +411,47 @@ def test_check_all_returns_coverage_for_every_host_contacted(monkeypatch):
     fake_site(monkeypatch, {"https://pub/": Resp(body=b"<html></html>")})
     out = exposed.check_all({"hosts": {"pub": {"ips": ["8.8.8.8"]}}}, scope=UNSCOPED_CLI)
     assert out["coverage"]["pub"]["homepage"] == 200
+
+
+# ---------- v1.25 review: a backslash in a script or map URL (released since v1.11.1) ----------
+
+def test_backslash_script_and_map_urls_never_count_as_this_host():
+    html = '<script src="https://evil.test\\@lab/x.js"></script><script src="/ok.js"></script>'
+    assert exposed._same_host_scripts(html, "https://lab/", "lab") == ["https://lab/ok.js"]
+    js = {"url": "https://lab/ok.js", "headers": {"sourcemap": "https://evil.test\\@lab/b.map"},
+          "body": b"//# sourceMappingURL=https://evil.test\\@lab/a.map"}
+    assert exposed._map_urls(js, "lab") == []
+
+
+def test_a_broken_url_in_the_page_is_skipped_not_a_crash():
+    html = '<script src="https://[::1/x.js"></script><script src="/ok.js"></script>'
+    assert exposed._same_host_scripts(html, "https://lab/", "lab") == ["https://lab/ok.js"]
+    js = {"url": "https://lab/ok.js", "headers": {"sourcemap": "http://[::1/a.map"}, "body": b""}
+    assert exposed._map_urls(js, "lab") == []
+
+
+def test_check_all_only_ever_connects_to_the_host_being_checked(monkeypatch):
+    # end to end with real URL parsing: the page links a backslash script
+    from urllib3.util import parse_url
+    contacted = []
+
+    class Page:
+        def __init__(self, status=200, ctype="text/html", body=b""):
+            self.status_code, self.headers, self._body = status, {"Content-Type": ctype}, body
+            self.encoding, self.url = "utf-8", ""
+
+        def iter_content(self, n):
+            yield self._body
+
+        def close(self):
+            pass
+
+    def get(url, **kwargs):
+        contacted.append(parse_url(requests.Request("GET", url).prepare().url).host)
+        if url == "https://good.lab.test/":
+            return Page(body=b'<script src="https://evil.test\\@good.lab.test/x.js"></script>')
+        return Page(404, "text/plain")
+    monkeypatch.setattr(exposed.requests, "get", get)
+    exposed.check_all({"hosts": {"good.lab.test": {"ips": ["8.8.8.8"]}}},
+                      scope=scope.from_bytes(b"good.lab.test\n"))
+    assert contacted and set(contacted) == {"good.lab.test"}

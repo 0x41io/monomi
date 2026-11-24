@@ -113,11 +113,13 @@ def test_non_html_page_body_is_not_read(monkeypatch):
 
 
 def test_big_page_is_read_only_up_to_the_cap(monkeypatch):
+    # v1.25 review: 16384 hid the overshoot (a multiple of the chunk size). The
+    # real guarantee: reading stops within one chunk of the cap.
     big = Page(body=b"<title>Top</title>" + b"x" * 500_000)
     fake_web(monkeypatch, {"https://big.example.test/": big})
-    r = probe.fetch_live("big.example.test", scope=LAB, max_body_bytes=16384)
+    r = probe.fetch_live("big.example.test", scope=LAB, max_body_bytes=10000)
     assert r["title"] == "Top"
-    assert big.read_bytes <= 16384
+    assert 10000 <= big.read_bytes < 10000 + probe.CHUNK
 
 
 def test_redirect_loop_stops_at_the_limit(monkeypatch):
@@ -396,3 +398,178 @@ def test_probe_all_passes_allowed_hosts_to_every_host(monkeypatch):
     out = probe.probe_all(enrichment, scope=LAB, allowed_hosts=["www.example.test", "app.example.test"])
     assert out["hosts"]["www.example.test"]["redirect_blocked_reason"] == "not_approved"
     assert "https://shop.example.test/" not in urls(sent)
+
+
+# ---------- v1.25 review: every redirect goes through _refuse_hop ----------
+# The scope check and the hop checks run for real here (real requests/urllib3
+# URL parsing); only requests.get is faked. connects_to() is where requests
+# would really connect: every URL actually sent must be in scope.
+
+def connects_to(url):
+    from urllib3.util import parse_url
+    return parse_url(requests.Request("GET", url).prepare().url).host
+
+
+def assert_only_in_scope_hosts_contacted(sent):
+    for url, _ in sent:
+        assert LAB.match(connects_to(url)).allowed, f"{url} reached {connects_to(url)}"
+
+
+def test_backslash_redirect_never_leaves_scope_or_the_approval(monkeypatch):
+    # the critical finding: urlparse says www.example.test, requests connects to evil.test
+    target = "http://evil.test\\@www.example.test/"
+    assert connects_to(target) == "evil.test"
+    for allowed in (None, ["www.example.test"]):
+        sent = fake_web(monkeypatch, {"https://app.example.test/": redirect(302, target)})
+        r = probe.fetch_live("app.example.test", scope=LAB, allowed_hosts=allowed)
+        assert r["redirect_blocked_reason"] == "ambiguous_url"
+        assert urls(sent) == ["https://app.example.test/"]
+
+
+@pytest.mark.parametrize("location, reason", [
+    ("http://evil.test\\@www.example.test/", "ambiguous_url"),
+    ("https://www.example.test@evil.test/", "out_of_scope"),     # connects to evil.test
+    ("//evil.test/x", "out_of_scope"),
+    ("https://www.example.test:8443/", "other_port"),
+    ("https://www.example.test:99999/", "invalid_url"),
+    ("ftp://www.example.test/", "unsupported_url"),
+    ("javascript:alert(1)", "unsupported_url"),
+    ("file:///etc/passwd", "unsupported_url"),
+    ("http://[::1/", "invalid_url"),                             # urljoin itself raises
+    ("https://café.example.test/", "ambiguous_url"),             # IDN: parsers disagree
+    ("https://8.8.8.8/", "out_of_scope"),                        # the scope has no IPs
+    ("https://dev.example.test/", "out_of_scope"),
+])
+def test_tricky_redirects_are_refused_with_a_reason(monkeypatch, location, reason):
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, location)})
+    r = probe.fetch_live("www.example.test", scope=LAB)
+    assert r["redirect_blocked_reason"] == reason
+    assert r["chain"] == [] and r["final_url"] == "https://www.example.test/"
+    assert urls(sent) == ["https://www.example.test/"]
+    assert reason in probe.BLOCK_REASONS
+
+
+@pytest.mark.parametrize("location", ["/login", "https://shop.example.test/", "http://www.example.test/a",
+                                      "https://SHOP.example.test./", "https://www.example.test:443/"])
+def test_ordinary_redirects_are_followed_and_stay_in_scope(monkeypatch, location):
+    pages = {"https://www.example.test/": redirect(302, location)}
+    sent = fake_web(monkeypatch, pages)
+    from urllib.parse import urljoin
+    pages[urljoin("https://www.example.test/", location)] = Page(body=b"<title>ok</title>")
+    r = probe.fetch_live("www.example.test", scope=LAB)
+    assert r["title"] == "ok" and len(r["chain"]) == 1 and r["redirect_blocked"] is None
+    assert_only_in_scope_hosts_contacted(sent)
+
+
+def test_a_malformed_location_never_crashes_the_run(monkeypatch):
+    fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "http://[::1/"),
+                           "https://app.example.test/": Page(body=b"<title>App</title>")})
+    out = probe.probe_all({"hosts": {"www.example.test": {"ips": ["8.8.8.8"]},
+                                     "app.example.test": {"ips": ["8.8.8.8"]}}}, scope=LAB)
+    assert out["hosts"]["www.example.test"]["redirect_blocked_reason"] == "invalid_url"
+    assert out["hosts"]["app.example.test"]["title"] == "App"   # the other host's result survives
+
+
+def test_unsupported_redirect_takes_no_slot_no_log_line_and_no_count(monkeypatch):
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "ftp://www.example.test/")})
+    limiter, logged = CountingLimiter(), []
+    host, rec, err, n = probe.probe_host("www.example.test", scope=LAB, limiter=limiter,
+                                         on_request=lambda *a: logged.append(a))
+    assert rec["redirect_blocked_reason"] == "unsupported_url"
+    assert n == 1 == len(logged) == len(sent) == limiter.slots   # only the homepage
+
+
+# ---------- private and local addresses (review #4) ----------
+
+@pytest.mark.parametrize("location", ["http://127.0.0.1/admin", "http://169.254.169.254/latest/meta-data",
+                                      "http://192.168.1.1/", "http://10.0.0.5:80/", "http://[::1]/"])
+def test_unscoped_redirect_to_a_private_ip_is_refused(monkeypatch, location):
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, location)})
+    r = probe.fetch_live("www.example.test", scope=UNSCOPED_CLI)
+    assert r["redirect_blocked_reason"] in ("private_address", "invalid_url")
+    assert urls(sent) == ["https://www.example.test/"]
+
+
+def test_a_name_that_resolves_privately_is_refused(monkeypatch):
+    monkeypatch.setattr(probe, "RESOLVE", lambda host: ["93.184.216.34", "10.1.2.3"]
+                        if host == "intranet.example.test" else ["93.184.216.34"])
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://intranet.example.test/")})
+    r = probe.fetch_live("www.example.test", scope=LAB)
+    assert r["redirect_blocked_reason"] == "private_address"
+    assert urls(sent) == ["https://www.example.test/"]
+
+
+def test_a_name_that_doesnt_resolve_is_not_requested(monkeypatch):
+    def nxdomain(host):
+        raise OSError("no such name")
+    monkeypatch.setattr(probe, "RESOLVE", nxdomain)
+    sent = fake_web(monkeypatch, {"https://www.example.test/": redirect(302, "https://gone.example.test/")})
+    assert probe.fetch_live("www.example.test", scope=LAB)["redirect_blocked_reason"] == "no_dns"
+    assert len(sent) == 1
+
+
+# ---------- the cap and the time limit are enforced (review #6, #9) ----------
+
+def test_the_worst_case_is_exactly_max_requests_and_matches_the_log(monkeypatch):
+    # 5 redirects, the 6th HTTPS hop fails on TLS, then a full plain-HTTP chain
+    pages = {}
+    for scheme in ("https", "http"):
+        for i in range(5):
+            pages[f"{scheme}://www.example.test/{i}" if i else f"{scheme}://www.example.test/"] = \
+                redirect(302, f"{scheme}://www.example.test/{i + 1}")
+    pages["https://www.example.test/5"] = requests.exceptions.SSLError
+    pages["http://www.example.test/5"] = Page(body=b"<title>end</title>")
+    sent = fake_web(monkeypatch, pages)
+    logged, limiter = [], CountingLimiter()
+    host, rec, err, n = probe.probe_host("www.example.test", scope=LAB, limiter=limiter,
+                                         on_request=lambda *a: logged.append(a))
+    assert rec["title"] == "end" and rec["https_error"] == "SSLError"
+    assert n == len(sent) == len(logged) == limiter.slots == probe.MAX_REQUESTS == 12
+
+
+def test_the_cap_stops_sending_even_if_the_limits_change(monkeypatch):
+    # a backstop: if MAX_REDIRECTS grows past the approved cap, the cap still holds
+    sent = fake_web(monkeypatch, {"https://loop.example.test/": redirect(301, "https://loop.example.test/")})
+    host, rec, err, n = probe.probe_host("loop.example.test", scope=LAB, max_redirects=50, max_requests=4)
+    assert rec is None and err == "RequestCapReached" and n == 4 == len(sent)
+
+
+def test_the_time_limit_stops_the_next_request_and_isnt_retried(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(probe, "CLOCK", lambda: now[0])
+    pages = {"https://slow.example.test/": redirect(302, "https://slow.example.test/2"),
+             "https://slow.example.test/2": redirect(302, "https://slow.example.test/3")}
+    sent = []
+
+    def slow_get(url, **kwargs):
+        sent.append(url)
+        now[0] += 40   # every request takes 40 "seconds"
+        return pages[url]
+    monkeypatch.setattr(probe.requests, "get", slow_get)
+    host, rec, err, n = probe.probe_host("slow.example.test", scope=LAB, time_limit=60)
+    # after 2 requests it's 80s in: the 3rd is never sent, and a time limit isn't retried over HTTP
+    assert err == "HostTimeLimit" and n == 2 == len(sent)
+
+
+# ---------- text decoding (review #3, #8) ----------
+
+@pytest.mark.parametrize("ctype, body, title", [
+    ("text/html", "<title>Café</title>".encode(), "Café"),                       # no charset: utf-8
+    ("text/html; charset=iso-8859-1", "<title>Café</title>".encode("latin-1"), "Café"),
+    ("text/html; charset=x-nope", "<title>Café</title>".encode(), "Café"),     # unknown: no crash
+    ('text/html; charset="UTF-8"', "<title>日本</title>".encode(), "日本"),
+])
+def test_charset_is_the_stated_one_else_utf8_and_never_crashes(monkeypatch, ctype, body, title):
+    fake_web(monkeypatch, {"https://www.example.test/":
+                           Page(headers={"Content-Type": ctype}, body=body, encoding="ISO-8859-1")})
+    assert probe.fetch_live("www.example.test", scope=LAB)["title"] == title
+
+
+# ---------- the chain only holds redirects that were followed (review #10) ----------
+
+def test_a_blocked_redirect_is_not_in_the_chain(monkeypatch):
+    fake_web(monkeypatch, {"https://www.example.test/": redirect(301, "https://shop.example.test/"),
+                           "https://shop.example.test/": redirect(302, "https://evil.test/")})
+    r = probe.fetch_live("www.example.test", scope=LAB)
+    assert [step["to"] for step in r["chain"]] == ["https://shop.example.test/"]
+    assert r["redirect_blocked"] == "https://evil.test/" and r["final_url"] == "https://shop.example.test/"

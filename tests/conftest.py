@@ -78,3 +78,12 @@ def mcp_no_rate_limit(monkeypatch):
     from monomi import mcp_server, rate
     monkeypatch.setattr(mcp_server, "LIMITER", rate.Limiter(None))
     monkeypatch.setattr(mcp_server, "RATE_PROBLEM", None)
+
+
+@pytest.fixture(autouse=True)
+def probe_dns_is_public(monkeypatch):
+    """--probe checks where every redirect's host resolves (v1.25). No test
+    reaches real DNS: every name resolves to a public address unless a test
+    sets probe.RESOLVE itself."""
+    from monomi import probe
+    monkeypatch.setattr(probe, "RESOLVE", lambda host: ["93.184.216.34"])

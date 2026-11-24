@@ -32,7 +32,7 @@ from monomi import rate as ratemod
 from monomi.common import now_utc
 from monomi.fingerprint import _retry_on_http
 from monomi.research import request_headers
-from monomi.scope import OutOfScope, check_url
+from monomi.scope import OutOfScope, check_url, named_host, normalize_host, request_host
 
 # Well-known places an OpenAPI/Swagger spec is served, tried in order.
 SPEC_PATHS = [
@@ -174,6 +174,18 @@ def read_source_map(data):
     }
 
 
+def _on_host(url, host) -> bool:
+    """Is this http(s) URL on `host`, as BOTH parsers read it?
+
+    Asks where `requests` would really connect (scope.request_host), not just
+    urlparse: before v1.25, <script src="https://evil.test\\@host/x.js"> passed
+    this rule and the scope check while the request went to evil.test."""
+    if urlparse(url).scheme not in ("http", "https"):
+        return False
+    real = request_host(url)
+    return real is not None and real == named_host(url) == normalize_host(host)
+
+
 def _same_host_scripts(html, base_url, host):
     """The homepage's <script src> URLs that live on this same host.
 
@@ -182,10 +194,11 @@ def _same_host_scripts(html, base_url, host):
     """
     out = []
     for src in SCRIPT_SRC_RE.findall(html):
-        full = urljoin(base_url, src)
-        parsed = urlparse(full)
-        if parsed.scheme in ("http", "https") and parsed.hostname == host \
-                and full not in out:
+        try:
+            full = urljoin(base_url, src)
+        except ValueError:
+            continue  # not a URL at all (e.g. a broken [IPv6] host): skipped, never sent
+        if _on_host(full, host) and full not in out:
             out.append(full)
     return out
 
@@ -201,16 +214,17 @@ def _map_urls(js_result, host):
     urls, js_url = [], js_result["url"]
     headers = js_result["headers"]
     body = (js_result["body"] or b"").decode("utf-8", "replace")
-    for ref in SOURCE_MAP_RE.findall(body):
-        if not ref.startswith("data:"):  # inline maps are already in the page
+    refs = [ref for ref in SOURCE_MAP_RE.findall(body)
+            if not ref.startswith("data:")]  # inline maps are already in the page
+    refs += [headers[h] for h in ("sourcemap", "x-sourcemap") if headers.get(h)]
+    for ref in refs:
+        try:
             urls.append(urljoin(js_url, ref))
-    for header in ("sourcemap", "x-sourcemap"):
-        if headers.get(header):
-            urls.append(urljoin(js_url, headers[header]))
+        except ValueError:
+            continue  # not a URL at all: skipped, never sent
     seen, unique = set(), []
     for u in urls:
-        parsed = urlparse(u)
-        if parsed.scheme not in ("http", "https") or parsed.hostname != host:
+        if not _on_host(u, host):
             continue  # same rule as _same_host_scripts
         if u not in seen:
             seen.add(u)

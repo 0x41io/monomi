@@ -74,10 +74,12 @@ TOOLS = {
     "probe_hosts": {
         "fixed": lambda h: [f"https://{h}/"],
         "more": (f"the redirects it answers with, one GET each (up to {probe.MAX_REDIRECTS}), followed "
-                 "only to {host} or another host in this approval, and only if the scope allows it; "
-                 "a redirect anywhere else is recorded but never requested. If HTTPS fails with a "
-                 "TLS error or is refused: http://{host}/ once, and its redirects the same way"),
-        "max_per_host": 2 * (probe.MAX_REDIRECTS + 1),
+                 "only to {host} or another host in this approval that has a public IP, only if the "
+                 "scope allows it, only over http(s) on port 80 or 443, and only if the URL names one "
+                 "clear host; a redirect anywhere else is recorded but never requested. If HTTPS fails "
+                 "with a TLS error or is refused: http://{host}/ once, and its redirects the same way. "
+                 "A redirect to another host here counts toward {host}'s cap"),
+        "max_per_host": probe.MAX_REQUESTS,
     },
 }
 
