@@ -960,3 +960,65 @@ def test_an_out_of_scope_host_with_files_is_set_aside():
     out = build_paths(results, ev, scopemod.from_bytes(b"lab\nwww\n!staging\n"))
     [p] = file_paths(out)
     assert p in out["set_aside"] and p["gate"]["failed"][0]["name"] == "in scope"
+
+
+# --- v1.27.1: exposed files on a side-door host ---
+
+def side_door(out):
+    [p] = [p for p in out["paths"] + out["leads"] if p["rule"] == "side_door"]
+    return p
+
+
+def test_a_readable_secrets_file_makes_the_side_door_an_attack_path():
+    out, ev = run(content_results({"staging": [found_file("staging", *ENV)]}))
+    p = side_door(out)
+    assert p in out["paths"] and p["gate"]["failed"] == []
+    assert p["title"] == "Use staging as a side door into 198.51.100.7"
+    facts = {e["id"]: e for e in ev}
+    step = next(s for s in p["steps"] if "/.env" in s["text"])
+    assert step["label"] == "Observed"
+    assert step["text"] == ("staging/.env is readable by anyone and holds passwords or keys an "
+                            "attacker can log in with")
+    assert [facts[i]["kind"] for i in step["evidence"]] == ["exposed_file"]
+
+
+def test_source_alone_is_a_lead_step_and_keeps_the_side_door_a_lead():
+    out, _ = run(content_results({"staging": [found_file("staging", *GIT_HEAD)]}))
+    p = side_door(out)
+    assert p in out["leads"] and p["title"].startswith("Check whether staging is a side door")
+    step = next(s for s in p["steps"] if "/.git/HEAD" in s["text"])
+    assert step["label"] == "Lead" and step["text"].startswith("staging/.git/HEAD lets anyone download")
+    assert p["missing"].endswith("the code served at staging/.git/HEAD may hold passwords, but that isn't shown")
+
+
+def test_secrets_and_source_together_give_both_steps():
+    out, _ = run(content_results({"staging": [found_file("staging", *ENV), found_file("staging", *GIT_HEAD)]}))
+    p = side_door(out)
+    assert p in out["paths"]
+    labels = {s["label"] for s in p["steps"] if "staging/." in s["text"]}
+    assert labels == {"Observed", "Lead"}
+    # the side door's fix stays one action per risky host; the file fixes live on the exposed_file path
+    assert [a["what"] for a in p["actions"]] == ["Take staging off the internet or restrict who can reach it"]
+
+
+def test_info_files_and_files_on_the_production_host_dont_open_the_side_door():
+    out, _ = run(content_results({"staging": [found_file("staging", *PHPINFO)],
+                                  "lab": [found_file("lab", *ENV)]}))
+    p = side_door(out)
+    assert p in out["leads"]
+    assert not any("/.env" in s["text"] or "phpinfo" in s["text"] for s in p["steps"])
+
+
+def test_without_the_secrets_door_the_side_door_stays_a_lead(monkeypatch):
+    # The removal test: drop exposed_file facts before rule E reads them and
+    # the side door falls back to a lead, as in v1.27.0
+    from monomi import paths
+    real = paths._by_kind
+
+    def no_files(evidence):
+        kinds = real(evidence)
+        kinds.pop("exposed_file", None)
+        return kinds
+    monkeypatch.setattr(paths, "_by_kind", no_files)
+    out, _ = run(content_results({"staging": [found_file("staging", *ENV)]}))
+    assert side_door(out) in out["leads"]

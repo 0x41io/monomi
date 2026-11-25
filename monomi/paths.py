@@ -377,11 +377,13 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     third_party = {ip: why for ip, why in gate.not_own_ips(results).items()
                    if why.startswith("third-party hosting")}
     content_hosts = (results.get("content") or {}).get("hosts", {})
+    files_of = {}  # host -> [(found record, its fact)], for rule E's side doors (v1.27.1)
     for host, facts in files_by_host.items():
         r = content_hosts.get(host) or {}
         found = r.get("found", [])
         if len(found) != len(facts):
             continue  # facts and records come from the same list; never pair them by guess
+        files_of[host] = list(zip(found, facts))
         worst = min((f["severity"] for f in found), key=SEVERITY_ORDER.get)
         names = ", ".join(f["path"] for f in found[:3]) + (
             f" and {len(found) - 3} more" if len(found) > 3 else "")
@@ -454,6 +456,25 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         if risky:
             steps.append(_step(f"{where} also has services open to the internet that usually "
                                "shouldn't be", risky, "Observed"))
+        # Files the side-door hosts serve by mistake (v1.27.1, from rule C2). A
+        # readable secrets file (.env, keys, credentials) is a way in: its
+        # content was checked, and whoever reads it can log in with what it
+        # holds. Source (a Git folder, a backup) is only a lead, like a
+        # version: the code may hold passwords, but that isn't shown.
+        files = [(f, fact) for h in hosts for f, fact in files_of.get(h, [])]
+        secrets = [(f, fact) for f, fact in files if f["severity"] == "secrets"]
+        source = [(f, fact) for f, fact in files if f["severity"] == "source"]
+        if secrets:
+            one_file = len(secrets) == 1
+            steps.append(_step(f"{_file_names(secrets)} {'is' if one_file else 'are'} readable by anyone "
+                               f"and {'holds' if one_file else 'hold'} passwords or keys an attacker can "
+                               "log in with",
+                               [fact for _, fact in secrets], "Observed"))
+        if source:
+            steps.append(_step(f"{_file_names(source)} {'lets' if len(source) == 1 else 'let'} anyone "
+                               "download code or its history, "
+                               "which an attacker reads for passwords and keys",
+                               [fact for _, fact in source], "Lead"))
         leaks = [e for e in kinds.get("version_leak", [])
                  if ips & set(ips_of.get(e["host"], [])) and e["host"] not in out_of_scope]
         leaks += cves
@@ -461,10 +482,13 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
             steps.append(_step("The server shows software versions an attacker can match "
                                "to public exploits (versions must be verified)", leaks, "Lead"))
         side_door_ips.update(ips)
-        door = risky + cves  # a way into the server itself (gate check 5)
+        door = risky + cves + [fact for _, fact in secrets]  # a way into the server itself (gate check 5)
         no_door = (f"nothing shows a way into {'this host' if one else 'these hosts'} yet "
                    + (f"(no risky open service or known CVE on {where})" if looked else
                       f"(open services and known CVEs on {where} weren't looked up: --ports wasn't run)"))
+        if source:
+            no_door += (f"; the code served at {_file_names(source)} may hold passwords, but that "
+                        "isn't shown")
         # One action per risky host: each one is its own door, so all of them
         # must be dealt with. The version leaks only back the last step up.
         # The action says what to do; why the name is risky stays in the evidence.
@@ -661,6 +685,14 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
             "fix_first": _fix_first(paths), "more": more, "more_leads": more_leads,
             "more_leads_hosts": more_leads_hosts, "more_set_aside": more_set_aside,
             "out_of_scope_hosts": sorted(out_of_scope)}
+
+
+def _file_names(files, most=3):
+    """"staging/.env, staging/.git/HEAD": each file as host + path (the first
+    few), so a side door names exactly what it rests on."""
+    names = [f"{fact['host']}{f['path']}" for f, fact in files]
+    shown = ", ".join(names[:most]) + (f" and {len(names) - most} more" if len(names) > most else "")
+    return shown
 
 
 def _fix_first(paths):
