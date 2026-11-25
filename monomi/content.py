@@ -595,6 +595,19 @@ def _encoded_tar(a: dict, body: bytes) -> bool:
     return a["headers"].get("content-encoding", "").strip().lower() in ("gzip", "x-gzip") and bool(_tar(body))
 
 
+def judge_file(path: str, kind: str, answer: dict) -> str | None:
+    """What a 200 answer for this file path is, when its content passes that
+    kind's check ("a Git HEAD file..."), else None. The one place that
+    decides "this is the real file": the list run and recheck_file() (what
+    Akashi re-asks, v1.27) both use it, so they can never disagree."""
+    # a not-found page that echoes the path back must not pass a check because of the path
+    body = answer["body"].replace(path.encode(), b"").replace(path.lstrip("/").encode(), b"")
+    what = CHECKS[kind](body)
+    if not what and kind == "gzip" and _encoded_tar(answer, body):
+        what = "a gzip archive (the server decompressed it on the way: a tar inside)"
+    return what
+
+
 def check_host(host, timeout=8, on_request=None, *, scope, limiter=ratemod.UNLIMITED, research=None,
                extra=None, stop_at=None, progress=None):
     """Run the list on one host. Returns a dict:
@@ -683,11 +696,7 @@ def check_host(host, timeout=8, on_request=None, *, scope, limiter=ratemod.UNLIM
             continue
         if a["status"] != 200:
             continue
-        # a not-found page that echoes the path back must not pass a check because of the path
-        body = a["body"].replace(path.encode(), b"").replace(path.lstrip("/").encode(), b"")
-        what = CHECKS[kind](body)
-        if not what and kind == "gzip" and _encoded_tar(a, body):
-            what = "a gzip archive (the server decompressed it on the way: a tar inside)"
+        what = judge_file(path, kind, a)
         if what:
             severity = SEVERITY[kind]
             if kind == "env" and path.endswith(".example"):
@@ -728,3 +737,100 @@ def check_all(enrichment, workers=4, on_request=None, max_hosts=MAX_HOSTS, timeo
             "requested": hosts, "checked": len(hosts),
             "requests": sum(r["requests"] for r in results.values()), "skipped": skipped,
             "paths": len(PATHS) + len(extra or [])}
+
+
+# --- Re-checking one file (v1.27, for Akashi) --------------------------------
+#
+# Akashi proves an exposed_file path by asking again, right now, for each file
+# Monomi found. It sends the same made-up paths first (a site that changed to
+# serving one page for every URL must not prove anything), then the file
+# itself, through the same guards as the list run: scope per request, no
+# redirect followed, at most MAX_BODY_BYTES read, the same file check.
+
+# What recheck_file() can say. Akashi turns these into verdicts, so the words
+# never change once released (tests/test_contract.py locks them).
+STILL_SERVED = "still_served"  # the file answered 200 and is still the real thing
+GONE = "gone"                  # not found now, blocked for that path alone, or no longer the real file
+UNTRUSTED = "untrusted"        # a made-up path passes the same check: this host can't tell
+UNCLEAR = "unclear"            # no clean answer (a timeout, 429, 5xx, every path blocked)
+RECHECK_RESULTS = (STILL_SERVED, GONE, UNTRUSTED, UNCLEAR)
+RECHECK_REQUESTS = CALIBRATION + 1
+BLOCKED = (301, 302, 303, 307, 308, 401, 403)  # "not for you": the fix, when only this path gets it
+
+
+def recheck_file(url: str, kind: str, *, scope, research=None, on_request=None, timeout=8) -> dict:
+    """Ask for one file again: CALIBRATION made-up paths on the same host,
+    then the file. Returns {"url", "kind", "result" (one of RECHECK_RESULTS),
+    "why" (one line), "what" (for still_served), "status" (the file's HTTP
+    status, or None), "calibration" (made-up path statuses), "requests" (sent)}.
+
+    An out-of-scope URL raises scope.OutOfScope before anything is sent.
+    A kind that isn't a file check (a lead, a typo) is a ValueError: there is
+    nothing fixed to compare a lead with."""
+    from urllib.parse import urlsplit
+    from monomi.scope import request_host
+
+    if kind not in CHECKS:
+        raise ValueError(f"{kind!r} is not a file kind content.py checks")
+    check_url(scope, url)  # refuse a bad URL before working anything out from it
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    base = f"{parts.scheme}://{parts.netloc}"
+    host = request_host(url)
+    sent = [0]
+
+    def logged(h, u, rule):
+        sent[0] += 1
+        if on_request:
+            on_request(h, u, rule)
+
+    budget = _Budget(RECHECK_REQUESTS)
+
+    def get(u):
+        return _get(u, host, scope=scope, limiter=ratemod.UNLIMITED, research=research, on_request=logged,
+                    timeout=timeout, budget=budget, stop_at=None)
+
+    out = {"url": url, "kind": kind, "result": UNCLEAR, "why": "", "what": None, "status": None,
+           "calibration": [], "requests": 0}
+
+    def done(result, why, **changes):
+        out.update(changes, result=result, why=why, requests=sent[0])
+        return out
+
+    baseline = []
+    for p in calibration_paths(TOKEN()):
+        try:
+            a = get(base + p)
+        except requests.RequestException as e:
+            if isinstance(e, OutOfScope):
+                raise
+            out["calibration"].append(type(e).__name__)
+            continue
+        baseline.append(a)
+        out["calibration"].append(a["status"])
+    if any(b["status"] < 400 and CHECKS[kind](b["body"]) for b in baseline):
+        return done(UNTRUSTED, f"a made-up path on {host} passes the {kind} check too, so this host "
+                    "can't show whether the file is really there")
+    try:
+        a = get(url)
+    except requests.RequestException as e:
+        if isinstance(e, OutOfScope):
+            raise
+        return done(UNCLEAR, f"the request didn't complete ({type(e).__name__})")
+    status = a["status"]
+    if status == 200:
+        what = judge_file(path, kind, a)
+        if what:
+            return done(STILL_SERVED, f"{path} still answers 200 with {what}", what=what, status=status)
+        return done(GONE, f"{path} answers 200, but no longer with a real {kind} file", status=status)
+    if status in (404, 410):
+        return done(GONE, f"{path} is not found now (HTTP {status})", status=status)
+    if status in BLOCKED:
+        if not baseline or all(b["status"] == status for b in baseline):
+            return done(UNCLEAR, f"{path} answers HTTP {status} and no made-up path answered "
+                        "differently, so this can't show whether the file was removed or the host "
+                        "blocks everyone",
+                        status=status)
+        return done(GONE, f"{path} is refused now (HTTP {status}), while made-up paths aren't",
+                    status=status)
+    return done(UNCLEAR, f"{path} answered HTTP {status}, which can't settle it", status=status)

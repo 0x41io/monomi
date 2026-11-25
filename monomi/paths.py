@@ -39,6 +39,7 @@ import re
 
 from monomi import gate
 from monomi.categorize import categorize
+from monomi.content import SEVERITY_ORDER
 from monomi.evidence import OWNERS
 from monomi.internetdb import cloud_infra_from_cname
 
@@ -76,7 +77,24 @@ SIDE_DOOR_WORDS = {
 # their proof by this name, so a name never changes once released
 # (tests/test_contract.py locks this set).
 RULES = ("takeover", "takeover_unknown", "email_spoofing", "exposed_service",
-         "known_cves", "version_check", "side_door", "around_cdn", "dangling_ns")
+         "known_cves", "version_check", "side_door", "around_cdn", "dangling_ns",
+         "exposed_file")
+
+# Rule C2 (exposed_file): what each of content.py's severities (secrets,
+# source, info; content.SEVERITY_ORDER puts them worst first) means for the
+# path's second step and its outcome
+FILE_NEXT = {
+    "secrets": "An attacker downloads them and uses the passwords or keys inside to log in "
+               "to the services they open",
+    "source": "An attacker downloads the code or its history and reads it for passwords, keys "
+              "and flaws",
+    "info": "An attacker reads what they reveal about the server and its setup to plan an attack",
+}
+FILE_OUTCOME = {
+    "secrets": "Access to the databases, cloud accounts or services those credentials open",
+    "source": "The site's code, and any secrets ever committed to it",
+    "info": "A map of the server's internals that makes other attacks easier",
+}
 
 
 def _versions(results, hosts):
@@ -340,9 +358,51 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                                 hosts=on_ip, ips=[ip], rule="exposed_service",
                                 targets=_targets(on_ip, [ip], services=exp_ips.get(ip, {}).get("risky", []))))
 
-    # Which IPs each live host is on, for D and E
+    # Which IPs each live host is on, for C2, D and E
     enr = results.get("enrichment") or {}
     ips_of = {h: d.get("ips", []) for h, d in enr.get("hosts", {}).items()}
+
+    # C2. Files served by mistake (v1.27, from --content): one path per host,
+    # listing every file found there, so one leaky host can't fill the list.
+    # Each file's fact is the door: its content passed that kind's check.
+    #
+    # Which IPs the gate sees: a CDN or front door in front of the host only
+    # passes the file on, so the file is still the target's own and its edge
+    # IPs are left out of check 2. Third-party hosting (a store, a forum,
+    # Microsoft 365) stays in: a file there belongs to that service, so check 2
+    # sets the path aside.
+    files_by_host = {}
+    for fact in kinds.get("exposed_file", []):
+        files_by_host.setdefault(fact["host"], []).append(fact)
+    third_party = {ip: why for ip, why in gate.not_own_ips(results).items()
+                   if why.startswith("third-party hosting")}
+    content_hosts = (results.get("content") or {}).get("hosts", {})
+    for host, facts in files_by_host.items():
+        r = content_hosts.get(host) or {}
+        found = r.get("found", [])
+        if len(found) != len(facts):
+            continue  # facts and records come from the same list; never pair them by guess
+        worst = min((f["severity"] for f in found), key=SEVERITY_ORDER.get)
+        names = ", ".join(f["path"] for f in found[:3]) + (
+            f" and {len(found) - 3} more" if len(found) > 3 else "")
+        steps = [
+            _step(f"{host} serves {len(found)} file{'s' if len(found) != 1 else ''} to anyone "
+                  f"that shouldn't be public: {names}", facts, "Observed"),
+            _step(FILE_NEXT[worst], facts, "Inference"),
+        ]
+        actions = [_action([fact], what=f"Remove {f['path']} from {host} or block it in the web "
+                           "server" + (", then change every secret it held" if f["severity"] == "secrets"
+                                       else ""))
+                   for f, fact in zip(found, facts)]
+        ips = ips_of.get(host, [])
+        candidates.append(_path(f"Read the files {host} serves by mistake",
+                                "Medium" if worst == "info" else "High", steps, FILE_OUTCOME[worst],
+                                actions, door=facts, hosts=[host],
+                                ips=[ip for ip in ips if ip in third_party], not_own=third_party,
+                                rule="exposed_file",
+                                targets=_targets([host], ips, scheme=r.get("scheme"),
+                                                 files=[{"path": f["path"], "url": f["url"], "kind": f["kind"],
+                                                         "severity": f["severity"]} for f in found])))
     edge = _edge_ips(results)          # CDN edges only: what "behind a CDN" means (rule F)
     not_own = _not_own_ips(results)    # not the target's server: CDN, third-party host, front door
 

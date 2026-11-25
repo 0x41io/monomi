@@ -847,3 +847,116 @@ def test_a_rented_load_balancer_is_the_first_origin_tried():
 def test_no_cut_means_no_hosts_named():
     out, ev = run(lab_results())
     assert out["more_leads"] == 0 and out["more_leads_hosts"] == []
+
+
+# --- v1.27: files served by mistake (rule "exposed_file", from --content) ---
+
+def found_file(host, path, kind, severity, what, scheme="https"):
+    """One "found" record, as content.check_host() returns it."""
+    return {"path": path, "url": f"{scheme}://{host}{path}", "kind": kind, "severity": severity,
+            "what": what, "status": 200}
+
+
+def content_results(found_by_host, base=None):
+    """The lab, plus a --content run that found these files on these hosts."""
+    results = base or lab_results()
+    results["content"] = {"hosts": {
+        h: {"host": h, "scheme": "https", "found": found, "leads": [], "untrusted": [],
+            "calibration": [404, 404, 404], "tried": 155, "requests": 158, "stopped": None,
+            "https_error": None, "collected_at": "2026-11-24T00:00:00Z"}
+        for h, found in found_by_host.items()}}
+    return results
+
+
+GIT_HEAD = ("/.git/HEAD", "git_head", "source", "a Git HEAD file (the repository can likely be downloaded)")
+ENV = ("/.env", "env", "secrets", "an environment file with 12 settings, 3 named like secrets")
+PHPINFO = ("/phpinfo.php", "phpinfo", "info", "a phpinfo() page")
+
+
+def file_paths(out):
+    return [p for p in out["paths"] + out["leads"] + out["set_aside"] if p["rule"] == "exposed_file"]
+
+
+def test_found_files_on_one_host_are_one_path():
+    out, ev = run(content_results({"staging": [found_file("staging", *ENV), found_file("staging", *GIT_HEAD)]}))
+    [p] = file_paths(out)
+    assert p in out["paths"] and p["gate"]["failed"] == []
+    assert p["title"] == "Read the files staging serves by mistake"
+    assert p["severity"] == "High"
+    assert p["targets"] == {"hosts": ["staging"], "ips": ["198.51.100.7"], "scheme": "https", "files": [
+        {"path": "/.env", "url": "https://staging/.env", "kind": "env", "severity": "secrets"},
+        {"path": "/.git/HEAD", "url": "https://staging/.git/HEAD", "kind": "git_head", "severity": "source"}]}
+    # one fix per file, and the secrets file says to change what it held
+    assert [a["what"] for a in p["actions"]] == [
+        "Remove /.env from staging or block it in the web server, then change every secret it held",
+        "Remove /.git/HEAD from staging or block it in the web server"]
+    facts = {e["id"]: e for e in ev}
+    cited = [facts[i] for i in p["steps"][0]["evidence"]]
+    assert [(f["kind"], f["host"]) for f in cited] == [("exposed_file", "staging")] * 2
+    # the worst file decides the second step: secrets beats source
+    assert p["steps"][1]["text"].startswith("An attacker downloads them and uses the passwords or keys")
+
+
+def test_the_evidence_says_what_a_file_is_never_what_it_holds():
+    _, ev = run(content_results({"staging": [found_file("staging", *ENV)]}))
+    [fact] = [e for e in ev if e["kind"] == "exposed_file"]
+    assert fact["fact"] == ("staging serves /.env to anyone: an environment file with 12 settings, "
+                            "3 named like secrets (secrets)")
+    assert fact["sources"][0]["name"] == "content discovery (active GET)"
+    assert fact["owners"] == ["web app team", "server / infrastructure admin"]
+
+
+def test_two_hosts_are_two_paths_and_info_only_is_medium():
+    out, _ = run(content_results({"staging": [found_file("staging", *GIT_HEAD)],
+                                  "lab": [found_file("lab", *PHPINFO)]}))
+    by_host = {p["targets"]["hosts"][0]: p for p in file_paths(out)}
+    assert set(by_host) == {"staging", "lab"}
+    assert by_host["staging"]["severity"] == "High" and by_host["lab"]["severity"] == "Medium"
+    assert by_host["lab"]["outcome"].startswith("A map of the server's internals")
+
+
+def test_leads_alone_make_no_path():
+    results = content_results({"staging": []})
+    results["content"]["hosts"]["staging"]["leads"] = [{"path": "/admin", "url": "https://staging/admin",
+                                                        "status": 401, "length": 0, "auth": "Basic"}]
+    out, ev = run(results)
+    assert file_paths(out) == [] and not [e for e in ev if e["kind"] == "exposed_file"]
+
+
+def test_a_file_behind_a_cdn_is_still_the_targets_own():
+    # www is behind Cloudflare: the CDN only passes the file on, so it stays a finding
+    out, _ = run(content_results({"www": [found_file("www", *ENV)]}))
+    [p] = file_paths(out)
+    assert p in out["paths"], p["gate"]
+    assert p["targets"]["ips"] == ["203.0.113.9"]
+
+
+def test_a_file_on_third_party_hosting_is_set_aside():
+    results = lab_results()
+    results["subdomains"].append("shop")
+    results["enrichment"]["hosts"]["shop"] = {"ips": ["23.227.38.65"], "provider": "Shopify"}
+    out, _ = run(content_results({"shop": [found_file("shop", *GIT_HEAD)]}, base=results))
+    [p] = file_paths(out)
+    assert p in out["set_aside"]
+    assert p["gate"]["failed"][0]["name"] == "the target's own"
+
+
+def test_without_leaving_cdn_ips_out_a_cdn_file_was_set_aside(monkeypatch):
+    # The removal test: hand the gate every not-own IP (CDN edges too) and
+    # the .env behind Cloudflare is wrongly set aside as Cloudflare's
+    from monomi import gate as gatemod, paths
+    real = gatemod.not_own_ips
+    monkeypatch.setattr(paths.gate, "not_own_ips",
+                        lambda results: {ip: "third-party hosting (any)" for ip in real(results)})
+    out, _ = run(content_results({"www": [found_file("www", *ENV)]}))
+    [p] = file_paths(out)
+    assert p in out["set_aside"]
+
+
+def test_an_out_of_scope_host_with_files_is_set_aside():
+    from monomi import scope as scopemod
+    results = content_results({"staging": [found_file("staging", *ENV)]})
+    ev = build_evidence(results)
+    out = build_paths(results, ev, scopemod.from_bytes(b"lab\nwww\n!staging\n"))
+    [p] = file_paths(out)
+    assert p in out["set_aside"] and p["gate"]["failed"][0]["name"] == "in scope"

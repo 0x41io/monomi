@@ -25,6 +25,8 @@ Lead types Akashi v0.1 proves (design decision 2):
   takeover        "Take over <host>" paths and leads   (fixture: takeover-lead)
   around the CDN  rule F "can be reached around <CDN>" (fixtures: cves-edge-vs-own, 41xlab)
   email spoofing  "Send email as <domain>"             (fixture: 41xlab)
+Akashi v0.6.0 adds:
+  exposed files   "Read the files <host> serves by mistake" (built: exposed-file)
 
 Each check names the exact key path Akashi reads (e.g. built["leads"][0]
 ["gate"]["failed"][0]["name"]), so a rename fails here, not just a missing key.
@@ -38,7 +40,7 @@ import pytest
 
 import test_gate
 import test_paths
-from monomi import activelog, cli, common, dnscheck, emailauth, evidence, fingerprint, scope, takeover
+from monomi import activelog, cli, common, content, dnscheck, emailauth, evidence, fingerprint, scope, takeover
 from monomi.paths import RULES, build_paths
 
 FIXTURES = Path(__file__).parent / "golden" / "fixtures"
@@ -74,6 +76,10 @@ RULE_KEYS = {
     "side_door": {"shared_with"},
     "around_cdn": {"fronted", "cdn", "origins"},
     "dangling_ns": {"cut", "ns_ips", "provider", "grade"},
+    # v1.27: one per host. "files" is every file found there ([{"path", "url",
+    # "kind", "severity"}]; "url" is the exact address requested, "kind" a key
+    # of content.CHECKS), "scheme" the scheme the host answered on
+    "exposed_file": {"files", "scheme"},
 }
 
 
@@ -138,8 +144,10 @@ def built_scans():
     version["enrichment"]["hosts"].pop("staging")  # no side door left, so the version is its own lead
     lame = test_paths.lab_results()
     lame["takeover"]["ns_delegations"] = [test_paths.lame_delegation()]
+    files = test_paths.content_results({"staging": [test_paths.found_file("staging", *test_paths.ENV)]})
     for name, results in [("exposed-service", exposed), ("version-only", version),
-                          ("edge-version", test_gate.edge_version_results()), ("dangling-ns", lame)]:
+                          ("edge-version", test_gate.edge_version_results()), ("dangling-ns", lame),
+                          ("exposed-file", files)]:
         ev = evidence.build_evidence(results)
         yield name, results, ev, build_paths(results, ev)
 
@@ -151,7 +159,8 @@ def all_items(built):
 def test_rule_names_are_fixed():
     # Akashi picks its proof by these names: renaming one breaks it
     assert RULES == ("takeover", "takeover_unknown", "email_spoofing", "exposed_service",
-                     "known_cves", "version_check", "side_door", "around_cdn", "dangling_ns")
+                     "known_cves", "version_check", "side_door", "around_cdn", "dangling_ns",
+                     "exposed_file")
     assert set(RULE_KEYS) == set(RULES)
 
 
@@ -218,6 +227,9 @@ EXPECTED_TARGETS = {
                     {"ip": "203.0.113.20", "hosts": ["api.origins.test"]}]}),
     ("exposed-service", "P2"): ("exposed_service", {"hosts": ["db"], "ips": ["198.51.100.20"],
                                                     "services": ["5432/PostgreSQL"]}),
+    ("exposed-file", "P2"): ("exposed_file", {
+        "hosts": ["staging"], "ips": ["198.51.100.7"], "scheme": "https",
+        "files": [{"path": "/.env", "url": "https://staging/.env", "kind": "env", "severity": "secrets"}]}),
     ("version-only", "L2"): ("version_check", {"hosts": ["lab"], "ips": ["198.51.100.7"],
                                                "versions": [{"host": "lab", "tech": "nginx", "version": "1.28.3"}]}),
 }
@@ -393,7 +405,20 @@ API = {
     # building what Akashi reads from a saved scan
     evidence.build_evidence: "(results: dict) -> list[dict]",
     build_paths: "(results: dict, evidence: list[dict], scope=None) -> dict",
+    # v1.27: re-asking for one exposed file (Akashi's exposed_file proof)
+    content.recheck_file: "(url: str, kind: str, *, scope, research=None, on_request=None, timeout=8) -> dict",
 }
+
+
+def test_recheck_words_and_fields_akashi_reads():
+    # Akashi turns these words into verdicts: still_served -> confirmed,
+    # gone -> ruled out, untrusted / unclear -> inconclusive
+    assert content.RECHECK_RESULTS == ("still_served", "gone", "untrusted", "unclear")
+    assert content.RECHECK_REQUESTS == 4 and content.calibration_paths("t") == ["/t", "/.t", "/t.zip"]
+    # every "kind" an exposed_file path can carry is one recheck_file accepts
+    _, _, built = next((r, e, b) for n, r, e, b in built_scans() if n == "exposed-file")
+    item = next(p for p in built["paths"] if p["rule"] == "exposed_file")
+    assert all(f["kind"] in content.CHECKS for f in item["targets"]["files"])
 
 
 @pytest.mark.parametrize("func", list(API), ids=[f"{f.__module__}.{f.__name__}" for f in API])

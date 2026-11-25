@@ -188,6 +188,19 @@ def build_evidence(results: dict) -> list[dict]:
                     fact += "; the original source code is embedded"
                 add(fact, src, ("web",), kind="exposed_source_map", host=host)
 
+    # 6c. Files served by mistake (from --content, ACTIVE, v1.27). Only "found"
+    # files: their content passed that kind's check, so each is an observed
+    # fact. "what" says what the file is, never what it holds (content.py
+    # keeps no values), so it is safe to put in the report. Leads (an admin
+    # path that answered) stay in results["content"]: they aren't facts yet.
+    cd = results.get("content")
+    if cd:
+        for host, r in sorted(cd.get("hosts", {}).items()):
+            src = [{"name": "content discovery (active GET)", "collected_at": r.get("collected_at")}]
+            for f in r.get("found", []):
+                add(f"{host} serves {f['path']} to anyone: {f['what']} ({f['severity']})",
+                    src, ("web", "server"), kind="exposed_file", host=host)
+
     # 7. Email spoofing protection (from --email, DNS lookups only)
     em = results.get("email")
     if em and "error" not in em:

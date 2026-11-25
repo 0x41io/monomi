@@ -472,3 +472,95 @@ def test_progress_reaches_every_path(monkeypatch):
     ticks = []
     run(progress=lambda: ticks.append(1))
     assert len(ticks) == len(content.host_paths(HOST))
+
+
+# --- v1.27: recheck_file, what Akashi asks again ------------------------------
+
+GIT_HEAD = Page(body=b"ref: refs/heads/main\n", headers={"Content-Type": "text/plain"})
+URL = f"https://{HOST}/.git/HEAD"
+
+
+def recheck(url=URL, kind="git_head", **kw):
+    kw.setdefault("scope", LAB)
+    return content.recheck_file(url, kind, **kw)
+
+
+def test_recheck_a_file_still_served(monkeypatch):
+    sent = fake_site(monkeypatch, {"/.git/HEAD": GIT_HEAD})
+    logged = []
+    r = recheck(on_request=lambda h, u, rule: logged.append((h, u, rule)))
+    assert r["result"] == content.STILL_SERVED and r["status"] == 200
+    assert r["what"].startswith("a Git HEAD file")
+    # three made-up paths first, then the file, each logged before it was sent
+    assert [u for u, _ in sent] == [f"https://{HOST}{p}" for p in content.calibration_paths(TOKEN)] + [URL]
+    assert [u for _, u, _ in logged] == [u for u, _ in sent] and r["requests"] == 4
+    assert logged[0][2] == "*.example.test"   # the scope rule that allowed it
+
+
+def test_recheck_a_removed_file_is_gone(monkeypatch):
+    fake_site(monkeypatch)
+    r = recheck()
+    assert r["result"] == content.GONE and r["status"] == 404
+
+
+def test_recheck_a_200_that_is_no_longer_the_file_is_gone(monkeypatch):
+    fake_site(monkeypatch, {"/.git/HEAD": Page(body=b"<html><title>Shop</title>Welcome</html>")})
+    r = recheck()
+    assert r["result"] == content.GONE and r["status"] == 200 and r["what"] is None
+
+
+def test_recheck_a_path_blocked_on_its_own_is_gone(monkeypatch):
+    # The fix "block it in the web server": only that path is refused now
+    fake_site(monkeypatch, {"/.git/HEAD": Page(403, body=b"Forbidden")})
+    assert recheck()["result"] == content.GONE
+
+
+def test_recheck_a_host_that_blocks_everything_is_unclear(monkeypatch):
+    # A WAF refusing Akashi everywhere shows nothing about the file
+    fake_site(monkeypatch, default=Page(403, body=b"Forbidden"))
+    r = recheck()
+    assert r["result"] == content.UNCLEAR and r["status"] == 403
+
+
+def test_recheck_a_catch_all_host_is_untrusted_and_the_file_is_never_asked(monkeypatch):
+    sent = fake_site(monkeypatch, default=GIT_HEAD)
+    r = recheck()
+    assert r["result"] == content.UNTRUSTED
+    assert URL not in [u for u, _ in sent] and r["requests"] == 3
+
+
+def test_recheck_timeouts_and_server_errors_are_unclear(monkeypatch):
+    fake_site(monkeypatch, {"/.git/HEAD": requests.Timeout})
+    assert recheck()["result"] == content.UNCLEAR
+    fake_site(monkeypatch, {"/.git/HEAD": Page(503, body=b"busy")})
+    assert recheck()["result"] == content.UNCLEAR
+
+
+def test_recheck_refuses_out_of_scope_before_sending(monkeypatch):
+    sent = fake_site(monkeypatch, hosts=("dev.example.test",))
+    with pytest.raises(scope.OutOfScope):
+        recheck("https://dev.example.test/.git/HEAD")
+    assert sent == []
+
+
+def test_recheck_refuses_a_lead_or_unknown_kind(monkeypatch):
+    sent = fake_site(monkeypatch)
+    with pytest.raises(ValueError):
+        recheck(kind=content.LEAD)
+    assert sent == []
+
+
+def test_recheck_sends_the_research_header(monkeypatch, tmp_path):
+    sent = fake_site(monkeypatch, {"/.git/HEAD": GIT_HEAD})
+    header_file = tmp_path / "research.txt"
+    header_file.write_text("X-Bug-Bounty: x41ok\n")
+    recheck(research=research.load(str(header_file)))
+    assert all(h.get("X-Bug-Bounty") == "x41ok" for _, h in sent)
+
+
+def test_the_list_run_and_recheck_use_the_same_judge(monkeypatch):
+    # The removal test: break judge_file and both stop finding the file
+    fake_site(monkeypatch, {"/.git/HEAD": GIT_HEAD})
+    assert [f["path"] for f in run()["found"]] == ["/.git/HEAD"]
+    monkeypatch.setattr(content, "judge_file", lambda path, kind, answer: None)
+    assert run()["found"] == [] and recheck()["result"] == content.GONE
