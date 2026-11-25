@@ -1,7 +1,7 @@
 # Hostnames without dots on purpose: the chat app turns dotted names into
 # Markdown links when code is copied. The path rules don't care.
 from monomi.evidence import build_evidence
-from monomi.paths import build_paths
+from monomi.paths import build_paths, fix_first_parts
 
 
 def lab_results():
@@ -1022,3 +1022,56 @@ def test_without_the_secrets_door_the_side_door_stays_a_lead(monkeypatch):
     monkeypatch.setattr(paths, "_by_kind", no_files)
     out, _ = run(content_results({"staging": [found_file("staging", *ENV)]}))
     assert side_door(out) in out["leads"]
+
+
+# --- v1.27.2: taking a host offline closes the files it serves ---
+
+def test_taking_the_side_door_host_offline_also_closes_its_files_path():
+    out, _ = run(content_results({"staging": [found_file("staging", *ENV), found_file("staging", *GIT_HEAD)]}))
+    files = next(p for p in out["paths"] if p["rule"] == "exposed_file")
+    door = next(p for p in out["paths"] if p["rule"] == "side_door")
+    fix = out["fix_first"]
+    assert [a["what"] for a in fix["actions"]] == ["Take staging off the internet or restrict who can reach it"]
+    # in path order, and it beats the email fix (which closes one path)
+    assert fix["closes"] == sorted([files["id"], door["id"]], key=lambda i: int(i[1:]))
+    assert fix["partial"] == [] and fix["still_required_actions"] == []
+    assert fix_first_parts(fix)["closes"] == "closes " + ", ".join(fix["closes"])
+
+
+def test_offline_closes_only_the_files_on_that_host():
+    results = content_results({"staging": [found_file("staging", *ENV)], "lab": [found_file("lab", *GIT_HEAD)]})
+    results.pop("email")
+    out, _ = run(results)
+    by_host = {p["targets"]["hosts"][0]: p["id"] for p in out["paths"] if p["rule"] == "exposed_file"}
+    door = next(p for p in out["paths"] if p["rule"] == "side_door")
+    fix = out["fix_first"]
+    assert fix["actions"][0]["what"].startswith("Take staging off the internet")
+    assert set(fix["closes"]) == {by_host["staging"], door["id"]}   # never lab's files
+
+
+def test_offline_still_closes_the_files_when_the_side_door_needs_a_patch_too():
+    # A CVE on the server: the side door needs two fixes, but taking staging
+    # offline still closes staging's files outright
+    from monomi import paths
+    out, _ = run(with_cves(content_results({"staging": [found_file("staging", *ENV),
+                                                        found_file("staging", *GIT_HEAD)]})))
+    door = next(p for p in out["paths"] if p["rule"] == "side_door")
+    files = next(p for p in out["paths"] if p["rule"] == "exposed_file")
+    assert len(door["actions"]) == 2 and len(files["actions"]) == 2  # no single fix closes either
+    key = tuple(door["actions"][0]["evidence"])
+    fix = paths._fix_first([files, door], {key: "staging"})
+    assert fix["actions"] == [door["actions"][0]]
+    assert fix["closes"] == [files["id"]]
+    assert fix["partial"] == [{"path": door["id"], "of": 2}]
+    assert fix["still_required_actions"] == [door["actions"][1]]   # the server still needs its patch
+
+
+def test_without_the_offline_link_fix_first_closed_only_the_side_door():
+    # The removal test: build fix-first the v1.27.1 way and the files path is left out
+    from monomi import paths
+    out, _ = run(content_results({"staging": [found_file("staging", *ENV)]}))
+    old = paths._fix_first(out["paths"])
+    door = next(p for p in out["paths"] if p["rule"] == "side_door")
+    files = next(p for p in out["paths"] if p["rule"] == "exposed_file")
+    assert files["id"] not in (old or {}).get("closes", []) and files["id"] in out["fix_first"]["closes"]
+    assert door["id"] in out["fix_first"]["closes"]

@@ -421,6 +421,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         if ips:
             groups.setdefault(ips, []).append(r)
     side_door_ips = set()
+    offline = {}  # a "take this host off the internet" action (its evidence ids) -> the host (v1.27.2)
     for ips, names in groups.items():
         names = sorted(names, key=lambda r: r["host"])
         kept = inside([r["host"] for r in names])  # excluded risky hosts drop out of the side door
@@ -494,6 +495,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         # The action says what to do; why the name is risky stays in the evidence.
         actions = [_action([r], f"Take {r['host']} off the internet or restrict who can reach it")
                    for r in names]
+        offline.update({tuple(a["evidence"]): r["host"] for a, r in zip(actions, names)})
         if cves:
             # The CVE is on the server itself, so closing the doors isn't enough
             actions.append(_action(leaks, f"Upgrade or patch the server software on {where}"))
@@ -682,7 +684,7 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     # Set aside: out of scope or not the target's own. No IDs and no fixes.
     more_set_aside = max(0, len(set_aside) - MAX_PATHS)
     return {"paths": paths, "leads": leads, "set_aside": set_aside[:MAX_PATHS],
-            "fix_first": _fix_first(paths), "more": more, "more_leads": more_leads,
+            "fix_first": _fix_first(paths, offline), "more": more, "more_leads": more_leads,
             "more_leads_hosts": more_leads_hosts, "more_set_aside": more_set_aside,
             "out_of_scope_hosts": sorted(out_of_scope)}
 
@@ -695,8 +697,20 @@ def _file_names(files, most=3):
     return shown
 
 
-def _fix_first(paths):
+# Rules whose whole attack goes through one hostname: taking that host off
+# the internet closes them too, whatever their own fixes say (v1.27.2). A
+# file served by staging is gone once staging is. Rules that rest on an IP
+# (a CVE, an open service) are left out: the server is still there.
+OFFLINE_CLOSES = ("exposed_file",)
+
+
+def _fix_first(paths, offline=None):
     """What to fix first, as a list of actions.
+
+    offline: {action evidence ids: host} for the side doors' "take this host
+    off the internet" actions. Such an action also closes every path in
+    OFFLINE_CLOSES that rests on that host alone (v1.27.2): taking staging
+    offline closes the files it serves, not only the side door.
 
     An action closes a path on its own only when it is that path's only
     action. The single action that closes the most paths wins (ties go to
@@ -716,6 +730,15 @@ def _fix_first(paths):
                 closes.setdefault(key, []).append(p["id"])
             else:
                 partial.setdefault(key, []).append({"path": p["id"], "of": len(p["actions"])})
+    for key, host in (offline or {}).items():
+        if key not in by_key:
+            continue  # its side door is a lead, not a path: fix-first only looks at paths
+        also = {p["id"] for p in paths if p["rule"] in OFFLINE_CLOSES and p["targets"]["hosts"] == [host]}
+        if also - set(closes.get(key, [])):
+            done = set(closes.get(key, [])) | also
+            closes[key] = [p["id"] for p in paths if p["id"] in done]  # in path order
+            # a path it now closes outright isn't also listed as one it's only part of
+            partial[key] = [x for x in partial.get(key, []) if x["path"] not in done]
     if closes:
         best = max(closes, key=lambda key: len(closes[key]))  # first one wins a tie
         part_of = {x["path"] for x in partial.get(best, [])}
