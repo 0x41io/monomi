@@ -195,6 +195,49 @@ def _ip_order(ip):
     return (addr.version, int(addr), "")
 
 
+# Words too common in hostnames to show an origin belongs to a fronted host
+# (v1.28): sharing "api" or "www" says nothing.
+COMMON_WORDS = {"www", "origin", "api", "app", "web", "cdn", "edge", "com", "net", "org"}
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _below(host, target):
+    """The part of a hostname below the target domain:
+    'origin-api.bridges.example.com' -> 'origin-api.bridges' (target example.com)."""
+    host = host.lower().rstrip(".")
+    if target and host.endswith("." + target):
+        return host[:-len(target) - 1]
+    return host
+
+
+def _words(name):
+    return {w for w in _WORD.findall(name) if len(w) >= 3 and w not in COMMON_WORDS}
+
+
+def _name_match(origin_hosts, fronted, target):
+    """How well an origin's hostnames match the hosts behind the CDN (v1.28,
+    from PlayStation: origins came from unrelated hosts like stage.haiku while
+    origin-api.bridges sat next to api.bridges). Lower ranks first:
+      (0, ...) an origin host named for a fronted host: origin-X, X-origin or origin.X
+      (1, -n)  shares n words with the fronted hosts (common words like api left out)
+      (2, 0)   nothing in common
+    Only reorders origins: none is dropped or added."""
+    names = {_below(h, target) for h in fronted}
+    words = set().union(*(_words(n) for n in names)) if names else set()
+    best = (2, 0)
+    for h in origin_hosts:
+        o = _below(h, target)
+        if (o.startswith("origin.") and o[7:] in names
+                or o.startswith("origin-") and o[7:] in names
+                or "-origin." in o and o.replace("-origin.", ".", 1) in names
+                or o.endswith("-origin") and o[:-7] in names):
+            return (0, 0)
+        shared = len(_words(o) & words)
+        if shared:
+            best = min(best, (1, -shared))
+    return best
+
+
 def _lead_order(lead, results):
     """How a lead ranks among leads of the same severity and strength:
     a go-around-the-CDN lead through a rented load balancer or VM first (the
@@ -627,13 +670,16 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                                      **fronted_by)))
             if not own:
                 continue
-            ips = [o["ip"] for o in own]
-            direct = list(dict.fromkeys(h for o in own for h in o["hosts"]))
+            # This CDN's origins, the ones named for its hosts first (v1.28);
+            # sorted() is stable, so ties keep the order above
+            ranked = sorted(own, key=lambda o: _name_match(o["hosts"], group, target))
+            ips = [o["ip"] for o in ranked]
+            direct = list(dict.fromkeys(h for o in ranked for h in o["hosts"]))
             direct_facts = [resolves[h] for h in direct[:3] if h in resolves]
-            web_facts = [f for o in own[:3] for f in web[o["ip"]][:1]]
-            if len(own) == 1:
-                straight, where = _names(own[0]["hosts"]), ips[0]
-                seen = (f"{straight} {'points' if len(own[0]['hosts']) == 1 else 'point'} straight "
+            web_facts = [f for o in ranked[:3] for f in web[o["ip"]][:1]]
+            if len(ranked) == 1:
+                straight, where = _names(ranked[0]["hosts"]), ips[0]
+                seen = (f"{straight} {'points' if len(ranked[0]['hosts']) == 1 else 'point'} straight "
                         f"at {where}, with no CDN in front, and a web server answers there")
                 maybe = f"If {where} is also the server behind {who}"
                 title_via = where
@@ -654,15 +700,15 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
             actions = [_action([resolves[h] for h in o["hosts"][:3] if h in resolves] or web[o["ip"]][:1],
                                f"Only accept web traffic on {o['ip']} from {cdn}, or put its hosts "
                                f"behind {cdn} too", [OWNERS["server"], OWNERS["cdn"]])
-                       for o in own]
+                       for o in ranked]
             candidates.append(_path(
                 f"Check whether {who} can be reached around {cdn} through {title_via}", "Low", steps,
                 f"Attacks {cdn} would have blocked reach the server", actions,
-                no_door=(f"nothing shows that {ips[0]} is the server behind {who}" if len(own) == 1 else
-                         f"nothing shows that any of the {len(own)} servers is the one behind {who}")
+                no_door=(f"nothing shows that {ips[0]} is the server behind {who}" if len(ranked) == 1 else
+                         f"nothing shows that any of the {len(ranked)} servers is the one behind {who}")
                 + " (a CDN hides its origin from outside)",
                 hosts=direct, ips=ips, rule="around_cdn",
-                targets=_targets(direct, ips, origins=own, **fronted_by)))
+                targets=_targets(direct, ips, origins=ranked, **fronted_by)))
 
     paths, leads, set_aside = gate.review(candidates, results, evidence, scope)
     paths.sort(key=lambda p: (SEVERITY_RANK[p["severity"]], LABEL_RANK[p["strength"]]))

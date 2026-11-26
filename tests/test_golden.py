@@ -102,6 +102,12 @@ def summarize(expected, got):
                 if old[k].get(field) != new[k].get(field):
                     changed.append(f"{new[k]['id']} {_name(k)}: {field} "
                                    f"{old[k].get(field)!r} -> {new[k].get(field)!r}")
+            # Order matters for origins: akashi tries the first 5 in scope (v1.28)
+            was = [o["ip"] for o in (old[k].get("targets") or {}).get("origins") or []]
+            now = [o["ip"] for o in (new[k].get("targets") or {}).get("origins") or []]
+            if was != now:
+                changed.append(f"{new[k]['id']} {_name(k)}: origin order, first 5 "
+                               f"{', '.join(was[:5])} -> {', '.join(now[:5])}")
             if len(old[k].get("steps", [])) != len(new[k].get("steps", [])):
                 changed.append(f"{new[k]['id']} {_name(k)}: steps "
                                f"{len(old[k].get('steps', []))} -> {len(new[k].get('steps', []))}")
@@ -199,6 +205,19 @@ def test_summary_tells_apart_leads_that_share_origins():
     lines = summarize(old, new)
     assert "leads added (1):" in lines
     assert not any("changed" in line for line in lines)
+
+
+def test_summary_reports_a_new_origin_order():
+    """Same origins, new order: akashi would try different servers first."""
+    def lead(order):
+        return {"id": "L1", "rule": "around_cdn", "title": "t", "severity": "Low", "strength": "Inference",
+                "steps": [], "targets": {"hosts": ["a", "b"], "ips": sorted(order), "cdn": "Akamai",
+                                         "fronted": ["www"], "origins": [{"ip": ip} for ip in order]}}
+    old, new = _sample(), _sample()
+    old["paths"]["leads"].append(lead(["192.0.2.1", "192.0.2.2"]))
+    new["paths"]["leads"].append(lead(["192.0.2.2", "192.0.2.1"]))
+    assert any("origin order, first 5 192.0.2.1, 192.0.2.2 -> 192.0.2.2, 192.0.2.1" in line
+               for line in summarize(old, new))
 
 
 def test_summary_caps_long_lists():

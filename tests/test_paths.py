@@ -1,7 +1,9 @@
 # Hostnames without dots on purpose: the chat app turns dotted names into
 # Markdown links when code is copied. The path rules don't care.
+import pytest
+
 from monomi.evidence import build_evidence
-from monomi.paths import build_paths, fix_first_parts
+from monomi.paths import _name_match, build_paths, fix_first_parts
 
 
 def lab_results():
@@ -1075,3 +1077,55 @@ def test_without_the_offline_link_fix_first_closed_only_the_side_door():
     files = next(p for p in out["paths"] if p["rule"] == "exposed_file")
     assert files["id"] not in (old or {}).get("closes", []) and files["id"] in out["fix_first"]["closes"]
     assert door["id"] in out["fix_first"]["closes"]
+
+
+# --- v1.28: origins named for the hosts behind the CDN are tried first ---
+# Dotted names here on purpose: the dots are what's tested, and this arrives as
+# a patch (git am), never copied by hand from chat.
+
+def named_origin_results():
+    """PlayStation-like: api.bridges behind the CDN, and among the target's own
+    servers one named for it (origin-api.bridges), one sharing a word with it
+    (bridges-metrics) and one unrelated (stage.haiku)."""
+    results = lab_results()
+    results["subdomains"].append("api.bridges")
+    results["enrichment"]["hosts"]["api.bridges"] = {"ips": ["203.0.113.9"], "provider": "Cloudflare"}
+    for name, ip in [("stage.haiku", "198.51.100.101"), ("bridges-metrics", "198.51.100.120"),
+                     ("origin-api.bridges", "198.51.100.150")]:
+        results["subdomains"].append(name)
+        results["enrichment"]["hosts"][name] = {"ips": [ip], "provider": "DigitalOcean"}
+        results["fingerprint"]["hosts"][name] = {
+            "collected_at": None, "status": 200, "header_issues": [],
+            "techs": [{"tech": "nginx", "version": None, "evidence": "Server header"}]}
+    return results
+
+
+def test_an_origin_named_for_a_fronted_host_is_tried_first():
+    out, ev = run(named_origin_results())
+    [lead] = cdn_lead(out)
+    # origin-api.bridges first, then the one sharing "bridges", then the rest as before (IP order)
+    assert lead["targets"]["ips"] == ["198.51.100.150", "198.51.100.120", "198.51.100.7", "198.51.100.101"]
+    assert [o["hosts"] for o in lead["targets"]["origins"]][:2] == [["origin-api.bridges"], ["bridges-metrics"]]
+    # the actions follow the same order, and nothing was dropped or added
+    assert lead["actions"][0]["what"].startswith("Only accept web traffic on 198.51.100.150")
+    assert len(lead["actions"]) == 4
+
+
+@pytest.mark.parametrize("origin,expected", [
+    ("origin-api.bridges.example.com", (0, 0)),     # origin-X
+    ("origin.api.bridges.example.com", (0, 0)),     # origin.X
+    ("api-origin.bridges.example.com", (0, 0)),     # X-origin, inside the name
+    ("bee-stg-origin.example.com", (0, 0)),         # X-origin, whole name
+    ("bridges-metrics.example.com", (1, -1)),       # shares "bridges"
+    ("bee-stg-mon.example.com", (1, -2)),           # shares "bee" and "stg": more ranks higher
+    ("stage.haiku.example.com", (2, 0)),            # nothing in common
+    ("api.dev.example.com", (2, 0)),                # "api" alone says nothing
+])
+def test_name_match(origin, expected):
+    fronted = ["api.bridges.example.com", "bee-stg.example.com"]
+    assert _name_match([origin], fronted, "example.com") == expected
+
+
+def test_name_match_takes_the_best_of_an_origins_hosts():
+    hosts = ["stage.haiku.example.com", "origin-api.bridges.example.com"]
+    assert _name_match(hosts, ["api.bridges.example.com"], "example.com") == (0, 0)
