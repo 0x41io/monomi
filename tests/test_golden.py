@@ -58,15 +58,20 @@ def run(results):
 
 
 def _key(item):
-    """What a path or lead is about: its rule and the hosts/IPs it targets.
-    Ids (P1, L3) and titles change when other items move, so they aren't the key."""
+    """What a path or lead is about: its rule, the hosts/IPs it targets and,
+    for around-the-CDN leads, which CDN and which hosts behind it. Ids (P1, L3)
+    and titles change when other items move, so they aren't the key. (Two
+    around_cdn leads can share every origin and differ only in the CDN.)"""
     t = item.get("targets") or {}
-    return (item.get("rule"), tuple(sorted(t.get("hosts") or [])), tuple(sorted(t.get("ips") or [])))
+    return (item.get("rule"), tuple(sorted(t.get("hosts") or [])), tuple(sorted(t.get("ips") or [])),
+            t.get("cdn") or "", tuple(sorted(t.get("fronted") or [])))
 
 
 def _name(key):
-    rule, hosts, ips = key
+    rule, hosts, ips, cdn, fronted = key
     where = ", ".join(list(hosts) + list(ips)) or "no targets"
+    if cdn or fronted:
+        where = f"{cdn or 'the CDN'} ({len(fronted)} fronted hosts), origins " + where
     if len(where) > 90:
         where = where[:87] + "..."
     return f"{rule} on {where}"
@@ -178,6 +183,22 @@ def test_summary_names_each_kind_of_move():
     assert "more_leads_hosts added (1):\n    c.example.test" in text
     assert "facts added (1):\n    b.example.test CNAME gone.example.test" in text
     assert "facts gone (1):\n    a.example.test resolves to 192.0.2.1" in text
+
+
+def test_summary_tells_apart_leads_that_share_origins():
+    """PlayStation: one around_cdn lead per CDN, both listing the same 11 origins.
+    A lead that comes out of the cut pile is "added", not a change to the other one."""
+    def cdn_lead(lid, cdn, fronted):
+        return {"id": lid, "rule": "around_cdn", "title": f"Check {fronted[0]} around {cdn}",
+                "targets": {"hosts": [], "ips": ["192.0.2.1", "192.0.2.2"], "cdn": cdn, "fronted": fronted},
+                "severity": "Medium", "strength": "Lead", "steps": [{}]}
+    old, new = _sample(), _sample()
+    akamai = cdn_lead("L2", "Akamai", ["accounts.example.test"])
+    old["paths"]["leads"].append(akamai)
+    new["paths"]["leads"] += [akamai, cdn_lead("L3", "AWS CloudFront", ["blog.example.test"])]
+    lines = summarize(old, new)
+    assert "leads added (1):" in lines
+    assert not any("changed" in line for line in lines)
 
 
 def test_summary_caps_long_lists():
