@@ -1112,17 +1112,21 @@ def test_an_origin_named_for_a_fronted_host_is_tried_first():
 
 
 @pytest.mark.parametrize("origin,expected", [
-    ("origin-api.bridges.example.com", (0, 0)),     # origin-X
-    ("origin.api.bridges.example.com", (0, 0)),     # origin.X
-    ("api-origin.bridges.example.com", (0, 0)),     # X-origin, inside the name
-    ("bee-stg-origin.example.com", (0, 0)),         # X-origin, whole name
-    ("bridges-metrics.example.com", (1, -1)),       # shares "bridges"
-    ("bee-stg-mon.example.com", (1, -2)),           # shares "bee" and "stg": more ranks higher
-    ("stage.haiku.example.com", (2, 0)),            # nothing in common
-    ("api.dev.example.com", (2, 0)),                # "api" alone says nothing
+    ("origin-api.bridges.example.com", (0, 0)),       # origin-X
+    ("origin.api.bridges.example.com", (0, 0)),       # origin.X
+    ("api-origin.bridges.example.com", (0, 0)),       # X-origin, inside the name
+    ("bee-stg-origin.example.com", (0, 0)),           # X-origin, whole name
+    ("origin-us-west-1.io.example.com", (1, 0)),      # named "origin", for no fronted host
+    ("payments-eu-origin.example.com", (1, -1)),      # named "origin" and shares "payments"
+    ("commerce-api.direct-stage.example.com", (2, -2)),  # shares "commerce" and "direct"
+    ("bridges-metrics.example.com", (2, -1)),         # shares "bridges"
+    ("bee-stg-mon.example.com", (2, -1)),             # shares "bee"; "stg" is an environment word
+    ("stage.haiku.example.com", (3, 0)),              # "stage" alone says nothing
+    ("api.dev.example.com", (3, 0)),                  # nor do "api" and "dev"
 ])
 def test_name_match(origin, expected):
-    fronted = ["api.bridges.example.com", "bee-stg.example.com"]
+    fronted = ["api.bridges.example.com", "bee-stg.example.com", "commerce-api.direct.example.com",
+               "payments.example.com", "login.stage.example.com"]
     assert _name_match([origin], fronted, "example.com") == expected
 
 

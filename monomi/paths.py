@@ -38,7 +38,7 @@ import ipaddress
 import re
 
 from monomi import gate
-from monomi.categorize import categorize
+from monomi.categorize import RULES as CATEGORY_RULES, categorize
 from monomi.content import SEVERITY_ORDER
 from monomi.evidence import OWNERS
 from monomi.internetdb import cloud_infra_from_cname
@@ -198,6 +198,12 @@ def _ip_order(ip):
 # Words too common in hostnames to show an origin belongs to a fronted host
 # (v1.28): sharing "api" or "www" says nothing.
 COMMON_WORDS = {"www", "origin", "api", "app", "web", "cdn", "edge", "com", "net", "org"}
+# Environment words don't show it either: in a CDN group of hundreds of hosts,
+# some fronted host always has "stage" or "dev" (PlayStation: stage.haiku
+# ranked up for sharing "stage"). Monomi's non-production words, plus the
+# production ones. Two-letter ones (qa, pp, np, e1) are under the 3-letter minimum.
+ENV_WORDS = {w for rule in CATEGORY_RULES if rule[0] == "non-production" for w in rule[1]} | {
+    "prod", "production", "sit", "int", "integration", "live"}
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -211,30 +217,41 @@ def _below(host, target):
 
 
 def _words(name):
-    return {w for w in _WORD.findall(name) if len(w) >= 3 and w not in COMMON_WORDS}
+    """The words of a name that can show what service it is: 3+ letters,
+    no common or environment words. 'commerce-api.direct-stage' -> {commerce, direct}"""
+    return {w for w in _WORD.findall(name) if len(w) >= 3 and w not in COMMON_WORDS | ENV_WORDS}
+
+
+def _named_for(o, names):
+    """True if the origin name o is a fronted name with "origin" added:
+    origin-X, origin.X or X-origin (at the end or before a dot)."""
+    return (o.startswith("origin.") and o[7:] in names
+            or o.startswith("origin-") and o[7:] in names
+            or "-origin." in o and o.replace("-origin.", ".", 1) in names
+            or o.endswith("-origin") and o[:-7] in names)
 
 
 def _name_match(origin_hosts, fronted, target):
     """How well an origin's hostnames match the hosts behind the CDN (v1.28,
     from PlayStation: origins came from unrelated hosts like stage.haiku while
     origin-api.bridges sat next to api.bridges). Lower ranks first:
-      (0, ...) an origin host named for a fronted host: origin-X, X-origin or origin.X
-      (1, -n)  shares n words with the fronted hosts (common words like api left out)
-      (2, 0)   nothing in common
-    Only reorders origins: none is dropped or added."""
+      (0, 0)  an origin host named for a fronted host: origin-X, origin.X, X-origin
+      (1, -n) a host the operator named "origin" (origin-us-west-1, bee-stg-origin)
+      (2, -n) shares n service words with the fronted hosts (commerce-api.direct-stage
+              next to commerce-api.direct: likely the same service)
+      (3, 0)  nothing in common
+    n breaks ties inside a tier: more shared service words first. Only
+    reorders origins: none is dropped or added."""
     names = {_below(h, target) for h in fronted}
     words = set().union(*(_words(n) for n in names)) if names else set()
-    best = (2, 0)
+    best = (3, 0)
     for h in origin_hosts:
         o = _below(h, target)
-        if (o.startswith("origin.") and o[7:] in names
-                or o.startswith("origin-") and o[7:] in names
-                or "-origin." in o and o.replace("-origin.", ".", 1) in names
-                or o.endswith("-origin") and o[:-7] in names):
+        if _named_for(o, names):
             return (0, 0)
-        shared = len(_words(o) & words)
-        if shared:
-            best = min(best, (1, -shared))
+        shared = -len(_words(o) & words)
+        score = (1, shared) if "origin" in _WORD.findall(o) else (2, shared) if shared else (3, 0)
+        best = min(best, score)
     return best
 
 
