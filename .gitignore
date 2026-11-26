@@ -17,6 +17,8 @@ env/
 reports/
 *.json
 !tests/golden/**/*.json
+# Real targets' scans for the golden tests stay on this machine (v1.28)
+tests/golden/private/
 # Editors / OS
 .vscode/
 .idea/

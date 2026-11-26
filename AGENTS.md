@@ -91,6 +91,12 @@ Brand promise: **Monomi proves what it finds and never invents a finding.**
 - [ ] PEP 8 clean on changed files: `pycodestyle <files>` (two blank lines
       between top-level functions, one before nested defs, import groups)
 - [ ] `git diff --check` shows no trailing whitespace
+- [ ] Golden check: `pytest tests/test_golden.py` passes. A release that
+      changes big logic ("target's own server", rules, imports) runs the
+      differential check: freeze the expected files on `main` before the change
+      (`--update-golden`), run the test on the branch, and every move it lists
+      is either intended (in the release notes) or a bug. Real targets' scans
+      live in `tests/golden/private/` (gitignored); never commit them
 - [ ] Live check on the lab (41xlab): CLI run without `--ai` (free); MCP run
       after restarting the Claude app if MCP code changed
 - [ ] Claude review passed, then merge to `main`, tag, GitHub release notes
