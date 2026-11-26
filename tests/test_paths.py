@@ -685,10 +685,11 @@ def test_each_cdn_gets_its_own_lead():
 
 # --- v1.17: dangling NS delegation (rule "dangling_ns") ---
 
-def lame_delegation(grade="theoretical", provider="AWS Route 53"):
+def lame_delegation(grade="theoretical", provider="AWS Route 53", ns_ips=("205.251.192.127", "205.251.194.214"),
+                    detail="lame delegation"):
     """One ns_delegations record, as takeover.check_hosts() returns it."""
     return {"cut": "local-dev.lab", "hosts": ["alice.local-dev.lab", "bob.local-dev.lab"],
-            "ns_ips": ["205.251.192.127", "205.251.194.214"], "detail": "lame delegation",
+            "ns_ips": list(ns_ips), "detail": detail,
             "collected_at": None, "grade": grade, "provider": provider}
 
 
@@ -716,11 +717,25 @@ def test_theoretical_delegation_is_a_low_lead_never_a_path():
 
 
 def test_unrecognized_delegation_is_a_medium_lead_to_investigate():
-    results = lame_results(grade="investigate", provider=None)
+    # nameservers on no pooled service Monomi knows (v1.28.1: the grade comes from the IPs)
+    results = lame_results(grade="investigate", provider=None, ns_ips=["198.51.100.9"])
     out = build_paths(results, build_evidence(results))
     lead = dangling_items(out)[0]
     assert lead in out["leads"] and lead["severity"] == "Medium"
     assert "authoritative query" in lead["missing"]
+
+
+def test_a_saved_scan_that_missed_an_ipv6_route53_nameserver_is_regraded():
+    """PlayStation (prodlines21): scans before v1.28.1 kept no IPv6 nameserver, so
+    the cut came out "investigate" (Medium). The resolver's text still names it."""
+    detail = ("EDE(22): No Reachable Authority at delegation local-dev.lab. EDE(23): Network Error "
+              "[2600:9000:5307:c200::1]:53 returned REFUSED for local-dev.lab CNAME")
+    results = lame_results(grade="investigate", provider=None, ns_ips=[], detail=detail)
+    out = build_paths(results, build_evidence(results))
+    lead = dangling_items(out)[0]
+    assert lead["severity"] == "Low" and "AWS Route 53" in lead["missing"]
+    assert lead["targets"]["grade"] == "theoretical"
+    assert lead["targets"]["ns_ips"] == ["2600:9000:5307:c200::1"]
 
 
 def test_no_delegations_no_dangling_lead():

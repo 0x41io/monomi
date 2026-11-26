@@ -393,3 +393,34 @@ def test_a_saved_lead_into_a_closed_namespace_is_graded_stale():
     facts = [e["fact"] for e in ev]
     assert any("(Amazon brand TLD)" in f and "stale DNS record, not a takeover risk" in f for f in facts)
     assert not any(e["kind"] in ("dangling_unknown", "dangling_provider", "takeover_lead") for e in ev)
+
+
+# --- v1.28.1: IPv6 nameservers, and every Route 53 range ---
+
+@pytest.mark.parametrize("text,ips", [
+    ("EDE(23): Network Error [2600:9000:5307:c200::1]:53 returned REFUSED", ["2600:9000:5307:c200::1"]),
+    ("EDE(23): Network Error 205.251.198.166:53 returned REFUSED", ["205.251.198.166"]),
+    ("Name servers refused query (lame delegation?) [205.251.198.35, 205.251.192.127]",
+     ["205.251.198.35", "205.251.192.127"]),
+    ("refused at 19:18:30 by [2600:9000:5307:C200:0:0:0:1]", ["2600:9000:5307:c200::1"]),  # time skipped, case folded
+    ("205.251.198.166 and 205.251.198.166:53 again", ["205.251.198.166"]),                  # once each
+    ("EDE(22): No Reachable Authority", []),
+])
+def test_nameserver_ips(text, ips):
+    assert dnscheck.nameserver_ips(text) == ips
+
+
+@pytest.mark.parametrize("ip", ["2600:9000:5307:c200::1", "205.251.198.166", "52.46.180.1", "2600:9000:7000::53"])
+def test_every_route53_range_is_pooled(ip):
+    assert takeover.grade_delegation([ip]) == ("theoretical", "AWS Route 53")
+
+
+def test_delegation_view_reads_the_ips_back_out_of_the_detail():
+    saved = {"cut": "x.example.com", "ns_ips": [], "grade": "investigate", "provider": None,
+             "detail": "EDE(23): Network Error [2600:9000:5307:c200::1]:53 returned REFUSED"}
+    assert takeover.delegation_view(saved) == (["2600:9000:5307:c200::1"], "theoretical", "AWS Route 53")
+
+
+def test_delegation_view_with_nothing_to_go_on_stays_investigate():
+    saved = {"cut": "x.example.com", "ns_ips": [], "detail": "EDE(22): No Reachable Authority"}
+    assert takeover.delegation_view(saved) == ([], "investigate", None)

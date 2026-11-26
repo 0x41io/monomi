@@ -11,6 +11,7 @@ answer for the same host. Order of trust:
 Only asks DNS servers, never the target itself, so it stays passive.
 """
 
+import ipaddress
 import re
 import time
 
@@ -83,6 +84,26 @@ _DELEGATION_PHRASES = re.compile(
 )
 _EDE_RE = re.compile(r"EDE\((\d+)\)")        # Cloudflare labels extended errors "EDE(22): ..."
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+# IPv6 candidates (v1.28.1, from PlayStation: "Network Error [2600:9000:5307:c200::1]:53
+# returned REFUSED" left ns_ips empty). Anything this matches is checked with
+# ipaddress before it counts, so a time like 19:18:30 never becomes an address.
+_IPV6_RE = re.compile(r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Fa-f:])")
+
+
+def nameserver_ips(text: str) -> list[str]:
+    """The nameserver IPs named in a resolver's error text, IPv4 then IPv6,
+    each once: "[205.251.198.35, ...]" (Google), "205.251.198.166:53" and
+    "[2600:9000:5307:c200::1]:53" (Cloudflare)."""
+    found = _IPV4_RE.findall(text)
+    for cand in _IPV6_RE.findall(text):
+        try:
+            if ipaddress.ip_address(cand).version == 6:
+                found.append(str(ipaddress.ip_address(cand)))
+        except ValueError:
+            pass
+    return list(dict.fromkeys(found))
+
+
 # EDE 22 = "No Reachable Authority", 23 = "Network Error" (REFUSED at delegation)
 _DELEGATION_EDE = {22, 23}
 
@@ -98,8 +119,7 @@ def _doh_extended(data: dict) -> tuple[str, list[int], list[str]]:
     comment = data.get("Comment", "")
     text = " ".join(str(c) for c in comment) if isinstance(comment, list) else str(comment)
     edes = [int(m) for m in _EDE_RE.findall(text)]
-    ips = _IPV4_RE.findall(text)
-    return text, edes, ips
+    return text, edes, nameserver_ips(text)
 
 
 def _servfail(name: str, data: dict) -> "ServerFailure":

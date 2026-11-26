@@ -18,7 +18,7 @@ import re
 
 from monomi.common import now_utc
 from monomi.dnscheck import (ConflictingAnswers, DNSLookupError, NoSuchHost, ServerFailure,
-                             check_exists, find_zone_cut, get_cname)
+                             check_exists, find_zone_cut, get_cname, nameserver_ips)
 
 # Services where a deleted resource's name goes NXDOMAIN AND can usually
 # be re-claimed by anyone who signs up. Each entry: (CNAME ending, name).
@@ -144,9 +144,22 @@ PROVIDER_DOMAINS = [
 # "theoretical". Each entry: (IPv4 network of its nameservers, name).
 # Unrecognized nameservers are graded "investigate": they might be
 # re-registerable, and only a look at the exact NS names can tell.
-POOLED_DNS = [
-    (ipaddress.ip_network("205.251.192.0/21"), "AWS Route 53"),
+# Route 53's nameserver ranges, from AWS's published list (ip-ranges.json,
+# "service": "ROUTE53", list of 2026-11-26). AWS documents these IPs as static.
+# v1.17 knew only 205.251.192.0/21, and no IPv6 range at all (v1.28.1).
+ROUTE53_RANGES = [
+    "1.179.52.0/22", "1.179.56.0/22", "18.196.222.0/24", "18.196.223.0/24", "205.251.192.0/21",
+    "205.251.200.0/23", "3.4.24.0/23", "3.4.26.0/23", "3.4.32.0/20", "34.217.142.0/24",
+    "34.217.143.0/24", "51.0.136.0/23", "51.0.138.0/23", "51.0.140.0/23", "51.0.142.0/23",
+    "52.46.180.0/22", "52.46.184.0/22", "52.61.226.0/23", "52.82.176.0/22", "52.82.180.0/22",
+    "52.95.110.0/24", "54.222.32.0/22", "54.222.36.0/22", "63.246.114.0/23", "64.91.192.0/19",
+    "96.127.116.0/23",
+    "2001:3fc6:8::/47", "2001:3fc6:a::/47", "2001:3fc6:c::/47", "2001:3fc6:e::/47",
+    "2600:9000:5300::/45", "2600:9000:7000::/36", "2600:9000:de0::/43", "2600:9000:f530::/46",
+    "2600:9000:fc0::/43", "2600:9000:ff8::/46", "2600:f0f0:400::/44", "2600:f0f2:7000::/44",
+    "2600:f0f3:f000::/44", "2600:f0fb:f000::/44",
 ]
+POOLED_DNS = [(ipaddress.ip_network(net), "AWS Route 53") for net in ROUTE53_RANGES]
 
 
 def grade_delegation(ns_ips: list[str]) -> tuple[str, str | None]:
@@ -170,6 +183,16 @@ def grade_delegation(ns_ips: list[str]) -> tuple[str, str | None]:
     if len(providers) == 1:
         return "theoretical", providers.pop()
     return "investigate", None
+
+
+def delegation_view(d: dict) -> tuple[list[str], str, str | None]:
+    """(ns_ips, grade, provider) for a saved ns_delegations record, worked out
+    again from what the resolver said. Scans saved before v1.28.1 dropped IPv6
+    nameservers and knew one Route 53 range, so their grade can be wrong;
+    the same record always gives the same answer."""
+    ips = list(d.get("ns_ips") or []) or nameserver_ips(d.get("detail") or "")
+    grade, provider = grade_delegation(ips)
+    return ips, grade, provider
 
 
 def match_provider(target: str) -> str | None:

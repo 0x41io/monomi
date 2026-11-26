@@ -42,6 +42,7 @@ from monomi.categorize import RULES as CATEGORY_RULES, categorize
 from monomi.content import SEVERITY_ORDER
 from monomi.evidence import OWNERS
 from monomi.internetdb import cloud_infra_from_cname
+from monomi.takeover import delegation_view
 
 LABEL_RANK = {"Observed": 0, "Inference": 1, "Lead": 2}
 SEVERITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
@@ -359,13 +360,14 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         if not d:
             continue
         cut, hosts = d["cut"], inside(d["hosts"])
+        ns_ips, grade, provider = delegation_view(d)  # v1.28.1: older scans re-graded
         steps = [
             _step(f"{cut} is delegated to nameservers that refuse to answer for it", [fact], "Observed"),
             _step(f"If those nameservers can be claimed, an attacker controls DNS for every name "
                   f"under {cut}", [fact], "Lead"),
         ]
-        if d["grade"] == "theoretical":
-            no_door = (f"{cut}'s nameservers are on {d['provider']}, which assigns nameservers from a "
+        if grade == "theoretical":
+            no_door = (f"{cut}'s nameservers are on {provider}, which assigns nameservers from a "
                        "large pool: getting this exact set assigned again is impractical")
             severity = "Low"
         else:
@@ -378,8 +380,8 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                                          "recreate the zone where they point")],
                                 no_door=no_door, hosts=hosts,
                                 rule="dangling_ns",
-                                targets=_targets(hosts, cut=cut, ns_ips=list(d["ns_ips"]),
-                                                 provider=d["provider"], grade=d["grade"])))
+                                targets=_targets(hosts, cut=cut, ns_ips=ns_ips,
+                                                 provider=provider, grade=grade)))
 
     # B. Email impersonation
     for v in spoof:

@@ -9,7 +9,7 @@ import re
 
 from monomi.categorize import categorize
 from monomi.common import now_utc
-from monomi.takeover import match_closed_namespace, match_provider
+from monomi.takeover import delegation_view, match_closed_namespace, match_provider
 
 # What we can honestly say about a host with no IPv4 address, per its DNS
 # status from dnscheck.host_status()
@@ -264,9 +264,10 @@ def build_evidence(results: dict) -> list[dict]:
                 stale_source, ("dns",))
         for d in tk.get("ns_delegations", []):
             ns_source = [{"name": "DNS-over-HTTPS lookups (takeover check)", "collected_at": d["collected_at"]}]
-            on = f" ({', '.join(d['ns_ips'])})" if d["ns_ips"] else ""
-            if d["grade"] == "theoretical":
-                why = (f"they're on {d['provider']}, which assigns nameservers from a large pool, so "
+            ns_ips, grade, provider = delegation_view(d)  # v1.28.1: older scans re-graded
+            on = f" ({', '.join(ns_ips)})" if ns_ips else ""
+            if grade == "theoretical":
+                why = (f"they're on {provider}, which assigns nameservers from a large pool, so "
                        "getting this exact set assigned again is impractical")
             else:
                 why = "who runs them wasn't recognized, so whether they can be registered again is unknown"
