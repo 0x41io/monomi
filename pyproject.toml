@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "monomi"
 description = "0x41 / monomi - passive domain recon with AI synthesis"
 readme = "README.md"
-license = "MIT"
+license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 authors = [{ name = "0x41" }]
 # Only the versions Monomi is actually tested on (3.14 in WSL, 3.15 on Windows)

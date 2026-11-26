@@ -133,3 +133,10 @@ merge. Several PRs touching one file are cleaner applied by hand in one commit.
   was tagged before review. Every item above exists to prevent that.
   Fixed in v1.10.2: each tool suggests only what its own results back up,
   and the agent passes `already_ran` (the server can't remember a session).
+
+## Licensing (from v1.28.0)
+
+- mønømi is AGPL-3.0-only from v1.28.0 on; earlier versions stay MIT. New files fall under it: add no MIT headers or other license notices.
+- Borrow ideas from other tools (BBOT, ARTEX, ...), never their code: no copying, pasting or translating code from another project, whatever its license, so 0x41 keeps full ownership and can sell or relicense later.
+- A new dependency needs its license checked first: MIT, BSD, ISC, Apache-2.0, LGPL, MPL-2.0 and PSF are fine; GPL-2.0-only is not compatible. Name it in the patch description.
+- No outside code contributions without a CLA: ask Roi.

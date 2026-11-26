@@ -666,9 +666,15 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [ ] Publish on PyPI (`pip install monomi`)
 - [ ] Web interface
 
-## License
+## Licensing
 
-MIT. See [LICENSE](LICENSE).
+Copyright (c) 2026 0x41.
+
+From v1.28.0 on, mønømi is licensed under the **GNU Affero General Public License v3.0 only** (AGPL-3.0-only); see [LICENSE](LICENSE). Versions before v1.28.0 were released under the MIT License and stay under it.
+
+In short: you can use, study, change and share it. If you share a changed version, or run one as a network service other people use, you must make its source available to them under the same license. This is a summary; the LICENSE text is what counts.
+
+Outside contributions need a contributor license agreement (CLA), so 0x41 can keep licensing the project as a whole. Open an issue and ask before sending a pull request.
 
 ---
 
