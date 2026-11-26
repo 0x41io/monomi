@@ -144,7 +144,7 @@ def test_facts_that_attack_paths_use_have_a_kind():
     results["subdomains"].append("staging")
     results["enrichment"]["hosts"]["staging"] = {"ips": ["198.51.100.7"], "provider": "DigitalOcean"}
     results["exposure"]["ips"]["198.51.100.7"]["risky"] = ["3389 (RDP)"]
-    results["takeover"]["leads"].append({"host": "blog", "cname": "gone-blog", "service": "unknown",
+    results["takeover"]["leads"].append({"host": "blog", "cname": "gone-blog.unknownhost.test", "service": "unknown",
                                          "claimable": False, "collected_at": None})
     kinds = kinds_of(build_evidence(results))
     assert kinds["resolves"] == ["app", "staging"]

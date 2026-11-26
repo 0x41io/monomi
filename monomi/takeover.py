@@ -72,6 +72,50 @@ def match_not_claimable(target: str) -> str | None:
     return None
 
 
+# Top-level domains only one company can register under: ICANN "brand" TLDs
+# (IANA root zone database, type "brand"). A dangling CNAME into one is stale:
+# nobody but that company could ever create the name. (v1.28, from the
+# PlayStation run: six *.internal.aws CNAMEs graded "confirm by hand")
+BRAND_TLDS = {
+    "aws": "Amazon", "amazon": "Amazon",
+    "google": "Google", "goog": "Google",
+    "microsoft": "Microsoft", "azure": "Microsoft",
+    "apple": "Apple", "sony": "Sony", "ibm": "IBM", "bmw": "BMW",
+}
+
+# TLDs that never exist on the public internet: reserved for private networks
+# (RFC 6762 .local, RFC 6761 .localhost, ICANN's .internal in 2024) or ones
+# ICANN won't delegate (.corp, .home, .mail). A name under one only works
+# inside someone's own network, so nobody outside can claim it.
+# .test / .example / .invalid are left out on purpose: they're for docs and
+# tests (Monomi's planted scans use them for "unknown service" leads) and
+# never turn up in a real target's DNS.
+PRIVATE_TLDS = {"internal", "local", "localhost", "corp", "home", "mail"}
+
+
+def match_closed_namespace(target: str) -> tuple[str, str] | None:
+    """(service, reason) when nobody on the public internet can ever create
+    the CNAME target, else None. Looks only at the name, never the network.
+
+    'poseidon.internal.aws'  -> ('Amazon brand TLD', '.aws is a brand TLD ...')
+    'preview.direct.q1-pqa'  -> ('internal name', ...): no real TLD has a
+                                digit or hyphen, except IDNs (xn--...)
+    """
+    name = target.rstrip(".").lower()
+    tld = name.rsplit(".", 1)[-1]
+    if tld in BRAND_TLDS:
+        company = BRAND_TLDS[tld]
+        return (f"{company} brand TLD",
+                f".{tld} is a brand TLD: only {company} can register names under it")
+    if tld in PRIVATE_TLDS:
+        return ("private name", f".{tld} is reserved for private networks and never "
+                "registered on the public internet")
+    if "." not in name or (not tld.startswith("xn--") and (any(c.isdigit() for c in tld) or "-" in tld)):
+        return ("internal name", f"'{tld}' isn't a real top-level domain, so the name can only "
+                "exist inside a private network")
+    return None
+
+
 # Big cloud providers' own domains. A dangling CNAME under one of these
 # can't be taken over by BUYING the domain (the provider owns it). Whether
 # the name itself can be claimed again depends on the service, so a hit
@@ -196,6 +240,11 @@ def inspect_host(host: str, domain: str | None = None) -> dict:
     if unclaimable:
         stale = {"host": host, "cname": target, "service": unclaimable,
                  "reason": "names on this service include a random ID and can't be claimed again",
+                 "nxdomain_confirmed_by": confirmed_by, "collected_at": now_utc()}
+        return {"status": "stale", "cname": target, "lead": None, "stale": stale}
+    closed = match_closed_namespace(target)
+    if closed:
+        stale = {"host": host, "cname": target, "service": closed[0], "reason": closed[1],
                  "nxdomain_confirmed_by": confirmed_by, "collected_at": now_utc()}
         return {"status": "stale", "cname": target, "lead": None, "stale": stale}
     service = match_service(target)

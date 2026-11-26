@@ -2,7 +2,8 @@ import pytest
 
 from monomi import dnscheck, takeover
 from monomi.evidence import build_evidence
-from monomi.takeover import check_host, check_hosts, in_domain, inspect_host, match_not_claimable, match_provider, match_service
+from monomi.takeover import (check_host, check_hosts, in_domain, inspect_host, match_closed_namespace,
+                             match_not_claimable, match_provider, match_service)
 
 # Both DNS-over-HTTPS providers confirmed the NXDOMAIN (see dnscheck.check_exists)
 DOH_BOTH = ["Cloudflare", "Google"]
@@ -337,3 +338,58 @@ def test_cli_all_lame_hosts_means_none_unchecked(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "couldn't be checked" not in out
     assert "No takeover leads among 1 hosts checked" in out
+
+
+# --- names nobody on the public internet can create (v1.28, PlayStation run) ---
+
+@pytest.mark.parametrize("target,service", [
+    ("poseidon.internal.aws", "Amazon brand TLD"),
+    ("sbahn-subscribe-e1.internal.aws.", "Amazon brand TLD"),   # trailing dot
+    ("Thing.Corp.GOOGLE", "Google brand TLD"),                   # any case
+    ("db.cluster.internal", "private name"),
+    ("printer.local", "private name"),
+    ("preview.direct.q1-pqa", "internal name"),                  # hyphen and digit: no real TLD
+    ("app.stage2", "internal name"),
+    ("fileserver", "internal name"),                             # one label, no TLD at all
+])
+def test_closed_namespaces(target, service):
+    assert match_closed_namespace(target)[0] == service
+
+
+@pytest.mark.parametrize("target", [
+    "old-app.azurewebsites.net",
+    "aws.attacker.com",        # "aws" as a label, not the TLD: anyone can buy attacker.com
+    "lumos.eu.sony.com",       # Sony's .com, not the .sony TLD
+    "shop.xn--p1ai",           # a real IDN TLD (.рф) has hyphens and a digit
+    "site.example.co.uk",
+])
+def test_public_names_are_not_closed(target):
+    assert match_closed_namespace(target) is None
+
+
+def test_dangling_cname_into_a_brand_tld_is_stale_not_a_lead(monkeypatch):
+    target = "poseidon-e1.internal.aws"
+    fake_dns(monkeypatch, cnames={"poseidon-privatelink.e1.example.com": target}, dead={target})
+    info = inspect_host("poseidon-privatelink.e1.example.com")
+    assert info["status"] == "stale"
+    assert info["lead"] is None
+    assert info["stale"]["service"] == "Amazon brand TLD"
+    assert "only Amazon can register" in info["stale"]["reason"]
+
+
+def test_dangling_cname_to_an_internal_name_is_stale_not_a_lead(monkeypatch):
+    fake_dns(monkeypatch, cnames={"preview.example.com": "preview.direct.q1-pqa"}, dead={"preview.direct.q1-pqa"})
+    assert inspect_host("preview.example.com")["status"] == "stale"
+
+
+def test_a_saved_lead_into_a_closed_namespace_is_graded_stale():
+    """Scans saved before v1.28 hold these as leads; the evidence grades them stale,
+    so no attack path or Akashi check comes from them."""
+    lead = {"host": "poseidon-privatelink.e1.example.com", "cname": "poseidon-e1.internal.aws",
+            "service": None, "claimable": False, "nxdomain_confirmed_by": DOH_BOTH,
+            "collected_at": "2026-11-24T19:18:30+00:00"}
+    report = {"leads": [lead], "checked": 1, "errors": {}, "collected_at": "2026-11-24T19:18:30+00:00"}
+    ev = build_evidence(base_results(report))
+    facts = [e["fact"] for e in ev]
+    assert any("(Amazon brand TLD)" in f and "stale DNS record, not a takeover risk" in f for f in facts)
+    assert not any(e["kind"] in ("dangling_unknown", "dangling_provider", "takeover_lead") for e in ev)

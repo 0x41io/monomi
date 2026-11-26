@@ -9,7 +9,7 @@ import re
 
 from monomi.categorize import categorize
 from monomi.common import now_utc
-from monomi.takeover import match_provider
+from monomi.takeover import match_closed_namespace, match_provider
 
 # What we can honestly say about a host with no IPv4 address, per its DNS
 # status from dnscheck.host_status()
@@ -241,6 +241,11 @@ def build_evidence(results: dict) -> list[dict]:
             if lead["claimable"]:
                 add(f"{lead['host']} has a CNAME to {lead['cname']} ({lead['service']}), and that target "
                     "does not exist (NXDOMAIN); this service lets deleted names be claimed again", lead_source, ("dns", "cloud"), kind="takeover_lead", host=lead["host"])
+            elif closed := match_closed_namespace(lead["cname"]):
+                # Scans saved before v1.28 kept these as leads: graded stale here too
+                add(f"{lead['host']} has a CNAME to {lead['cname']} ({closed[0]}), and that target "
+                    f"does not exist (NXDOMAIN); {closed[1]}, so this is a stale DNS record, not a "
+                    "takeover risk", lead_source, ("dns",))
             elif provider := match_provider(lead["cname"]):
                 add(f"{lead['host']} has a CNAME to {lead['cname']}, and that target does not exist "
                     f"(NXDOMAIN); it is under {provider}'s own domain, so nobody can buy the domain, "
