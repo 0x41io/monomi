@@ -18,7 +18,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for
 from monomi.collectors import certspotter, crtsh, crtsh_db, otx, saved
 from monomi.common import VERSION, is_hostname, now_utc
-from monomi.importers import spiderfoot, subfinder
+from monomi.importers import bbot, spiderfoot, subfinder
 from monomi import (activelog, content, doctor, emailauth, enrich, evidence, exposed, fingerprint, gate,
                     history, home, internetdb, mcp_setup, paths, probe, rate, report, research,
                     scope, suggest, takeover, threatintel, ui)
@@ -107,6 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subfinder", metavar="FILE",
                         help="also check the hostnames in a subfinder output file (plain, -oJ or -oI); "
                              "Monomi never runs subfinder itself")
+    parser.add_argument("--bbot", metavar="FILE",
+                        help="also check the in-scope hostnames in a BBOT output.json (v1.29); "
+                             "Monomi never runs BBOT itself")
     parser.add_argument("--investigate-ip", nargs="+", metavar="IP",
                         help="look into suspicious IP(s): Tor/VPN/hosting signs, network owner, Shodan (asks public sources, never the IP)")
     parser.add_argument("--no-color", action="store_true", help="plain output (also respects NO_COLOR)")
@@ -257,6 +260,26 @@ def add_subfinder(results: dict, path: str, domain: str) -> bool:
     return True
 
 
+def add_bbot(results: dict, path: str, domain: str) -> bool:
+    """--bbot: add the in-scope hostnames from a BBOT output.json as their own
+    source, and name everything else it held. False if unreadable."""
+    try:
+        loaded = bbot.load(path, domain)
+    except (OSError, ValueError) as e:
+        fail(f"Can't read the BBOT file: {e}")
+        return False
+    r = bbot.to_source(loaded, path)
+    results["sources"]["bbot"] = r
+    good(f"BBOT: {r['subdomain_count']} in-scope hostnames from {short_path(path)} "
+         f"(written {r['collected_at']})")
+    for line in r["skipped"]:
+        warn(f"Skipped {line}")
+    if r["not_used"]:
+        shown = ", ".join(f"{ui.safe(t)}: {n}" for t, n in r["not_used"].items())
+        info(f"Not used (other BBOT event types; Monomi checks these itself): {shown}")
+    return True
+
+
 def add_import(results: dict, sf: dict, path: str) -> None:
     """Put the SpiderFoot export's hosts, findings and context into results."""
     hosts = sorted(sf["hosts"])
@@ -286,7 +309,7 @@ SOURCE_NAMES = {"crt.sh": "crt.sh", "crt.sh database": "crt.sh database", "Cert 
                 "AlienVault OTX": "otx"}
 DISPLAY_NAMES = {key: name for name, key in SOURCE_NAMES.items()}  # "certspotter" -> "Cert Spotter"
 # What history tracks, one list each: crt.sh's website and database hold the
-# same data, so they're one entry. Imports (hosts file, SpiderFoot, subfinder)
+# same data, so they're one entry. Imports (hosts file, SpiderFoot, subfinder, BBOT)
 # aren't here: they're only there on runs that pass the file, so they'd make
 # hosts look new or gone.
 HISTORY_SOURCES = {"crt.sh": ("crt.sh", "crt.sh database"), "certspotter": ("certspotter",),
@@ -1497,6 +1520,8 @@ def main() -> int:
     if args.hosts and not add_hosts_file(results, args.hosts, domain):
         return 1
     if args.subfinder and not add_subfinder(results, args.subfinder, domain):
+        return 1
+    if args.bbot and not add_bbot(results, args.bbot, domain):
         return 1
     if args.extra_hosts and not add_extra_hosts(results, args.extra_hosts, domain, active_scope):
         return 1

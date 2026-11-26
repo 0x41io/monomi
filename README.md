@@ -20,6 +20,7 @@ Most recon tools hand you a raw list of hostnames. Monomi collects a domain's pu
   - [Cert Spotter](https://sslmate.com/certspotter/) (currently valid certificates, more reliable; waits and retries when rate-limited, and an outage only fails this source, never the scan)
   - [AlienVault OTX](https://otx.alienvault.com) passive DNS (hostnames DNS sensors have seen answer, including ones that never had a certificate). Works without a key, but keyless requests get rate-limited almost at once, so set a free key in `OTX_API_KEY` (see [OTX key](#otx-key-recommended))
 - **subfinder import (`--subfinder FILE`):** add the hostnames from a [subfinder](https://github.com/projectdiscovery/subfinder) output file (plain, `-oJ` or `-oI`). Monomi never runs subfinder itself: run it, then pass the file. Only the target and its subdomains are kept, hosts get the same checks and validation gate as any other, facts say they were imported, and they stay out of scan history (they're only there on runs that pass the file). Over MCP, `find_subdomains` takes `subfinder_file` (a file inside Monomi's `scans/` folder)
+- **BBOT import (`--bbot FILE`, v1.29):** add the in-scope hostnames from a [BBOT](https://github.com/blacklanternsecurity/bbot) `output.json`. Monomi never runs or bundles BBOT: run it, then pass the file. A host is kept only if BBOT itself marked it in scope (scope distance 0, so a provider's nameservers BBOT found one hop out stay out) **and** it's the target or one of its subdomains; it then gets the same checks, scope rules and validation gate as any other, and stays out of scan history. Every other BBOT event type (open ports, technologies, findings, URLs) is counted and named, never imported: Monomi checks those itself, with evidence it can stand behind. Over MCP, `find_subdomains` takes `bbot_file` (a file inside Monomi's `scans/` folder)
 - **Automatic fallback:** if a source is down, the scan continues with the others
 - **Saved source copies:** every good answer from a source is saved per domain (`scans/<domain>/sources/`). If that source fails on a later run, Monomi uses the saved copy (up to 30 days old) and labels it `from_saved` with its original collection time, so an outage only costs fresh data, not the hosts found before
 - **Shared pacing:** crt.sh (5 requests a minute) and Cert Spotter's free tier are paced across every run and domain, so multi-domain sweeps stay under their limits. After Cert Spotter rate-limits, it is skipped for the rest of the cooldown instead of failing on every domain
@@ -271,6 +272,10 @@ python monomi.py example.com --takeover --hosts known-hosts.txt
 subfinder -d example.com -silent -oJ -o example-subfinder.json
 python monomi.py example.com --takeover --subfinder example-subfinder.json
 
+# Add BBOT's results (run BBOT first, passive and quiet; Monomi never runs it)
+bbot -t example.com -f subdomain-enum -rf passive -ef loud -om json -n example -y
+python monomi.py example.com --takeover --bbot ~/.bbot/scans/example/output.json
+
 # Investigate suspicious IPs: Tor exit, VPN/proxy, hosting, CDN edge (asks public sources, never the IP)
 python monomi.py --investigate-ip 171.25.193.25 8.8.8.8
 
@@ -471,7 +476,8 @@ domain ──► crt.sh website ───┐
 domain ──► crt.sh database ──┤
 domain ──► Cert Spotter ─────┼──► merge + de-duplicate ──► terminal / JSON
 domain ──► AlienVault OTX ───┤   (or SpiderFoot CSV    │
-subfinder file (--subfinder) ┘    via --import)        ├──► DNS + ASN (--enrich)
+subfinder file (--subfinder) ┤    via --import)        ├──► DNS + ASN (--enrich)
+BBOT file (--bbot) ──────────┘
                                                        ├──► Shodan InternetDB (--ports)
                                                        ├──► email / takeover / fingerprint checks
                                                        └──► evidence ──► attack paths (code)
@@ -533,7 +539,8 @@ monomi/                     # the repo
 │   │   └── saved.py        # saved per-domain copies of each source, used when a source fails
 │   └── importers/
 │       ├── spiderfoot.py   # SpiderFoot CSV export parser
-│       └── subfinder.py    # subfinder output reader (--subfinder)
+│       ├── subfinder.py    # subfinder output reader (--subfinder)
+│       └── bbot.py         # BBOT output.json reader (--bbot)
 ├── skills/
 │   └── monomi/SKILL.md     # agent skill: how to use the MCP tools well
 ├── scans/                  # saved scans per domain (git-ignored)
@@ -650,9 +657,10 @@ The tests cover hostname filtering, domain cleaning, evidence citation checks, c
 - [x] v1.27.2: "Fix this first" knows that taking a host off the internet removes everything it serves. A side door's "Take staging off the internet or restrict who can reach it" now also closes the exposed-files path on that same host, so on the 41xlab lab it reads "closes P1, P2" instead of only the side door, and it wins over a fix that closes one path. Only exposed-files paths count: a CVE or open service rests on the server's IP, which is still there. A path the action now closes outright is no longer listed as one it's only part of
 - [x] v1.28.0: fixes from the PlayStation field run, and a new license. (1) A dangling CNAME nobody on the public internet can ever create is a stale record, not a takeover lead: into a brand TLD only one company registers under (`.aws`, `.google`, `.microsoft`...), a private TLD (`.internal`, `.local`, `.corp`...) or a "TLD" that can't be real (`preview.direct.q1-pqa`). PlayStation's twelve `*.internal.aws` CNAMEs stop being "confirm by hand" leads, and saved scans are graded the same way. (2) Around-the-CDN leads try the likeliest origins first: one named for a host behind the CDN (`origin-api.bridges` next to `api.bridges`), then one the operator named "origin", then one sharing service words with the fronted hosts (environment words like stage or dev don't count), then the order as before. Akashi tries origins in this order, so its five tries go to the best candidates. Nothing is dropped or added. (3) A differential check for releases: real targets' scans can be golden fixtures in `tests/golden/private/` (gitignored, never committed), and a failing golden test lists what moved (leads added or gone, origin order, facts) instead of a JSON dump. (4) Licensed AGPL-3.0-only from this version on; earlier versions stay MIT (see Licensing)
 - [x] v1.28.1: broken DNS delegations graded right. The refusing nameservers are read out of the resolver's answer in IPv6 too (`[2600:9000:...]:53`), not only IPv4, and every Route 53 nameserver range from AWS's published list counts as Route 53 (v1.17 knew one IPv4 range). On PlayStation, a delegation to a Route 53 nameserver given only by its IPv6 address had come out "investigate" (Medium); it's "theoretical" (Low) like the others. Saved scans are graded again the same way
+- [x] v1.29.0: BBOT import (`--bbot FILE`, MCP `bbot_file`). Reads BBOT's `output.json` (checked on a real BBOT 3.1.0 run): its in-scope DNS names (scope distance 0) under the target become one more source, every other event type is counted and named, never used. Monomi never runs or bundles BBOT, and every host goes through Monomi's own checks and evidence model
 
 **Next**
-- [ ] BBOT import: read BBOT's JSON output (optional, not bundled), with every host through Monomi's scope checks and evidence model
+- [ ] BBOT import, next steps: BBOT's scope distance as a setting, and capped recursion
 - [ ] ffuf as an optional `--content` backend, for big wordlists on targets that allow a high rate: keeping Monomi's scope check, request log and per-host cap in front of it
 - [ ] Fewer "non-production" false positives on names like `prod-...-demo`; the `--fingerprint` suggestion leaving out-of-scope hosts out of its count; Vercel's newer IPs (216.150.1.x, 216.198.79.x) labeled Vercel, not AWS
 - [ ] Rule-based checks before the AI step

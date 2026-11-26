@@ -32,7 +32,7 @@ from monomi.enrich import enrich
 from monomi.evidence import OWNERS
 from monomi import (activelog, approvals, content, exposed, fingerprint, gate, home, internetdb, probe, rate, research,
                     scope, threatintel)
-from monomi.importers import subfinder
+from monomi.importers import bbot, subfinder
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -378,7 +378,7 @@ def ping(name: str = "world") -> str:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str] | None = None,
-                    subfinder_file: str | None = None) -> dict:
+                    subfinder_file: str | None = None, bbot_file: str | None = None) -> dict:
     """Find a domain's subdomains from public Certificate Transparency logs
     (crt.sh and Cert Spotter) and AlienVault OTX passive DNS (hostnames seen
     answering in DNS, including ones with no certificate). Passive: never
@@ -403,6 +403,10 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
     subfinder_file: a subfinder output file (plain, -oJ or -oI) inside
     Monomi's scans folder, e.g. "subfinder/example.txt"; its hostnames are
     added as the "subfinder" source. Monomi never runs subfinder itself.
+    bbot_file: a BBOT output.json inside Monomi's scans folder, e.g.
+    "bbot/example.json": its in-scope hostnames (BBOT scope distance 0, under
+    the domain) are added as the "bbot" source; other BBOT event types are
+    counted in sources.bbot.not_used, never used. Monomi never runs BBOT itself.
     """
     ran = check_already_ran(already_ran)
     domain = clean_domain(domain)
@@ -413,12 +417,21 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
             imported = subfinder.to_source(subfinder.load(real, domain), real)
         except (OSError, ValueError) as e:
             raise ToolError(f"can't read subfinder_file: {e}")
+    bbot_source = None
+    if bbot_file is not None:
+        real = scans_file(bbot_file, "bbot_file", (".json", ".ndjson", ".jsonl"))
+        try:
+            bbot_source = bbot.to_source(bbot.load(real, domain), real)
+        except (OSError, ValueError) as e:
+            raise ToolError(f"can't read bbot_file: {e}")
 
     results = {"sources": {}, "errors": {}}
     with contextlib.redirect_stdout(sys.stderr):
         collect_ct(results, domain, crtsh_budget=CRTSH_BUDGET, crtsh_light=True, total_budget=TOTAL_BUDGET)
     if imported:
         results["sources"]["subfinder"] = imported
+    if bbot_source:
+        results["sources"]["bbot"] = bbot_source
     hostnames = sorted({h for r in results["sources"].values() for h in r["subdomains"]})
     wildcards = sorted({w for r in results["sources"].values() for w in r.get("wildcards", [])})
     categories = categorize_all(hostnames, domain)
@@ -438,6 +451,7 @@ def find_subdomains(domain: str, detail: str = "summary", already_ran: list[str]
                 "from_saved": r.get("from_saved", False),
                 "partial": r.get("partial"),  # why the list was cut short, or None
                 **({"file": r["file"], "skipped": r["skipped"]} if "file" in r else {}),
+                **({"not_used": r["not_used"]} if "not_used" in r else {}),  # BBOT (v1.29)
             }
             for name, r in results["sources"].items()
         },
