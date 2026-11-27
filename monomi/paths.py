@@ -232,6 +232,29 @@ def _named_for(o, names):
             or o.endswith("-origin") and o[:-7] in names)
 
 
+def group_by_why(items: list) -> list:
+    """[(why, [items])] in first-seen order (v1.29.3): set-aside items with the
+    same reason (one per CDN, resting on the same vendor servers) are shown
+    together and the reason said once, not after each."""
+    groups = {}
+    for p in items:
+        groups.setdefault(p["why"], []).append(p)
+    return list(groups.items())
+
+
+SECOND_LEVELS = {"co", "com", "ne", "or", "ac", "net", "org", "gov", "edu", "go", "gr"}
+
+
+def _vendor_domain(name: str) -> str:
+    """The vendor's domain in a CNAME, for display only (v1.29.3):
+    d-9vk0q06l54.execute-api.us-west-2.amazonaws.com -> amazonaws.com,
+    domainwww1.customer.ne.jp -> customer.ne.jp. A rough cut, not the Public
+    Suffix List: nothing is decided from it."""
+    labels = name.rstrip(".").lower().split(".")
+    keep = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in SECOND_LEVELS else 2
+    return ".".join(labels[-keep:])
+
+
 def _name_match(origin_hosts, fronted, target):
     """How well an origin's hostnames match the hosts behind the CDN (v1.28,
     from PlayStation: origins came from unrelated hosts like stage.haiku while
@@ -654,6 +677,16 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
                 via = "; ".join(f"{h} -> {foreign[h]}" for h in hosts_of[ip][:3])
                 outside[ip] = (f"a server named only through CNAMEs outside {target} ({via}), "
                                "likely a vendor's platform")
+        if len(outside) > 1:
+            # One description for them all (v1.29.3): one per server, joined, ran
+            # to ~1,700 characters on PlayStation (20 servers), three times over
+            pairs = [(h, foreign[h]) for ip in sorted(outside, key=_ip_order) for h in hosts_of[ip]]
+            vendors = sorted({_vendor_domain(c) for _, c in pairs})
+            eg = "; ".join(f"{h} -> {c}" for h, c in pairs[:2])
+            shown = ", ".join(vendors[:6]) + (f" and {len(vendors) - 6} more" if len(vendors) > 6 else "")
+            shared = (f"servers named only through CNAMEs outside {target}, to {shown} "
+                      f"(e.g. {eg}), likely vendors' platforms")
+            outside = {ip: shared for ip in outside}
         # Ranked like leads (v1.23): a rented load balancer or VM first (the
         # classic origin), then by its hosts' category, then IP as numbers
         own.sort(key=lambda o: (0 if rented(o["hosts"]) else 1,
@@ -918,8 +951,11 @@ def paths_appendix(built: dict) -> str:
     if built.get("set_aside"):
         lines += ["", "**Set aside** (out of scope or not the target's own: neither "
                       "attack paths nor leads)", ""]
-    for p in built.get("set_aside", []):
-        lines.append(f"- {p['title']}: {p['why']}")
+    for why, group in group_by_why(built.get("set_aside", [])):
+        if len(group) == 1:
+            lines.append(f"- {group[0]['title']}: {why}")
+        else:
+            lines += [f"- {p['title']}" for p in group] + [f"  - (all {len(group)}: {why})"]
     if built.get("more_set_aside"):
         lines.append(f"- {built['more_set_aside']} more set aside")
     if built.get("out_of_scope_hosts"):

@@ -1148,3 +1148,57 @@ def test_name_match(origin, expected):
 def test_name_match_takes_the_best_of_an_origins_hosts():
     hosts = ["stage.haiku.example.com", "origin-api.bridges.example.com"]
     assert _name_match(hosts, ["api.bridges.example.com"], "example.com") == (0, 0)
+
+
+def many_vendor_results():
+    """vendor_results() plus, like PlayStation (v1.29.3): more vendor-named
+    servers (API Gateway, Mailgun, a China CDN) and a second CDN in front."""
+    results = vendor_results()
+    extra = {
+        "upload": ("198.51.100.31", "d-9vk0q06l54.execute-api.us-west-2.amazonaws.com"),
+        "email": ("198.51.100.32", "mailgun.org"),
+        "cn": ("198.51.100.33", "cn.lab.example.w.kunlungr.com"),
+        "search": ("198.51.100.34", "domainwww1.customer.ne.jp"),
+    }
+    for h, (ip, cname) in extra.items():
+        results["subdomains"].append(h)
+        results["enrichment"]["hosts"][h] = {"ips": [ip], "provider": "unknown", "canonical": cname}
+        results["fingerprint"]["hosts"][h] = {
+            "collected_at": None, "status": 200, "header_issues": [],
+            "techs": [{"tech": "nginx", "version": None, "evidence": "Server header"}]}
+    return results
+
+
+def test_many_vendor_servers_share_one_short_reason():
+    out, ev = run(many_vendor_results())
+    aside = [p for p in out["set_aside"] if p["rule"] == "around_cdn"]
+    assert aside and len(aside[0]["targets"]["ips"]) == 5
+    why = aside[0]["why"]
+    # every vendor named once, by its domain; two CNAMEs as examples, not all five
+    listed = why.split(", to ", 1)[1].split(" (e.g. ", 1)[0]
+    assert listed == "amazonaws.com, customer.ne.jp, kunlungr.com, mailgun.org, photo-partner.invalid"
+    assert why.count(" -> ") == 2 and "likely vendors' platforms" in why
+    assert len(why) < 400
+
+
+def test_vendor_domain_keeps_second_level_suffixes():
+    from monomi.paths import _vendor_domain
+    assert _vendor_domain("d-9vk0q06l54.execute-api.us-west-2.amazonaws.com") == "amazonaws.com"
+    assert _vendor_domain("domainwww1.customer.ne.jp") == "customer.ne.jp"
+    assert _vendor_domain("x.example.co.uk.") == "example.co.uk"
+    assert _vendor_domain("mailgun.org") == "mailgun.org"
+
+
+def test_set_aside_items_with_one_reason_say_it_once(capsys):
+    from monomi import cli
+    same = "servers named only through CNAMEs outside lab.example, likely vendors' platforms"
+    built = {"set_aside": [{"title": "Check A around Akamai", "why": same},
+                           {"title": "Check B around Fastly", "why": same},
+                           {"title": "Check C", "why": "out of scope"}]}
+    cli.show_set_aside(built)
+    out = capsys.readouterr().out
+    assert out.count(same) == 1 and "(all 2: " in out
+    assert "- Check C: out of scope" in out
+    from monomi.paths import paths_appendix
+    md = paths_appendix({"paths": [], "leads": [], **built})
+    assert md.count(same) == 1 and "- Check C: out of scope" in md

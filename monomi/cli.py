@@ -1251,8 +1251,13 @@ def show_set_aside(built: dict) -> None:
         return
     print()
     info("Set aside (out of scope or not the target's own: neither attack paths nor leads):")
-    for p in items:
-        print(f"    - {ui.safe(p['title'])}: {ui.safe(p['why'])}")
+    for why, group in paths.group_by_why(items):
+        if len(group) == 1:
+            print(f"    - {ui.safe(group[0]['title'])}: {ui.safe(why)}")
+            continue
+        for p in group:
+            print(f"    - {ui.safe(p['title'])}")
+        print(f"      (all {len(group)}: {ui.safe(why)})")
     if built.get("more_set_aside"):
         info(f"{built['more_set_aside']} more set aside, not shown.")
 
