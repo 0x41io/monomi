@@ -266,18 +266,39 @@ def test_under_the_cap_everything_is_checked(monkeypatch):
     assert len(asked) == 4 and result["skipped"] == 0 and result["skipped_edges"] == 0
 
 
-def test_when_own_servers_alone_pass_the_cap_the_skip_says_so(monkeypatch):
+def test_own_servers_past_the_edge_cap_are_still_checked(monkeypatch):
+    """PlayStation: ~236 own servers, MAX_IPS 200. All of them are looked up
+    (MAX_OWN_IPS); the edges get only the room left, which here is none."""
+    asked = []
     monkeypatch.setattr(internetdb, "MAX_IPS", 2)
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: asked.append(ip) or None)
+    result = internetdb.lookup(_mixed(own=4, edges=3), workers=1)
+    assert sorted(asked) == [f"54.189.166.{130 + i}" for i in range(4)]
+    assert result["checked_own"] == 4 and result["skipped"] == 3 and result["skipped_edges"] == 3
+
+
+def test_own_servers_past_their_own_cap_are_skipped_and_counted(monkeypatch):
+    monkeypatch.setattr(internetdb, "MAX_IPS", 2)
+    monkeypatch.setattr(internetdb, "MAX_OWN_IPS", 2)
     monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
     result = internetdb.lookup(_mixed(own=4, edges=1), workers=1)
-    assert result["skipped"] == 3 and result["skipped_edges"] == 1  # 2 own servers + the edge left out
+    assert result["checked"] == 2 and result["skipped"] == 3 and result["skipped_edges"] == 1
 
 
-def test_cli_says_what_kind_of_ips_were_skipped(monkeypatch, capsys):
+def test_cli_says_every_own_server_was_checked(monkeypatch, capsys):
     from monomi import cli
     monkeypatch.setattr(internetdb, "MAX_IPS", 4)
     monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
-    results = {"target": "example.com", "errors": {}}
-    cli.run_ports(results, _mixed(own=3, edges=4), None)
+    cli.run_ports({"target": "example.com", "errors": {}}, _mixed(own=3, edges=4), None)
     out = capsys.readouterr().out
-    assert "Only 4 IPs were checked, the target's own servers first (3 skipped: all of them CDN edges" in out
+    assert "All 3 of the target's own servers were checked; 3 CDN edge IPs weren't looked up" in out
+
+
+def test_cli_warns_when_own_servers_were_cut(monkeypatch, capsys):
+    from monomi import cli
+    monkeypatch.setattr(internetdb, "MAX_IPS", 2)
+    monkeypatch.setattr(internetdb, "MAX_OWN_IPS", 2)
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
+    cli.run_ports({"target": "example.com", "errors": {}}, _mixed(own=4, edges=1), None)
+    out = capsys.readouterr().out
+    assert "Only 2 of the target's own servers were checked (2 more skipped, and 1 CDN edge IPs)" in out

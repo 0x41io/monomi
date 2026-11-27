@@ -23,7 +23,8 @@ import requests
 from monomi.common import USER_AGENT
 
 API_URL = "https://internetdb.shodan.io/{ip}"
-MAX_IPS = 200  # be polite to a free service
+MAX_IPS = 200       # be polite to a free service: CDN edges are looked up only within this
+MAX_OWN_IPS = 1000  # the target's own servers, all of them in practice (v1.29.2: PlayStation has ~236)
 
 # Services that usually shouldn't face the internet. Port -> label.
 RISKY_PORTS = {
@@ -333,8 +334,8 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
     """Look up every public IP from the --enrich step.
 
     Returns {"ips": {ip: {...}}, "unique_cves": [...], "risky": [...], "errors": n, "skipped": n,
-    "skipped_edges": n}. Over MAX_IPS, the target's own servers are looked up
-    first and CDN edges last, so a cut leaves out edges before servers.
+    "skipped_edges": n, "checked_own": n}. The target's own servers are looked
+    up first, up to MAX_OWN_IPS; CDN edges only within MAX_IPS in all.
     An IP that's someone else's server (not a CDN edge) has "not_own": what it is
     (v1.23.1); unique_cves and risky are the target's own IPs only (is_own).
     """
@@ -360,10 +361,14 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
     def is_edge(ip):
         meta = by_ip[ip]
         return edge_reason(meta["provider"], [], meta["canonicals"], ip) is not None
-    ips = sorted(by_ip, key=lambda ip: (is_edge(ip), ip))
-    left_out = ips[MAX_IPS:]
-    skipped, skipped_edges = len(left_out), sum(1 for ip in left_out if is_edge(ip))
-    ips = ips[:MAX_IPS]
+    # The target's own servers are checked up to MAX_OWN_IPS; CDN edges only in
+    # the room left under MAX_IPS, since what they show belongs to the CDN.
+    own_ips = sorted(ip for ip in by_ip if not is_edge(ip))
+    edge_ips = sorted(ip for ip in by_ip if is_edge(ip))
+    room = max(0, MAX_IPS - min(len(own_ips), MAX_OWN_IPS))
+    ips = own_ips[:MAX_OWN_IPS] + edge_ips[:room]
+    skipped_own, skipped_edges = max(0, len(own_ips) - MAX_OWN_IPS), max(0, len(edge_ips) - room)
+    skipped = skipped_own + skipped_edges
 
     found, quiet, errors = {}, {}, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -404,4 +409,5 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
         "errors": errors,
         "skipped": skipped,
         "skipped_edges": skipped_edges,   # of the skipped, how many are CDN edges (v1.29.2)
+        "checked_own": min(len(own_ips), MAX_OWN_IPS),
     }
