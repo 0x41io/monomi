@@ -302,3 +302,19 @@ def test_cli_warns_when_own_servers_were_cut(monkeypatch, capsys):
     cli.run_ports({"target": "example.com", "errors": {}}, _mixed(own=4, edges=1), None)
     out = capsys.readouterr().out
     assert "Only 2 of the target's own servers were checked (2 more skipped, and 1 CDN edge IPs)" in out
+
+
+def test_api_gateway_is_a_shared_front_door_by_cname():
+    from monomi.internetdb import front_door_from_cname
+    assert front_door_from_cname(["d-9vk0q06l54.execute-api.us-west-2.amazonaws.com"])[0] == "AWS API Gateway"
+    assert front_door_from_cname(["abc123.execute-api.eu-central-1.amazonaws.com."])[0] == "AWS API Gateway"
+    # a load balancer the target rents is its own server, not a front door
+    assert front_door_from_cname(["web-1a2b.eu-west-1.elb.amazonaws.com"]) is None
+    assert front_door_from_cname(["execute-api.evil.example"]) is None
+
+
+def test_servicenow_and_a_bare_vendor_domain_are_third_party():
+    from monomi.internetdb import third_party_from_cname
+    assert third_party_from_cname(["playstationpartners.service-now.com"])[0] == "ServiceNow"
+    assert third_party_from_cname(["mailgun.org"])[0] == "Mailgun"          # the bare domain (v1.29.4)
+    assert third_party_from_cname(["notmailgun.org"]) is None                # but not a look-alike

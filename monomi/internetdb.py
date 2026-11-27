@@ -46,6 +46,15 @@ THIRD_PARTY_HOSTING = {"GitHub", "Salesforce", "Shopify", "Squarespace", "WordPr
 # A shared front door that forwards to servers behind it, but isn't a CDN
 SHARED_FRONT_DOOR = {"AWS Global Accelerator"}
 
+# The same, found by CNAME (v1.29.4). An API Gateway custom domain points at
+# d-<id>.execute-api.<region>.amazonaws.com: its IPs are Amazon's shared API
+# front end (they change between scans) and their banners and CVEs are
+# Amazon's. On PlayStation, coreuploadtoken.sp-int.crs became "Exploit known
+# flaws on 52.25.236.1" through one.
+SHARED_FRONT_DOOR_CNAME_PATTERNS = [
+    (re.compile(r"\.execute-api\.[a-z0-9-]+\.amazonaws\.com$"), "AWS API Gateway"),
+]
+
 # Shodan CPE names (software fingerprints) that mean "this IP is a shared
 # edge server", even when the network owner isn't a CDN: e.g. Cloudflare
 # serving from a customer's own IP range, or Okta running on AWS.
@@ -226,6 +235,9 @@ THIRD_PARTY_CNAMES = [
     (".mktoweb.com", "Marketo"),
     (".sendgrid.net", "SendGrid"),
     (".mailgun.org", "Mailgun"),
+    # v1.29.4, PlayStation: help.playstation.net -> playstationpartners.service-now.com
+    # is a ServiceNow instance, on ServiceNow's servers
+    (".service-now.com", "ServiceNow"),
 ]
 
 # App Service names end on a shared front end ("scale unit") such as
@@ -272,9 +284,22 @@ def third_party_from_cname(names) -> tuple[str, str] | None:
     """
     for name in sorted(n.lower().rstrip(".") for n in names if n):  # sorted: same answer every run
         for ending, vendor in THIRD_PARTY_CNAMES:
-            if name.endswith(ending):
+            # the bare domain too (v1.29.4): PlayStation's email.*.pt hosts CNAME to "mailgun.org" itself
+            if name.endswith(ending) or name == ending[1:]:
                 return vendor, name
         for pattern, vendor in THIRD_PARTY_CNAME_PATTERNS:
+            if pattern.search(name):
+                return vendor, name
+    return None
+
+
+def front_door_from_cname(names) -> tuple[str, str] | None:
+    """Which shared front door a hostname's CNAME points to, if any (v1.29.4).
+
+    'd-9vk0q06l54.execute-api.us-west-2.amazonaws.com' -> ('AWS API Gateway', ...)
+    """
+    for name in sorted(n.lower().rstrip(".") for n in names if n):
+        for pattern, vendor in SHARED_FRONT_DOOR_CNAME_PATTERNS:
             if pattern.search(name):
                 return vendor, name
     return None

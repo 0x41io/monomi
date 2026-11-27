@@ -77,6 +77,12 @@ def _name(key):
     return f"{rule} on {where}"
 
 
+def _id(item):
+    """P1 / L3 for paths and leads; set-aside items have no id (v1.29.4: the
+    first set-aside item ever added crashed this summary with KeyError)."""
+    return item.get("id") or "-"
+
+
 def _listed(lines, label, items):
     if items:
         lines.append(f"{label} ({len(items)}):")
@@ -94,22 +100,22 @@ def summarize(expected, got):
     for section in SECTIONS:
         old = {_key(p): p for p in want.get(section, [])}
         new = {_key(p): p for p in have.get(section, [])}
-        _listed(lines, f"{section} added", [f"{new[k]['id']} {_name(k)}" for k in new if k not in old])
-        _listed(lines, f"{section} gone", [f"{old[k]['id']} {_name(k)}" for k in old if k not in new])
+        _listed(lines, f"{section} added", [f"{_id(new[k])} {_name(k)}" for k in new if k not in old])
+        _listed(lines, f"{section} gone", [f"{_id(old[k])} {_name(k)}" for k in old if k not in new])
         changed = []
         for k in old.keys() & new.keys():
             for field in ("severity", "strength", "title"):
                 if old[k].get(field) != new[k].get(field):
-                    changed.append(f"{new[k]['id']} {_name(k)}: {field} "
+                    changed.append(f"{_id(new[k])} {_name(k)}: {field} "
                                    f"{old[k].get(field)!r} -> {new[k].get(field)!r}")
             # Order matters for origins: akashi tries the first 5 in scope (v1.28)
             was = [o["ip"] for o in (old[k].get("targets") or {}).get("origins") or []]
             now = [o["ip"] for o in (new[k].get("targets") or {}).get("origins") or []]
             if was != now:
-                changed.append(f"{new[k]['id']} {_name(k)}: origin order, first 5 "
+                changed.append(f"{_id(new[k])} {_name(k)}: origin order, first 5 "
                                f"{', '.join(was[:5])} -> {', '.join(now[:5])}")
             if len(old[k].get("steps", [])) != len(new[k].get("steps", [])):
-                changed.append(f"{new[k]['id']} {_name(k)}: steps "
+                changed.append(f"{_id(new[k])} {_name(k)}: steps "
                                f"{len(old[k].get('steps', []))} -> {len(new[k].get('steps', []))}")
         _listed(lines, f"{section} changed", sorted(changed))
     for field in COUNTS:
@@ -189,6 +195,18 @@ def test_summary_names_each_kind_of_move():
     assert "more_leads_hosts added (1):\n    c.example.test" in text
     assert "facts added (1):\n    b.example.test CNAME gone.example.test" in text
     assert "facts gone (1):\n    a.example.test resolves to 192.0.2.1" in text
+
+
+def test_summary_handles_a_lead_moving_to_set_aside():
+    """v1.29.4, PlayStation: P9 moved from paths to set aside. Set-aside items
+    have no id, and the summary crashed (KeyError: 'id') instead of saying so."""
+    old = _sample()
+    new = _sample()
+    moved = new["paths"]["leads"].pop()
+    new["paths"]["set_aside"].append({k: v for k, v in moved.items() if k != "id"})
+    text = "\n".join(summarize(old, new))
+    assert "leads gone (1):\n    L1 around_cdn on a.example.test, 192.0.2.1" in text
+    assert "set_aside added (1):\n    - around_cdn on a.example.test, 192.0.2.1" in text
 
 
 def test_summary_tells_apart_leads_that_share_origins():

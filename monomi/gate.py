@@ -33,8 +33,8 @@ which Monomi can't know, so the note only says to check them.
 """
 
 from monomi.categorize import _find_match
-from monomi.internetdb import (SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_cname,
-                               edge_from_ip, third_party_from_cname, third_party_from_ip)
+from monomi.internetdb import (SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_cname, edge_from_ip,
+                               front_door_from_cname, third_party_from_cname, third_party_from_ip)
 
 # Kinds of path bug bounty programs often list as out of scope (gate "notes")
 PROGRAM_NOTES = {
@@ -121,6 +121,10 @@ def not_own_ips(results: dict) -> dict[str, str]:
         if found:
             for ip in h.get("ips", []):
                 out.setdefault(ip, f"third-party hosting ({found[0]})")
+        found = front_door_from_cname(_canonical(h))  # API Gateway (v1.29.4)
+        if found:
+            for ip in h.get("ips", []):
+                out.setdefault(ip, f"a shared front door ({found[0]})")
         provider = h.get("provider")
         if provider in THIRD_PARTY_HOSTING:
             kind = f"third-party hosting ({provider})"

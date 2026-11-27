@@ -1172,11 +1172,12 @@ def many_vendor_results():
 def test_many_vendor_servers_share_one_short_reason():
     out, ev = run(many_vendor_results())
     aside = [p for p in out["set_aside"] if p["rule"] == "around_cdn"]
-    assert aside and len(aside[0]["targets"]["ips"]) == 5
+    # API Gateway and Mailgun are known platforms (v1.29.4): left out like Workday, not listed
+    assert aside and len(aside[0]["targets"]["ips"]) == 3
     why = aside[0]["why"]
-    # every vendor named once, by its domain; two CNAMEs as examples, not all five
+    # every vendor named once, by its domain; two CNAMEs as examples, not all of them
     listed = why.split(", to ", 1)[1].split(" (e.g. ", 1)[0]
-    assert listed == "amazonaws.com, customer.ne.jp, kunlungr.com, mailgun.org, photo-partner.invalid"
+    assert listed == "customer.ne.jp, kunlungr.com, photo-partner.invalid"
     assert why.count(" -> ") == 2 and "likely vendors' platforms" in why
     assert len(why) < 400
 
@@ -1202,3 +1203,35 @@ def test_set_aside_items_with_one_reason_say_it_once(capsys):
     from monomi.paths import paths_appendix
     md = paths_appendix({"paths": [], "leads": [], **built})
     assert md.count(same) == 1 and "- Check C: out of scope" in md
+
+
+def api_gateway_results():
+    """PlayStation coreuploadtoken.sp-int.crs (v1.29.4): an API Gateway custom
+    domain, CNAME to d-<id>.execute-api..., whose IP carries banner CVEs."""
+    results = lab_results()
+    results["enrichment"]["hosts"].pop("staging")
+    results["subdomains"].remove("staging")
+    results["email"]["verdict"]["verdict"] = "protected"
+    results["subdomains"].append("upload")
+    results["enrichment"]["hosts"]["upload"] = {
+        "ips": ["52.25.236.1"], "provider": "AWS",
+        "canonical": "d-vtua7qpot1.execute-api.us-west-2.amazonaws.com"}
+    results["exposure"] = {"ips": {"52.25.236.1": {"shared_edge": False, "hosts": ["upload"], "ports": [80, 443],
+                                                   "tags": [], "risky": [], "vulns": ["CVE-2099-0002"]}}}
+    return results
+
+
+def test_cves_on_api_gateway_are_amazons_not_the_targets():
+    out, ev = run(api_gateway_results())
+    assert not any("52.25.236.1" in p["title"] for p in out["paths"] + out["leads"])
+    aside = next(p for p in out["set_aside"] if "52.25.236.1" in p["title"])
+    assert aside["gate"]["failed"][0]["check"] == 2
+    assert "a shared front door (AWS API Gateway)" in aside["why"]
+
+
+def test_without_the_api_gateway_rule_it_was_an_attack_path(monkeypatch):
+    # The removal test: how PlayStation's scan looked before v1.29.4 (P9)
+    from monomi import internetdb
+    monkeypatch.setattr(internetdb, "SHARED_FRONT_DOOR_CNAME_PATTERNS", [])
+    out, ev = run(api_gateway_results())
+    assert any(p["title"] == "Exploit known flaws on 52.25.236.1" for p in out["paths"])
