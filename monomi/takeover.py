@@ -56,6 +56,16 @@ AWS_NLB = re.compile(r"\.elb\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$")
 # 'a1b2c3d4e5.execute-api.us-east-1.amazonaws.com'   (an API's own name)
 AWS_API_GATEWAY = re.compile(r"\.execute-api\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$")
 
+# Amazon OpenSearch Service (formerly Elasticsearch) domain endpoints: the
+# customer picks the domain name, AWS appends a long ID it generates (26
+# characters in AWS's public example, 28 in its VPC one), so a deleted
+# domain's endpoint can't be created again (v1.29.1, from PlayStation:
+# search-ml-model-manager-index-th5s4iiqi35qtzwbozief2ydrq.us-west-2.es.amazonaws.com)
+# 'search-movies-o36agaraperqwzp7s7vv6xfzwa.us-east-1.es.amazonaws.com' (AWS's example)
+# 'vpc-endpoint-h2dsd34efgyghrtguk5gt6j2foh4.us-east-1.es.amazonaws.com' (a VPC domain)
+AWS_OPENSEARCH = re.compile(r"(^|\.)(search|vpc)-[a-z][a-z0-9-]*-[a-z0-9]{20,32}"
+                            r"\.[a-z0-9-]+\.es\.amazonaws\.com(\.cn)?$")
+
 
 def match_not_claimable(target: str) -> str | None:
     """Which never-claimable service a CNAME target belongs to, if any.
@@ -69,6 +79,8 @@ def match_not_claimable(target: str) -> str | None:
         return "AWS Elastic Load Balancing"
     if AWS_API_GATEWAY.search(target):
         return "AWS API Gateway"
+    if AWS_OPENSEARCH.search(target):
+        return "AWS OpenSearch Service"
     return None
 
 

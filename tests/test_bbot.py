@@ -57,6 +57,19 @@ def test_other_event_types_are_counted_never_used(tmp_path):
     assert loaded["not_used"] == {"ASN": 1, "OPEN_TCP_PORT": 2, "TECHNOLOGY": 1}  # SCAN records aren't data
 
 
+def test_bbots_wildcard_placeholders_are_not_hosts(tmp_path):
+    """PlayStation: BBOT records "_wildcard.<zone>" while testing a zone for
+    wildcard DNS. It became a fake "Take over DNS for _wildcard.nonprod.pcs..."
+    lead. Skipped and counted, never a host (v1.29.1)."""
+    events = [ev("DNS_NAME", "_wildcard.nonprod.pcs.lab.test", module="dnsresolve"),
+              ev("DNS_NAME", "_wildcard.ac.lab.test", module="dnsresolve"),
+              ev("DNS_NAME", "real.nonprod.pcs.lab.test")]
+    loaded = bbot.load(write(tmp_path, events), D)
+    assert list(loaded["hosts"]) == ["real.nonprod.pcs.lab.test"]
+    assert loaded["skipped"] == ["2 BBOT wildcard placeholders (_wildcard.<zone>, a name BBOT made up while "
+                                 "testing for wildcard DNS)"]
+
+
 def test_in_scope_names_of_other_domains_are_left_out(tmp_path):
     # a multi-target BBOT run: in scope for BBOT, not this scan's domain
     loaded = bbot.load(write(tmp_path, [ev("DNS_NAME", "www.other.test")]), D)

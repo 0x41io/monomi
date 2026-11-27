@@ -12,6 +12,10 @@ real 3.1.0 run). A host is kept only if it passes BOTH:
     names one hop out, like a provider's nameservers tagged "affiliate,
     distance-1": those are someone else's)
   - Monomi's: the target domain or one of its subdomains
+BBOT's own placeholder names are skipped too (v1.29.1, from PlayStation):
+when it tests a zone for wildcard DNS it records "_wildcard.<zone>", a name
+it made up, not a host (it became a fake "Take over DNS for
+_wildcard.nonprod.pcs..." lead).
 Every other event type (open ports, technologies, findings, URLs...) is
 counted, never used: it came from BBOT's modules, often active ones, and
 Monomi's evidence model can't stand behind it. The counts are reported, so
@@ -52,7 +56,7 @@ def load(path: str, domain: str) -> dict:
                          f"{MAX_BYTES // (1024 * 1024)} MB isn't read")
     file_time = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).isoformat(timespec="seconds")
     hosts, not_used = {}, Counter()
-    bad_lines = out_of_scope = other_domain = not_hostname = events = 0
+    bad_lines = out_of_scope = other_domain = not_hostname = placeholders = events = 0
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -78,7 +82,9 @@ def load(path: str, domain: str) -> dict:
             name = _name(event)
             if name and name.startswith("*."):
                 name = name[2:]
-            if not name or not is_hostname(name):
+            if name and name.split(".", 1)[0] == "_wildcard":
+                placeholders += 1
+            elif not name or not is_hostname(name):
                 not_hostname += 1
             elif name != domain and not name.endswith("." + domain):
                 other_domain += 1
@@ -93,6 +99,9 @@ def load(path: str, domain: str) -> dict:
                        "marked out of scope (scope distance above 0)")
     if other_domain:
         skipped.append(f"{other_domain} in-scope DNS name{'s' if other_domain != 1 else ''} not part of {domain}")
+    if placeholders:
+        skipped.append(f"{placeholders} BBOT wildcard placeholder{'s' if placeholders != 1 else ''} "
+                       "(_wildcard.<zone>, a name BBOT made up while testing for wildcard DNS)")
     if not_hostname:
         skipped.append(f"{not_hostname} DNS name{'s' if not_hostname != 1 else ''} that aren't valid hostnames")
     if bad_lines:

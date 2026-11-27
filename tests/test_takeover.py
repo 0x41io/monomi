@@ -424,3 +424,40 @@ def test_delegation_view_reads_the_ips_back_out_of_the_detail():
 def test_delegation_view_with_nothing_to_go_on_stays_investigate():
     saved = {"cut": "x.example.com", "ns_ips": [], "detail": "EDE(22): No Reachable Authority"}
     assert takeover.delegation_view(saved) == ([], "investigate", None)
+
+
+# --- v1.29.1: Amazon OpenSearch endpoints carry an AWS-generated ID ---
+
+@pytest.mark.parametrize("target", [
+    "search-ml-model-manager-index-th5s4iiqi35qtzwbozief2ydrq.us-west-2.es.amazonaws.com",  # PlayStation
+    "search-movies-o36agaraperqwzp7s7vv6xfzwa.us-east-1.es.amazonaws.com",                  # AWS's example
+    "vpc-endpoint-h2dsd34efgyghrtguk5gt6j2foh4.us-east-1.es.amazonaws.com",                 # a VPC domain
+])
+def test_opensearch_endpoints_are_not_claimable(target):
+    assert match_not_claimable(target) == "AWS OpenSearch Service"
+
+
+@pytest.mark.parametrize("target", [
+    "search-movies.us-east-1.es.amazonaws.com",                                  # no generated ID
+    "search-movies-o36agaraperqwzp7s7vv6xfzwa.us-east-1.es.amazonaws.com.evil.net",  # look-alike
+    "my-search-thing-o36agaraperqwzp7s7vv6xfzwa.example.com",
+])
+def test_opensearch_look_alikes_are_not_matched(target):
+    assert match_not_claimable(target) is None
+
+
+def test_dangling_cname_to_opensearch_is_stale_not_a_lead(monkeypatch):
+    target = "search-ml-model-manager-index-th5s4iiqi35qtzwbozief2ydrq.us-west-2.es.amazonaws.com"
+    fake_dns(monkeypatch, cnames={"ml.example.com": target}, dead={target})
+    info = inspect_host("ml.example.com")
+    assert info["status"] == "stale" and info["stale"]["service"] == "AWS OpenSearch Service"
+
+
+def test_a_saved_lead_into_opensearch_is_graded_stale():
+    lead = {"host": "ml.example.com", "service": None, "claimable": False, "nxdomain_confirmed_by": DOH_BOTH,
+            "cname": "search-ml-model-manager-index-th5s4iiqi35qtzwbozief2ydrq.us-west-2.es.amazonaws.com",
+            "collected_at": "2026-11-26T23:55:00+00:00"}
+    report = {"leads": [lead], "checked": 1, "errors": {}, "collected_at": "2026-11-26T23:55:00+00:00"}
+    ev = build_evidence(base_results(report))
+    assert any("(AWS OpenSearch Service)" in e["fact"] and "stale DNS record" in e["fact"] for e in ev)
+    assert not any(e["kind"] in ("dangling_unknown", "dangling_provider", "takeover_lead") for e in ev)
