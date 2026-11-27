@@ -229,3 +229,55 @@ def test_a_cdn_edge_gets_no_not_own_label(monkeypatch):
                                 "ip_info": {}})
     assert result["ips"]["1.1.1.1"]["shared_edge"] is True
     assert "not_own" not in result["ips"]["1.1.1.1"]
+
+
+# --- v1.29.2: over the cap, the target's own servers are looked up first ---
+
+def _mixed(own=3, edges=4):
+    """own servers on AWS (public addresses), edges on Akamai; the edges sort
+    FIRST as text (23.x before 54.x), like PlayStation's Akamai addresses."""
+    hosts, info = {}, {}
+    for i in range(edges):
+        ip = f"23.2.157.{10 + i}"
+        hosts[f"edge{i}.example.com"] = {"ips": [ip], "provider": "Akamai"}
+        info[ip] = {"provider": "Akamai"}
+    for i in range(own):
+        ip = f"54.189.166.{130 + i}"
+        hosts[f"own{i}.example.com"] = {"ips": [ip], "provider": "AWS"}
+        info[ip] = {"provider": "AWS"}
+    return {"hosts": hosts, "ip_info": info}
+
+
+def test_over_the_cap_own_servers_are_checked_before_cdn_edges(monkeypatch):
+    """PlayStation: 655 IPs cut at 200 in text order skipped zitadel.sit.pcs
+    (54.189.166.133) while Akamai edges (23.x) were checked."""
+    asked = []
+    monkeypatch.setattr(internetdb, "MAX_IPS", 4)
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: asked.append(ip) or None)
+    result = internetdb.lookup(_mixed(own=3, edges=4), workers=1)
+    assert asked[:3] == ["54.189.166.130", "54.189.166.131", "54.189.166.132"]
+    assert result["checked"] == 4 and result["skipped"] == 3 and result["skipped_edges"] == 3
+
+
+def test_under_the_cap_everything_is_checked(monkeypatch):
+    asked = []
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: asked.append(ip) or None)
+    result = internetdb.lookup(_mixed(own=2, edges=2), workers=1)
+    assert len(asked) == 4 and result["skipped"] == 0 and result["skipped_edges"] == 0
+
+
+def test_when_own_servers_alone_pass_the_cap_the_skip_says_so(monkeypatch):
+    monkeypatch.setattr(internetdb, "MAX_IPS", 2)
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
+    result = internetdb.lookup(_mixed(own=4, edges=1), workers=1)
+    assert result["skipped"] == 3 and result["skipped_edges"] == 1  # 2 own servers + the edge left out
+
+
+def test_cli_says_what_kind_of_ips_were_skipped(monkeypatch, capsys):
+    from monomi import cli
+    monkeypatch.setattr(internetdb, "MAX_IPS", 4)
+    monkeypatch.setattr(internetdb, "lookup_one", lambda ip: None)
+    results = {"target": "example.com", "errors": {}}
+    cli.run_ports(results, _mixed(own=3, edges=4), None)
+    out = capsys.readouterr().out
+    assert "Only 4 IPs were checked, the target's own servers first (3 skipped: all of them CDN edges" in out

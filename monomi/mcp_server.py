@@ -722,6 +722,7 @@ def check_ports(hostnames: list[str] | None = None, detail: str = "summary",
     exposure["ips_checked"] = exposure.pop("checked")
     exposure["ip_errors"] = exposure.pop("errors")
     exposure["ips_skipped"] = exposure.pop("skipped")
+    exposure["ips_skipped_edges"] = exposure.pop("skipped_edges", 0)  # v1.29.2
     for d in exposure["ips"].values():
         if internetdb.is_own(d):
             d["owners"] = owners("server")  # a CDN's or vendor's ports belong to them, not the target
@@ -753,6 +754,7 @@ def ports_brief(full: dict) -> dict:
         "ips_checked": full["ips_checked"],
         "ip_errors": full["ip_errors"],
         "ips_skipped": full["ips_skipped"],
+        "ips_skipped_edges": full.get("ips_skipped_edges", 0),
         "unique_cves": full.get("unique_cves", []),
         "risky": full.get("risky", []),
         "origin_ips": {ip: short(d) for ip, d in full.get("ips", {}).items()

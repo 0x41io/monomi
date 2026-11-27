@@ -332,7 +332,9 @@ def _safe_lookup(ip: str):
 def lookup(enrichment: dict, workers: int = 8) -> dict:
     """Look up every public IP from the --enrich step.
 
-    Returns {"ips": {ip: {...}}, "unique_cves": [...], "risky": [...], "errors": n, "skipped": n}.
+    Returns {"ips": {ip: {...}}, "unique_cves": [...], "risky": [...], "errors": n, "skipped": n,
+    "skipped_edges": n}. Over MAX_IPS, the target's own servers are looked up
+    first and CDN edges last, so a cut leaves out edges before servers.
     An IP that's someone else's server (not a CDN edge) has "not_own": what it is
     (v1.23.1); unique_cves and risky are the target's own IPs only (is_own).
     """
@@ -349,8 +351,18 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
             entry["hosts"].append(host)
             if e.get("canonical"):
                 entry["canonicals"].add(e["canonical"])
-    ips = sorted(by_ip)
-    skipped = max(0, len(ips) - MAX_IPS)
+    # The target's own servers first, CDN edges last (v1.29.2, from PlayStation:
+    # 655 IPs in text order, so a cut at 200 skipped zitadel.sit.pcs while
+    # checking Akamai edges, whose open ports belong to the CDN anyway). Whether
+    # an IP is an edge is known before any lookup, from its provider, CNAMEs and
+    # address; a vendor that only Shodan's own data reveals is still found after.
+
+    def is_edge(ip):
+        meta = by_ip[ip]
+        return edge_reason(meta["provider"], [], meta["canonicals"], ip) is not None
+    ips = sorted(by_ip, key=lambda ip: (is_edge(ip), ip))
+    left_out = ips[MAX_IPS:]
+    skipped, skipped_edges = len(left_out), sum(1 for ip in left_out if is_edge(ip))
     ips = ips[:MAX_IPS]
 
     found, quiet, errors = {}, {}, 0
@@ -391,4 +403,5 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
         "risky": [(ip, d["risky"]) for ip, d in found.items() if d["risky"] and is_own(d)],
         "errors": errors,
         "skipped": skipped,
+        "skipped_edges": skipped_edges,   # of the skipped, how many are CDN edges (v1.29.2)
     }

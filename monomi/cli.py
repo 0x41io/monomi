@@ -578,7 +578,11 @@ def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
     if exposure["errors"]:
         warn(f"{exposure['errors']} Shodan lookup(s) failed (results may be incomplete).")
     if exposure["skipped"]:
-        warn(f"Only the first {internetdb.MAX_IPS} IPs were checked ({exposure['skipped']} skipped).")
+        edges = exposure.get("skipped_edges", 0)
+        mix = ("all of them CDN edges, whose ports belong to the CDN" if edges == exposure["skipped"]
+               else f"{edges} of them CDN edges" if edges else "none of them CDN edges")
+        warn(f"Only {internetdb.MAX_IPS} IPs were checked, the target's own servers first "
+             f"({exposure['skipped']} skipped: {mix}).")
     print()
     if not exposure["ips"]:
         good(f"Shodan has no open ports on record for the {exposure['checked']} IP(s) checked.")
