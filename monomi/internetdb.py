@@ -355,7 +355,7 @@ def _safe_lookup(ip: str):
         return ip, None, str(e)
 
 
-def lookup(enrichment: dict, workers: int = 8) -> dict:
+def lookup(enrichment: dict, workers: int = 8, target: str = "") -> dict:
     """Look up every public IP from the --enrich step.
 
     Returns {"ips": {ip: {...}}, "unique_cves": [...], "risky": [...], "errors": n, "skipped": n,
@@ -419,7 +419,7 @@ def lookup(enrichment: dict, workers: int = 8) -> dict:
     # Someone else's server, though not a CDN edge (v1.23.1): labeled with what
     # it is, the same words the gate uses (gate.not_own_ips decides, in one place)
     from monomi import gate  # here, not at the top: gate imports this module
-    not_own = gate.not_own_ips({"enrichment": enrichment})
+    not_own = gate.not_own_ips({"target": target, "enrichment": enrichment})
     for ip, d in [*found.items(), *quiet.items()]:
         if not d["shared_edge"] and ip in not_own:
             d["not_own"] = not_own[ip]
