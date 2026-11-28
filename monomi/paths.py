@@ -629,22 +629,13 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
     # F. Go around the CDN: always a lead (see the top of this file). Built
     # only when a server of the target's own is seen answering web requests.
     hosts_of = {}  # the target's own public IPs -> in-scope hosts pointing straight at them
+    vendor_ips = {ip for ip, why in not_own.items() if why.startswith("vendor_cname:")}
     for h, h_ips in sorted(ips_of.items()):
         if h in out_of_scope:
             continue
         for ip in h_ips:
-            if ip not in not_own and ip not in private.get(h, []):
+            if (ip not in not_own or ip in vendor_ips) and ip not in private.get(h, []):
                 hosts_of.setdefault(ip, []).append(h)
-    # Where each direct host's CNAME goes (v1.23). A CNAME outside the target's
-    # domain names someone else's server, unless it's cloud infrastructure the
-    # target rents (a load balancer, a VM). Hosts on known vendors never get
-    # here (gate.not_own_ips); these are the ones no list knows yet.
-    foreign = {}  # direct host -> its CNAME, when that leaves the target's domain
-    for h, d in enr.get("hosts", {}).items():
-        cname = d.get("canonical")
-        if (cname and target and not gate._under(cname, target)
-                and not cloud_infra_from_cname([cname])):
-            foreign[h] = cname
     fronted = sorted(h for h, h_ips in ips_of.items()
                      if h_ips and all(ip in edge for ip in h_ips) and h not in out_of_scope)
     web = {}  # own IP -> facts showing it answers web requests
@@ -670,11 +661,13 @@ def build_paths(results: dict, evidence: list[dict], scope=None) -> dict:
         # target's server (v1.23): an IP named only through them is set aside below
         own, outside = [], {}
         for ip in sorted(web):
-            direct = [h for h in hosts_of[ip] if h not in foreign]
+            direct = [h for h in hosts_of[ip] if ip not in not_own]
             if direct:
                 own.append({"ip": ip, "hosts": direct})
             else:
-                via = "; ".join(f"{h} -> {foreign[h]}" for h in hosts_of[ip][:3])
+                via = "; ".join(f"{h} -> {enr['hosts'][h]['canonical']}"
+                                for h in hosts_of[ip][:3]
+                                if enr["hosts"].get(h, {}).get("canonical"))
                 outside[ip] = (f"a server named only through CNAMEs outside {target} ({via}), "
                                "likely a vendor's platform")
         if len(outside) > 1:

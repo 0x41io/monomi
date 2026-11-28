@@ -34,7 +34,8 @@ which Monomi can't know, so the note only says to check them.
 
 from monomi.categorize import _find_match
 from monomi.internetdb import (SHARED_EDGE, SHARED_FRONT_DOOR, THIRD_PARTY_HOSTING, edge_from_cname, edge_from_ip,
-                               front_door_from_cname, third_party_from_cname, third_party_from_ip)
+                               cloud_infra_from_cname, front_door_from_cname, third_party_from_cname,
+                               third_party_from_ip)
 
 # Kinds of path bug bounty programs often list as out of scope (gate "notes")
 PROGRAM_NOTES = {
@@ -112,6 +113,7 @@ def not_own_ips(results: dict) -> dict[str, str]:
     Google's front end...) or a shared front door (AWS Global Accelerator). Check 2 and the path rules use this."""
     out = {ip: "a shared CDN edge IP" for ip in edge_ips(results)}
     enr = results.get("enrichment") or {}
+    target = (results.get("target") or "").lower().rstrip(".")
     for h in enr.get("hosts", {}).values():
         for ip in h.get("ips", []):
             found = third_party_from_ip(ip)  # by address: the provider name can't tell (v1.22.1)
@@ -125,6 +127,15 @@ def not_own_ips(results: dict) -> dict[str, str]:
         if found:
             for ip in h.get("ips", []):
                 out.setdefault(ip, f"a shared front door ({found[0]})")
+        cname = h.get("canonical")
+        if (cname and target and not _under(cname.lower().rstrip("."), target)
+                and not cloud_infra_from_cname([cname])
+                and not third_party_from_cname([cname])
+                and not front_door_from_cname([cname])
+                and not edge_from_cname([cname])):
+            vendor = ".".join(cname.rstrip(".").lower().split(".")[-2:])
+            for ip in h.get("ips", []):
+                out.setdefault(ip, f"vendor_cname: {vendor}")
         provider = h.get("provider")
         if provider in THIRD_PARTY_HOSTING:
             kind = f"third-party hosting ({provider})"

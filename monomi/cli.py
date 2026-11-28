@@ -572,7 +572,7 @@ def run_ports(results: dict, enrichment: dict, cves_file: str | None) -> None:
     """--ports: ask Shodan InternetDB about every IP from --enrich, print what's exposed."""
     print()
     info("Checking Shodan InternetDB for open ports and known CVEs (passive)...")
-    exposure = internetdb.lookup(enrichment)
+    exposure = internetdb.lookup(enrichment, target=results.get("target", ""))
     exposure["collected_at"] = now_utc()
     results["exposure"] = exposure
     if exposure["errors"]:
